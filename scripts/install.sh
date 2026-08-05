@@ -20,6 +20,10 @@ ADDIN_SOURCE="${REPO_DIR}/addin/FusionBridge"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
 ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
 
+SKILL_SOURCE="${REPO_DIR}/skill/fusion-360"
+SKILLS_DIR="${HOME}/.claude/skills"
+SKILL_LINK="${SKILLS_DIR}/fusion-360"
+
 CONFIG_DIR="${HOME}/.fusion-mcp"
 TOKEN_FILE="${CONFIG_DIR}/token"
 EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
@@ -135,6 +139,32 @@ Refusing to delete it. Move it aside, then re-run this script."
 else
     ln -s "${ADDIN_SOURCE}" "${ADDIN_LINK}"
     info "linked ${ADDIN_LINK} -> ${ADDIN_SOURCE}"
+fi
+
+# --- knowledge skill ---------------------------------------------------------
+
+# User-scoped, not a repo CLAUDE.md: CAD requests get prompted from arbitrary
+# directories, and a repo-local file would only load inside this repo.
+step "Linking the Fusion knowledge skill"
+
+mkdir -p "${SKILLS_DIR}"
+
+if [ -L "${SKILL_LINK}" ]; then
+    current="$(readlink "${SKILL_LINK}")"
+    if [ "${current}" = "${SKILL_SOURCE}" ]; then
+        info "already linked"
+    else
+        rm -f "${SKILL_LINK}"
+        ln -s "${SKILL_SOURCE}" "${SKILL_LINK}"
+        info "replaced stale symlink (was: ${current})"
+    fi
+elif [ -e "${SKILL_LINK}" ]; then
+    die "a real file or folder already exists at:
+  ${SKILL_LINK}
+Refusing to delete it. Move it aside, then re-run this script."
+else
+    ln -s "${SKILL_SOURCE}" "${SKILL_LINK}"
+    info "linked ${SKILL_LINK} -> ${SKILL_SOURCE}"
 fi
 
 # --- exports dir -------------------------------------------------------------

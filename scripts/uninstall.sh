@@ -22,6 +22,8 @@ ADDIN_SOURCE="${REPO_DIR}/addin/FusionBridge"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
 ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
 
+SKILL_LINK="${HOME}/.claude/skills/fusion-360"
+
 CONFIG_DIR="${HOME}/.fusion-mcp"
 EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
 
@@ -66,6 +68,20 @@ fi
 
 info "stop the add-in inside Fusion too: Tools → Add-Ins → FusionBridge → Stop"
 info "add-in source stays in the repo: ${ADDIN_SOURCE}"
+
+# --- knowledge skill ---------------------------------------------------------
+
+step "Removing the Fusion knowledge skill link"
+
+if [ -L "${SKILL_LINK}" ]; then
+    current="$(readlink "${SKILL_LINK}")"
+    rm -f "${SKILL_LINK}"
+    info "removed symlink (was: ${current})"
+elif [ -e "${SKILL_LINK}" ]; then
+    info "SKIPPED: ${SKILL_LINK} is a real folder, not our symlink — remove it yourself if you want it gone"
+else
+    info "nothing to remove (${SKILL_LINK} does not exist)"
+fi
 
 # --- MCP registration --------------------------------------------------------
 
