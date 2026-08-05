@@ -1,4 +1,4 @@
-# fusion-mcp
+# 3d-mcp
 
 **Model in Autodesk Fusion by prompting.** An MCP server that lets Claude write Fusion API
 Python, run it inside a live Fusion session, *look at the result through viewport screenshots*,
@@ -87,10 +87,14 @@ A sample of what it documents, all verified against a running Fusion 2704:
 ## Install
 
 ```sh
-git clone https://github.com/<you>/fusion-mcp.git
-cd fusion-mcp
+git clone https://github.com/<you>/3d-mcp.git
+cd 3d-mcp
 scripts/install.sh
 ```
+
+> `install.sh` bakes the **absolute** path of this checkout into the MCP registration and
+> symlinks the add-in from it. Moving or renaming the directory afterwards breaks both —
+> re-run `scripts/install.sh` from the new location if you do.
 
 The installer creates `~/.fusion-mcp/` (0700) with a random 64-hex-char token (0600), symlinks
 `addin/FusionBridge` into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
