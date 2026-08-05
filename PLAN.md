@@ -24,7 +24,7 @@ Presence tags: **[GUI]** = needs Fusion 360 open on the Mac (Franco present or a
 fusion-mcp/
   addin/FusionBridge/        # Fusion 360 add-in (Python)
     FusionBridge.py          # thin loader — rarely edited
-    bridge_impl.py           # all logic — reloadable via /reload
+    fusion_bridge_impl.py    # all logic — reloadable via /reload
     FusionBridge.manifest
   server/                    # MCP server (Python, FastMCP, stdio)
     mcp_server.py
@@ -39,17 +39,18 @@ fusion-mcp/
 
 ### 1b. Add-in (`addin/FusionBridge/`) **[headless to write, [GUI] to test]**
 
-**Loader/impl split.** `FusionBridge.py` is a thin loader: wraps `import bridge_impl` + `run()` in try/except that appends to `~/.fusion-mcp/addin.log` **even on import-time failure** and shows a one-time `ui.messageBox` on bootstrap errors — otherwise an import crash produces no log, no listener, no symptom. All logic lives in `bridge_impl.py`, reloadable via a `POST /reload` endpoint (`importlib.reload`) so handler edits don't need the Fusion Add-Ins dialog each iteration.
+**Loader/impl split.** `FusionBridge.py` is a thin loader: wraps the impl import + `run()` in try/except that appends to `~/.fusion-mcp/addin.log` **even on import-time failure** and shows a one-time `ui.messageBox` on bootstrap errors — otherwise an import crash produces no log, no listener, no symptom. All logic lives in `fusion_bridge_impl.py`, reloadable via a `POST /reload` endpoint (`importlib.reload`) so handler edits don't need the Fusion Add-Ins dialog each iteration. Load it **by explicit path** (`importlib.util.spec_from_file_location`) under that namespaced key rather than putting the add-in dir on `sys.path` — all Fusion add-ins share one interpreter and one `sys.modules`, so a generic module name can collide in either direction. `/reload` **byte-compiles the on-disk source before tearing the listener down** and refuses on `SyntaxError` (the likeliest outcome of an edit-reload loop), and restores the listener if the reload fails anyway.
 
 **Manifest.** JSON: `autodeskProduct: "Fusion360"` (docs say "Fusion" but every shipping Autodesk example uses "Fusion360"), `type: "addin"`, a generated GUID `id`, `version`, `supportedOS: "mac"`, `description`, and **`runOnStartup: true`** — repo-controlled, so the only manual step left is running it once in the current session. A missing/invalid manifest makes the add-in silently absent from the dialog. Note: add-ins start while Fusion is still initializing — if startup flakiness appears, defer listener start to `Application.startupCompleted`.
 
-**HTTP listener.** Single-threaded stdlib `http.server.HTTPServer` (no third-party deps inside Fusion) bound to **127.0.0.1:7654**. Single-threaded is a feature: requests serialize at the socket, protecting the marshal machinery; `allow_reuse_address` (default on HTTPServer) makes restarts rebind cleanly. Wrap the bind in try/except — log + `messageBox` on `EADDRINUSE`, never die silently.
+**HTTP listener.** Stdlib `ThreadingHTTPServer` (no third-party deps inside Fusion) bound to **127.0.0.1:7654**, `daemon_threads = True` and `block_on_close = False` so a request still waiting on Fusion's main thread can never hold up add-in reload or Fusion's own quit. Serialization is enforced by the **single-flight guard** (`_active_job` under a lock), not by the socket — that is what makes it safe to handle connections concurrently, and it is what lets `/health` stay answerable during a long execute (a liveness probe that blocks behind the thing you're probing is useless) and lets a second `/execute` get its 409 immediately instead of queueing behind a 60 s wait and then landing late against the server's 75 s client timeout. `allow_reuse_address` (default) makes restarts rebind cleanly. Wrap the bind in try/except — log + `messageBox` on `EADDRINUSE`, never die silently.
 
 **Main-thread marshal contract.** Fusion's API is main-thread-only; **every** `adsk.*` touch — `/execute` *and* `/screenshot` — goes through one marshal path:
 - `app.registerCustomEvent(EVENT_ID)` once at startup; keep the handler instance in a **module-level `handlers` list** for the add-in's lifetime — Fusion holds handlers weakly, and a GC'd handler makes `fireCustomEvent` silently do nothing (the classic "built it and nothing happens" failure).
 - Per request: a `uuid`; the CustomEvent payload is a JSON string `{id, kind, ...}` (`additionalInfo` is string-only). Replies land in a dict keyed by id, each with its own `threading.Event`; the HTTP thread waits with timeout.
 - **Timeout ~60 s abandons the wait only** — main-thread `exec()` cannot be cancelled, and custom events are deferred while Fusion shows a modal dialog. A timed-out entry is marked abandoned; any late reply for it is dropped and logged, **never delivered to a later caller**. The timeout error text must say: *"code may still be executing; do not resend; check fusion_state/screenshot."*
 - **Single-flight:** while a previous (possibly abandoned) execution is still running on the main thread, reject new `/execute` with 409 "previous execution still running".
+- **The single-flight guard must never wedge.** Three ways it could and all are closed: the main-thread handler catches `BaseException` (not just `Exception`) so generated code raising a bare `BaseException` can't escape and leave the job uncompleted; an unparseable event envelope explicitly fails the active job instead of returning silently; and `run()` clears any state stranded by a previous `stop()` (a request in flight when the add-in stops is abandoned by its waiter, but its queued event never dispatches once the event is unregistered — so without this, toggling the add-in, which is exactly how a user recovers from a hang, would leave every later request at 409 until Fusion itself restarts).
 - At the top of the event handler, terminate any active command (per Autodesk's threading guidance).
 
 **`POST /execute`** — body: Python source. One **persistent module-level namespace** reused across calls (so Claude can reference entities from prior calls), pre-loaded with `adsk.core`, `adsk.fusion`; `app`, `ui`, `design` are **re-resolved and re-injected at the start of every request** in the main-thread handler: `design = adsk.fusion.Design.cast(app.activeProduct)` — if `None` (no document open, or active product isn't a Design), short-circuit with `{ok:false, error:"no active Fusion design — open or create one and switch to the Design workspace"}` without running `exec()`. Optional `{reset: true}` clears the namespace. `result` variable convention + captured stdout. Returns `{ok, result, stdout, traceback}`.
@@ -105,7 +106,9 @@ fusion-mcp/
    e. Token file absent → listener refuses to start, reason in `addin.log`.
    f. Zero documents open → clean structured error, no exec.
    g. Toggle the add-in off/on twice → `/execute` still works (no port leak, no dead handler).
-   h. Edit `bridge_impl.py` → `POST /reload` → new behavior without restarting Fusion.
+   h. Edit `fusion_bridge_impl.py` → `POST /reload` → new behavior without restarting Fusion. Also: introduce a syntax error, `/reload` → refused, **bridge still serving on the old code**.
+   j. Abandon a request (7b), then toggle the add-in off/on → `/execute` works again (stranded single-flight state cleared, not a permanent 409).
+   k. While a long `/execute` is in flight, `GET /health` answers immediately and reports `busy`.
    i. From a directory **outside** the repo, `claude mcp list` shows fusion connected.
 
 **Checkpoint:** the enclosure test passes end-to-end. Commit, tag `v0.1`.

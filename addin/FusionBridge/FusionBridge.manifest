@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "626e487c-e2ab-44cc-885b-1e3faf11a25b",
+    "author": "francomichetti-dev",
+    "description": {
+        "": "Local-only HTTP bridge (127.0.0.1:7654, token required) that lets the fusion-mcp MCP server run Fusion API Python and capture viewport screenshots on Fusion's main thread."
+    },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "mac",
+    "editEnabled": true
+}
