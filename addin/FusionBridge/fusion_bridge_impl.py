@@ -23,7 +23,6 @@ import base64
 import builtins
 import contextlib
 import hmac
-import importlib
 import io
 import json
 import os
@@ -57,7 +56,10 @@ VERSION_HEADER = "X-Bridge-Version"
 EVENT_ID = "FusionBridgeMarshalEvent"
 
 MARSHAL_TIMEOUT_S = 60.0
-SOCKET_TIMEOUT_S = 70.0
+# Per socket operation, not per request: the 60 s marshal wait is a pure-Python
+# wait that performs no socket I/O, so this only bounds how long an unauthorized
+# peer can hold a connection thread while dribbling out headers.
+SOCKET_TIMEOUT_S = 15.0
 WAIT_SLICE_S = 0.2
 SHUTDOWN_JOIN_S = 5.0
 
@@ -107,6 +109,22 @@ _httpd = None
 _server_thread = None
 _shutting_down = False
 
+# Serializes the whole of _start/_shutdown so the "is a listener already up?"
+# check and the bind cannot race — otherwise a reload finishing just as the user
+# hits Stop can leave a live listener behind a stopped add-in, which is the one
+# off switch this arbitrary-code-execution endpoint has.
+_lifecycle_lock = threading.RLock()
+# Bumped on every genuine stop(); a reload worker that scheduled before a stop
+# sees the change and abandons instead of resurrecting the listener.
+_generation = 0
+
+# One thread per connection is unbounded by default, and everything up to full
+# header parsing happens before auth — so an unauthenticated local peer could
+# exhaust threads and memory inside Fusion's own process and take unsaved CAD
+# work with it.  Connections beyond this cap are refused at accept time.
+MAX_CONCURRENT_CONNECTIONS = 8
+_conn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
+
 _state_lock = threading.Lock()
 _pending = {}
 _active_job = None
@@ -119,10 +137,10 @@ _cached_app_version = None
 _cached_document = None
 _bootstrap_alert_shown = False
 
-# Values that must survive importlib.reload(): the live handler registration and
-# the user's persistent exec namespace.  reload() re-executes module code into
-# this same __dict__, so the already-registered handler instance keeps working
-# and simply dispatches into the new code.
+# Values that must survive a reload: the live handler registration, the user's
+# persistent exec namespace, and every lock/counter whose identity matters.  The
+# module is re-executed into this same __dict__, so the already-registered
+# handler instance keeps working and simply dispatches into the new code.
 _CARRIED_ATTRS = (
     "_app",
     "_ui",
@@ -137,6 +155,19 @@ _CARRIED_ATTRS = (
     "_state_lock",
     "_pending",
     "_active_job",
+    # Re-executing the module would otherwise mint fresh locks and a fresh
+    # semaphore, dropping every guarantee they carry across the reload.  A
+    # rebound _log_lock in particular voids the mutual exclusion that log
+    # rotation relies on, so two threads could both rotate and destroy a
+    # generation of the only forensic record the bridge has.
+    "_lifecycle_lock",
+    "_generation",
+    "_conn_slots",
+    "_log_lock",
+    "_tokens",
+    # An HTTP thread already waiting in _marshal must keep seeing the shutdown
+    # signal across a reload instead of waiting out the full 60 s.
+    "_shutting_down",
 )
 
 
@@ -323,11 +354,13 @@ class _PendingJob:
         self.started = time.monotonic()
 
 
-def _marshal(kind, payload):
-    """Run ``kind`` on Fusion's main thread and return its reply dict.
+def _claim_job(kind):
+    """Take the single-flight slot, or raise 409/503.
 
-    Raises _HttpError(409) if a previous job is still occupying the main thread,
-    and _HttpError(504) when the wait is abandoned.
+    Claimed *before* the request body is read so a request that is going to be
+    refused anyway never buffers up to MAX_BODY_BYTES first — otherwise N
+    concurrent callers each allocate megabytes inside Fusion's own process only
+    to be turned away.
     """
     global _active_job
 
@@ -339,14 +372,30 @@ def _marshal(kind, payload):
             raise _HttpError(409, BUSY_ERROR)
         _pending[job.id] = job
         _active_job = job
+    return job
 
+
+def _release_job(job):
+    """Give the slot back for a job that never reached the main thread."""
+    global _active_job
+
+    with _state_lock:
+        _pending.pop(job.id, None)
+        if _active_job is not None and _active_job.id == job.id:
+            _active_job = None
+
+
+def _marshal(job, payload):
+    """Run ``job`` on Fusion's main thread and return its reply dict.
+
+    Raises _HttpError(504) when the wait is abandoned.
+    """
+    kind = job.kind
     envelope = json.dumps({"id": job.id, "kind": kind, "payload": payload})
     try:
         _app.fireCustomEvent(EVENT_ID, envelope)
     except Exception:
-        with _state_lock:
-            _pending.pop(job.id, None)
-            _active_job = None
+        _release_job(job)
         _log("fireCustomEvent failed for %s:\n%s" % (kind, traceback.format_exc()), "ERROR")
         raise _HttpError(500, "could not hand the request to Fusion's main thread")
 
@@ -426,41 +475,55 @@ def _busy_description():
 
 
 class _MarshalEventHandler(adsk.core.CustomEventHandler):
-    """Runs on Fusion's main thread; the single door to the ``adsk`` API."""
+    """Runs on Fusion's main thread; the single door to the ``adsk`` API.
+
+    Kept to a bare delegation on purpose.  ``/reload`` re-executes this module
+    into its own ``__dict__``, but the handler instance Fusion registered is an
+    instance of the *pre-reload* class and keeps running the old ``notify`` code
+    object — so anything written here would be frozen until an add-in Stop/Run.
+    Everything real lives in the module-level function below, which the reload
+    genuinely replaces.  (Swapping in a fresh handler instead would risk two live
+    handlers dispatching the same job and executing the user's code twice.)
+    """
 
     def notify(self, args):
-        kind = "?"
-        try:
-            envelope = json.loads(args.additionalInfo)
-            job_id = envelope["id"]
-            kind = envelope["kind"]
-            payload = envelope.get("payload") or {}
-        except Exception:
-            _log("unparseable custom event payload:\n%s" % traceback.format_exc(), "ERROR")
-            # The bridge is single-flight: leaving the active job uncompleted
-            # would refuse every later request with 409 until the add-in is
-            # restarted, so fail it explicitly instead.
-            _fail_active_job("bridge internal error — unparseable event payload")
-            return
+        _dispatch_marshal_event(args)
 
-        try:
-            _terminate_active_command()
-            app = adsk.core.Application.get()
-            _refresh_cached_state(app)
-            if kind == "execute":
-                reply = _job_execute(app, payload)
-            elif kind == "screenshot":
-                reply = _job_screenshot(app, payload)
-            else:
-                reply = {"ok": False, "error": "unknown job kind '%s'" % kind}
-        except BaseException:
-            # Deliberately broader than Exception: generated code raising a bare
-            # BaseException (KeyboardInterrupt, GeneratorExit, ...) must not
-            # escape and leave the job uncompleted.
-            detail = _truncate_tail(traceback.format_exc(), MAX_TRACEBACK_BYTES)
-            reply = {"ok": False, "traceback": detail, "stdout": ""}
-            _log("main-thread job %s failed:\n%s" % (kind, detail), "ERROR")
-        _complete(job_id, reply)
+
+def _dispatch_marshal_event(args):
+    """The real main-thread dispatcher — hot-reloadable, unlike notify()."""
+    kind = "?"
+    try:
+        envelope = json.loads(args.additionalInfo)
+        job_id = envelope["id"]
+        kind = envelope["kind"]
+        payload = envelope.get("payload") or {}
+    except Exception:
+        _log("unparseable custom event payload:\n%s" % traceback.format_exc(), "ERROR")
+        # The bridge is single-flight: leaving the active job uncompleted would
+        # refuse every later request with 409 until the add-in is restarted, so
+        # fail it explicitly instead.
+        _fail_active_job("bridge internal error — unparseable event payload")
+        return
+
+    try:
+        _terminate_active_command()
+        app = adsk.core.Application.get()
+        _refresh_cached_state(app)
+        if kind == "execute":
+            reply = _job_execute(app, payload)
+        elif kind == "screenshot":
+            reply = _job_screenshot(app, payload)
+        else:
+            reply = {"ok": False, "error": "unknown job kind '%s'" % kind}
+    except BaseException:
+        # Deliberately broader than Exception: generated code raising a bare
+        # BaseException (KeyboardInterrupt, GeneratorExit, ...) must not escape
+        # and leave the job uncompleted.
+        detail = _truncate_tail(traceback.format_exc(), MAX_TRACEBACK_BYTES)
+        reply = {"ok": False, "traceback": detail, "stdout": ""}
+        _log("main-thread job %s failed:\n%s" % (kind, detail), "ERROR")
+    _complete(job_id, reply)
 
 
 def _terminate_active_command():
@@ -716,21 +779,48 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             if method == "GET" and path == "/health":
                 status, payload = 200, _health_payload()
             elif method == "POST" and path == "/execute":
-                body, body_size = self._read_json()
-                params = _parse_execute(body)
+                job = _claim_job("execute")
+                try:
+                    body, body_size = self._read_json()
+                    params = _parse_execute(body)
+                except BaseException:
+                    _release_job(job)
+                    raise
                 if LOG_EXECUTED_CODE:
                     _log("code: %s" % _truncate_head(params["code"], 200).replace("\n", " | "))
-                status, payload = 200, _marshal("execute", params)
+                status, payload = 200, _marshal(job, params)
                 note = "ok=%s" % payload.get("ok")
             elif method == "POST" and path == "/screenshot":
-                body, body_size = self._read_json()
-                params = _parse_screenshot(body)
-                status, payload = 200, _marshal("screenshot", params)
+                job = _claim_job("screenshot")
+                try:
+                    body, body_size = self._read_json()
+                    params = _parse_screenshot(body)
+                except BaseException:
+                    _release_job(job)
+                    raise
+                status, payload = 200, _marshal(job, params)
                 note = "view=%s %dx%d ok=%s" % (
                     params["view"], params["width"], params["height"], payload.get("ok"),
                 )
             elif method == "POST" and path == "/reload":
                 self._read_body()
+                if _custom_event is None:
+                    raise _HttpError(
+                        503, "the add-in is stopped — run it from Utilities → Add-Ins"
+                    )
+                # Reloading mid-job would swap the module dict under a job that
+                # is still running on the main thread.  The endpoint exists for
+                # an edit-reload loop, which is never legitimately concurrent
+                # with a live execution.
+                with _state_lock:
+                    if _active_job is not None:
+                        raise _HttpError(409, BUSY_ERROR)
+                # Validated here rather than in the worker so a syntax error is
+                # reported to the caller instead of only reaching the log.
+                try:
+                    _precompile_self()
+                except SyntaxError as err:
+                    raise _HttpError(400, "reload refused, bridge untouched: %s" % err)
                 status, payload = 200, {"ok": True}
             else:
                 raise _HttpError(404, "unknown endpoint %s %s" % (method, path))
@@ -760,6 +850,41 @@ class _BridgeServer(ThreadingHTTPServer):
     # server_close() does not join them.
     daemon_threads = True
     block_on_close = False
+
+    def process_request(self, request, client_address):
+        """Refuse connections past the cap instead of spawning a thread.
+
+        The slot is released in shutdown_request, which socketserver calls
+        exactly once per accepted request on both the success and error paths.
+        """
+        if not _conn_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            except OSError:
+                pass
+            # Closes the socket without going through shutdown_request, so no
+            # slot is released for a connection that never took one.
+            self.close_request(request)
+            return
+        try:
+            ThreadingHTTPServer.process_request(self, request, client_address)
+        except BaseException:
+            _conn_slots.release()
+            raise
+
+    def shutdown_request(self, request):
+        try:
+            ThreadingHTTPServer.shutdown_request(self, request)
+        finally:
+            try:
+                _conn_slots.release()
+            except ValueError:
+                # BoundedSemaphore guards against an over-release; never let
+                # bookkeeping kill the serving thread.
+                _log("connection slot over-released", "WARN")
 
 
 def _health_payload():
@@ -791,7 +916,18 @@ def _schedule_reload():
     The teardown calls ``httpd.shutdown()``, which cannot run on the serving
     thread itself.
     """
-    threading.Thread(target=_reload_worker, name="FusionBridgeReload", daemon=True).start()
+    with _lifecycle_lock:
+        generation = _generation
+    threading.Thread(
+        target=_reload_worker, args=(generation,), name="FusionBridgeReload", daemon=True
+    ).start()
+
+
+def _source_path():
+    path = os.path.abspath(__file__)
+    if path.endswith(".pyc"):
+        path = path[:-1]
+    return path
 
 
 def _precompile_self():
@@ -801,14 +937,29 @@ def _precompile_self():
     edit-reload loop this endpoint exists for; catching it here keeps the running
     bridge untouched instead of leaving it dead until a manual add-in restart.
     """
-    path = os.path.abspath(__file__)
-    if path.endswith(".pyc"):
-        path = path[:-1]
+    path = _source_path()
     with open(path, "r", encoding="utf-8") as handle:
         compile(handle.read(), path, "exec")
 
 
-def _reload_worker():
+def _reexec_self(module):
+    """Re-run this module's source into its own __dict__.
+
+    Deliberately not ``importlib.reload``: that re-resolves the module *by name*
+    through ``sys.path``, which this add-in intentionally never joins (it is
+    loaded by explicit path so a generic module name cannot collide with another
+    add-in's).  reload() therefore either fails outright or, if some other path
+    entry happens to hold a same-named file, loads a foreign module — including
+    a different file than ``_precompile_self`` just validated.  The module's own
+    pinned spec reads the original path and never consults ``sys.path``.
+    """
+    spec = getattr(module, "__spec__", None)
+    if spec is None or spec.loader is None:
+        raise ImportError("fusion_bridge_impl has no loadable spec")
+    spec.loader.exec_module(module)
+
+
+def _reload_worker(generation):
     module = sys.modules[__name__]
     try:
         _precompile_self()
@@ -816,27 +967,38 @@ def _reload_worker():
         _log("reload refused, keeping the running bridge: %r" % exc, "ERROR")
         return
 
-    try:
-        # Keep the CustomEvent registration alive across the reload: reload()
-        # re-executes into this same module __dict__, so the handler instance
-        # already registered with Fusion starts dispatching into the new code.
-        _shutdown(unregister_event=False)
-        carried = {name: getattr(module, name, None) for name in _CARRIED_ATTRS}
-        importlib.reload(module)
-        for name, value in carried.items():
-            setattr(module, name, value)
-        module._start(register_event=False)
-        module._log("fusion_bridge_impl reloaded")
-    except Exception:
-        _log("reload failed:\n%s" % traceback.format_exc(), "ERROR")
-        # The listener is already down at this point; bring it back on whatever
-        # code is now loaded so a failed reload is not a dead bridge.
+    with _lifecycle_lock:
+        if _generation != generation:
+            _log("reload abandoned: the add-in was stopped while it was pending", "WARN")
+            return
         try:
+            # Keep the CustomEvent registration alive across the reload: the
+            # module is re-executed into this same __dict__, so the handler
+            # instance already registered with Fusion dispatches into new code.
+            _shutdown(unregister_event=False)
+            carried = {name: getattr(module, name, None) for name in _CARRIED_ATTRS}
+            # Held across the swap so a job completing on the main thread can
+            # never observe the half-rebuilt module dict — re-executing the
+            # module body mints a fresh _pending/_active_job, and a _complete()
+            # landing in that window would be dropped as "unknown job" while the
+            # restore loop puts the stale job back, wedging single-flight.
+            with carried["_state_lock"]:
+                _reexec_self(module)
+                for name, value in carried.items():
+                    setattr(module, name, value)
             module._start(register_event=False)
-            module._log("listener restored after a failed reload", "WARN")
+            module._log("fusion_bridge_impl reloaded")
         except Exception:
-            _log("could not restore the listener after a failed reload:\n%s"
-                 % traceback.format_exc(), "ERROR")
+            _log("reload failed:\n%s" % traceback.format_exc(), "ERROR")
+            # The listener is already down at this point; bring it back on
+            # whatever code is now loaded so a failed reload is not a dead
+            # bridge.
+            try:
+                module._start(register_event=False)
+                module._log("listener restored after a failed reload", "WARN")
+            except Exception:
+                _log("could not restore the listener after a failed reload:\n%s"
+                     % traceback.format_exc(), "ERROR")
 
 
 # --------------------------------------------------------------------------- #
@@ -854,6 +1016,11 @@ def stop(context=None):
 
 
 def _start(register_event):
+    with _lifecycle_lock:
+        _start_locked(register_event)
+
+
+def _start_locked(register_event):
     global _app, _ui, _custom_event, _httpd, _server_thread, _shutting_down
     global _cached_app_version
 
@@ -953,7 +1120,18 @@ def _unregister_event():
 
 
 def _shutdown(unregister_event):
-    global _httpd, _server_thread, _shutting_down
+    with _lifecycle_lock:
+        _shutdown_locked(unregister_event)
+
+
+def _shutdown_locked(unregister_event):
+    global _httpd, _server_thread, _shutting_down, _generation
+
+    if unregister_event:
+        # A genuine stop() — not a reload's internal teardown.  Any reload
+        # already pending must abandon rather than resurrect the listener behind
+        # a stopped add-in.
+        _generation += 1
 
     _shutting_down = True
     if _httpd is not None:

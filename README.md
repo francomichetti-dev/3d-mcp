@@ -95,13 +95,26 @@ add-in exceptions silently:
 | Health check returns 401 | Token mismatch. Re-run `scripts/install.sh` (it preserves the token) or `--rotate-token`. |
 | Add-in never starts, `addin.log` says no token | `~/.fusion-mcp/token` is missing or empty. The listener fails closed by design; run `scripts/install.sh`. |
 | Add-in loaded but port bind failed | Something else holds 127.0.0.1:7654 — the reason is in `addin.log`. |
-| `version mismatch` error from a tool | You edited the add-in. Stop/Run it in Fusion's Add-Ins dialog, or `POST /reload`. |
+| `version mismatch` error from a tool | You edited the add-in. Stop/Run it in Fusion's Add-Ins dialog, or reload it — see below. |
 | `fusion` missing from `claude mcp list` | Re-run `scripts/install.sh`; it removes and re-adds the registration. |
 | Tool call times out at the Claude Code layer | `MCP_TOOL_TIMEOUT` is too low — see above. |
 | `no active Fusion design` | Open or create a document and switch to the Design workspace. |
+| A burst of parallel requests gets 503 | The add-in caps concurrent connections at 8 and refuses the rest, so a flood cannot exhaust threads inside Fusion. Send requests serially. |
 
 Work in a scratch Fusion project while iterating — generated code can mangle a design, and the
 timeline is the only safety net.
+
+### Reloading after an edit
+
+```sh
+curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" http://127.0.0.1:7654/reload
+```
+
+`/reload` is token-authenticated like every other endpoint — without the header it just returns 401.
+It reloads the implementation module (`fusion_bridge_impl.py`) only: a change to the manifest or to
+`FusionBridge.py` still needs **Utilities → Add-Ins → Stop/Run**. It is refused with 409 while an
+execution is in flight, and 503 when the add-in is stopped. A syntax error in the edited file is
+refused with 400 and the running bridge is left untouched.
 
 ## Uninstall
 
@@ -126,8 +139,9 @@ tightly instead:
 - **Fail closed.** No readable token file → the listener does not start, and says why in `addin.log`.
 - **Host pinning.** Requests must carry `Host: 127.0.0.1:7654` or `localhost:7654`, which defeats
   DNS rebinding.
-- **Bounded.** 5 MB request cap, 64 KB caps on stdout and result, clamped screenshot dimensions,
-  one execution at a time (a second concurrent `/execute` gets a 409).
+- **Bounded.** 5 MB request cap, 64 KB caps on stdout and result, screenshot dimensions bounded to
+  64..1920 × 64..1440 — rejected with an error outside that range, never silently clamped — at most
+  8 concurrent connections, and one execution at a time (a second concurrent `/execute` gets a 409).
 - `~/.fusion-mcp` is 0700 and its files 0600; the token is never logged.
 
 Exports are confined to `~/Documents/fusion-mcp-exports/`; `fusion_execute` is the deliberate

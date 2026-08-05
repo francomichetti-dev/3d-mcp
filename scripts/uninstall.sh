@@ -9,6 +9,12 @@
 #
 set -euo pipefail
 
+# set -u catches an unset HOME but not an empty one — and an empty HOME would
+# collapse every path below to the filesystem root (rm -rf /.fusion-mcp, and an
+# ADDIN_LINK under /Library outside this user's account).
+: "${HOME:?HOME must be set to a non-empty path}"
+[ -d "${HOME}" ] || { printf 'ERROR: HOME (%s) is not a directory\n' "${HOME}" >&2; exit 1; }
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
@@ -78,18 +84,29 @@ fi
 
 # --- config dir --------------------------------------------------------------
 
+# Belt and braces around the only destructive command in this script: refuse to
+# recurse-delete anything that is not strictly below $HOME.
+purge_config_dir() {
+    case "${CONFIG_DIR}" in
+        "${HOME}"/?*) ;;
+        *) printf '\nERROR: refusing to delete %s — not inside %s\n' "${CONFIG_DIR}" "${HOME}" >&2
+           exit 1 ;;
+    esac
+    rm -rf "${CONFIG_DIR}"
+}
+
 step "Token and logs (${CONFIG_DIR})"
 
 if [ ! -d "${CONFIG_DIR}" ]; then
     info "nothing to remove"
 elif [ "${PURGE}" -eq 1 ]; then
-    rm -rf "${CONFIG_DIR}"
+    purge_config_dir
     info "deleted ${CONFIG_DIR}"
 elif [ -t 0 ]; then
     printf '  Delete %s (token, addin.log, server.log)? [y/N] ' "${CONFIG_DIR}"
     read -r reply
     case "${reply}" in
-        [yY]|[yY][eE][sS]) rm -rf "${CONFIG_DIR}"; info "deleted ${CONFIG_DIR}" ;;
+        [yY]|[yY][eE][sS]) purge_config_dir; info "deleted ${CONFIG_DIR}" ;;
         *) info "kept ${CONFIG_DIR}" ;;
     esac
 else
