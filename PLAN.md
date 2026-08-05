@@ -31,7 +31,9 @@ fusion-mcp/
   server/                    # MCP server (Python, FastMCP, stdio)
     mcp_server.py
     pyproject.toml
-  skill/FUSION-KNOWLEDGE.md  # Phase 2
+  skill/fusion-360/         # Phase 2 — user-scoped Claude Code skill
+    SKILL.md                #   always-loaded essentials (~6 KB)
+    references/             #   patterns / gotchas / spatial / printing / workflow
   scripts/install.sh         # symlink add-in, generate token, register MCP
   scripts/uninstall.sh       # remove add-in, claude mcp remove, optionally ~/.fusion-mcp
   docs/
@@ -132,7 +134,9 @@ fusion-mcp/
 
 Delivery is layered — **not** a repo CLAUDE.md (which only loads when the session cwd is inside this repo; Franco prompts CAD from arbitrary directories, which is why the server is user-scoped):
 - (a) The non-negotiables (cm units, result convention, screenshot-after-every-change) live in the MCP tool descriptions (done in 1c).
-- (b) `skill/FUSION-KNOWLEDGE.md` installed by `install.sh` as a **user-level skill** (`~/.claude/skills/`) with a trigger-rich description (Fusion 360, CAD, 3D print, STL, enclosure, bracket, …).
+- (b) `skill/fusion-360/` symlinked by `install.sh` into `~/.claude/skills/` as a **user-level skill**, with a trigger-rich description (Fusion 360, CAD, 3D print, STL, enclosure, bracket, …).
+- (c) **Progressive disclosure, not one big file.** The verified material runs to ~91 KB — loading that every session would be its own tax. `SKILL.md` (~6 KB) carries only what must always be in context: the cm/radians conversions, the calls that *deadlock* rather than fail (`messageBox`, `doEvents`, UI commands, unbounded loops), the session discipline, the injected names, and the two placement traps (sketch-plane axes don't map to world axes outside XY; face/edge indices shift after every feature). Everything else lives in `references/` and is read on demand.
+- (d) **Every API pattern was fact-checked against Autodesk's reference** and carries its doc URL in a trailing comment. This matters more than coverage: a plausible-but-wrong pattern is worse than a missing one, because it actively misleads mid-session. Where a claim couldn't be verified — notably the exact sketch-plane axis mapping — the file says "don't guess, print `sketchToModelSpace` and read it" instead of asserting a rule.
 
 Content:
 - Boilerplate patterns: get app/design, new component, sketch on plane/face, extrude (new body/join/cut), revolve, fillet/chamfer, holes, patterns, mirror, user parameters.
