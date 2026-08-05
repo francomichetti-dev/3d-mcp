@@ -368,3 +368,87 @@ These are not Fusion API gotchas; they are hard constraints of *this* bridge. Vi
 - **Fix:** the namespace **persists between `fusion_execute` calls** — exploit it. Do 10–20 features per call, `print()` progress, keep your state in module-level variables, and screenshot between chunks to verify before continuing. A timed-out call is far more expensive than three small ones.
 
 **On timeout, do not resend.** The code may still be running. Call `fusion_state` / `fusion_screenshot` to see what actually landed, then continue from there — re-running a partially-applied script duplicates geometry.
+
+---
+
+### 10. `camera.viewOrientation` does not survive assignment — position the camera instead
+
+**Verified against Fusion 2704.1.36, not inferred from docs.** Setting a named
+view the obvious way silently does nothing:
+
+```python
+cam = vp.camera
+cam.viewOrientation = adsk.core.ViewOrientations.FrontViewOrientation
+print(cam.viewOrientation)      # FrontViewOrientation — the copy took it
+vp.camera = cam
+print(vp.camera.viewOrientation)  # ArbitraryViewOrientation — reverted!
+```
+
+The assignment reverts it. No exception, no warning — you simply get whatever
+view was already on screen, which is worse than an error because a "front"
+screenshot that is actually isometric looks plausible.
+
+Position `eye` / `target` / `upVector` explicitly instead:
+
+```python
+import math
+
+DIRS = {                       # (direction to look FROM, up vector)
+    "front": ((0, -1, 0), (0, 0, 1)),
+    "top":   ((0,  0, 1), (0, 1, 0)),
+    "right": ((1,  0, 0), (0, 0, 1)),
+    "iso":   ((1, -1, 1), (0, 0, 1)),
+}
+
+vp = app.activeViewport
+bb = design.rootComponent.boundingBox
+cx, cy, cz = ((bb.minPoint.x + bb.maxPoint.x) / 2,
+              (bb.minPoint.y + bb.maxPoint.y) / 2,
+              (bb.minPoint.z + bb.maxPoint.z) / 2)
+span = max(bb.maxPoint.x - bb.minPoint.x,
+           bb.maxPoint.y - bb.minPoint.y,
+           bb.maxPoint.z - bb.minPoint.z) or 1.0
+
+direction, up = DIRS["front"]
+n = math.sqrt(sum(c * c for c in direction))
+d = span * 5
+
+cam = vp.camera
+cam.target = adsk.core.Point3D.create(cx, cy, cz)
+cam.eye = adsk.core.Point3D.create(cx + direction[0] / n * d,
+                                   cy + direction[1] / n * d,
+                                   cz + direction[2] / n * d)
+cam.upVector = adsk.core.Vector3D.create(*up)
+cam.isSmoothTransition = False   # else the capture lands mid-animation
+vp.camera = cam
+vp.fit()                          # preserves direction, fixes framing
+vp.refresh()
+```
+
+`fusion_screenshot` already does this for you — this matters when you drive the
+camera yourself. Sanity check: two different named views must produce different
+images. If two views come back byte-identical, the camera never moved.
+
+---
+
+### 11. Export filenames: Fusion may append its own extension
+
+**Verified on Fusion 2704.1.36.** `createUSDExportOptions` is present (there is
+**no glTF exporter** — do not look for one), and it takes the **filename first**:
+`em.createUSDExportOptions(path)`. But exporting to `part.usd` actually writes
+**`part.usd.usdz`** — a zip archive containing a `.usdc` crate.
+
+So `os.path.exists(requested_path)` is `False` after a *successful* export. Never
+treat that as failure: check the requested path, then the same path with `.usdz`
+appended, and report whichever exists.
+
+STL is unaffected — `em.createSTLExportOptions(geometry, filename)` takes geometry
+first and writes exactly the filename given, as **binary** STL in **millimetres**
+(a 20 mm cube exports as 12 triangles spanning 20.000).
+
+The full exporter list on 2704.1.36: `createC3MFExportOptions`,
+`createDXFFlatPatternExportOptions`, `createDXFSketchExportOptions`,
+`createFusionArchiveExportOptions`, `createIGESExportOptions`,
+`createOBJExportOptions`, `createSATExportOptions`, `createSMTExportOptions`,
+`createSTEPExportOptions`, `createSTEPExportOptionsForFlatPattern`,
+`createSTLExportOptions`, `createUSDExportOptions`.

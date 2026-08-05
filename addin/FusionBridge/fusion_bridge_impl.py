@@ -25,6 +25,7 @@ import contextlib
 import hmac
 import io
 import json
+import math
 import os
 import shutil
 import sys
@@ -607,14 +608,65 @@ def _job_execute(app, payload):
     return {"ok": True, "result": result, "stdout": stdout}
 
 
-def _view_orientation(view):
-    orientations = {
-        "front": adsk.core.ViewOrientations.FrontViewOrientation,
-        "top": adsk.core.ViewOrientations.TopViewOrientation,
-        "right": adsk.core.ViewOrientations.RightViewOrientation,
-        "iso": adsk.core.ViewOrientations.IsoTopRightViewOrientation,
-    }
-    return orientations.get(view)
+# Direction the camera looks FROM, and its up vector, per named view.
+# Verified against Fusion 2704 rather than assumed: setting
+# ``camera.viewOrientation`` on the camera copy takes the value, but assigning
+# the camera back to the viewport silently reverts it to
+# ArbitraryViewOrientation — so every "named view" quietly returned whatever the
+# user was already looking at.  Positioning eye/upVector explicitly is the only
+# mechanism that actually moves the camera.
+_VIEW_VECTORS = {
+    "front": ((0.0, -1.0, 0.0), (0.0, 0.0, 1.0)),
+    "top": ((0.0, 0.0, 1.0), (0.0, 1.0, 0.0)),
+    "right": ((1.0, 0.0, 0.0), (0.0, 0.0, 1.0)),
+    "iso": ((1.0, -1.0, 1.0), (0.0, 0.0, 1.0)),
+}
+
+
+def _model_center_and_span(design):
+    """Centre and largest extent of the design, in cm.
+
+    Falls back to the origin and a unit span for an empty design, where the
+    bounding box is degenerate or unavailable.
+    """
+    try:
+        box = design.rootComponent.boundingBox
+        lo, hi = box.minPoint, box.maxPoint
+        span = max(hi.x - lo.x, hi.y - lo.y, hi.z - lo.z)
+        if span > 0:
+            return ((lo.x + hi.x) / 2.0, (lo.y + hi.y) / 2.0, (lo.z + hi.z) / 2.0), span
+    except Exception:
+        pass
+    return (0.0, 0.0, 0.0), 1.0
+
+
+def _aim_camera(app, viewport, view):
+    """Point the camera at the model along ``view``'s axis.  'fit' keeps the
+    current orientation and only reframes."""
+    vectors = _VIEW_VECTORS.get(view)
+    if vectors is None:
+        return
+    design = adsk.fusion.Design.cast(app.activeProduct)
+    if design is None:
+        return
+
+    direction, up = vectors
+    (cx, cy, cz), span = _model_center_and_span(design)
+    length = math.sqrt(sum(c * c for c in direction))
+    distance = span * 5.0  # fit() sets the final framing; this only needs to clear the model
+
+    camera = viewport.camera
+    camera.target = adsk.core.Point3D.create(cx, cy, cz)
+    camera.eye = adsk.core.Point3D.create(
+        cx + direction[0] / length * distance,
+        cy + direction[1] / length * distance,
+        cz + direction[2] / length * distance,
+    )
+    camera.upVector = adsk.core.Vector3D.create(*up)
+    # Defaults to True; a smooth transition animates the move and the capture
+    # would land mid-flight.
+    camera.isSmoothTransition = False
+    viewport.camera = camera
 
 
 def _job_screenshot(app, payload):
@@ -626,14 +678,7 @@ def _job_screenshot(app, payload):
     if viewport is None:
         return {"ok": False, "error": "no active Fusion viewport — open a document first"}
 
-    camera = viewport.camera
-    orientation = _view_orientation(view)
-    if orientation is not None:
-        camera.viewOrientation = orientation
-    # Defaults to True; a smooth transition animates the move and the capture
-    # would land mid-flight.
-    camera.isSmoothTransition = False
-    viewport.camera = camera
+    _aim_camera(app, viewport, view)
     viewport.fit()
     viewport.refresh()
     adsk.doEvents()

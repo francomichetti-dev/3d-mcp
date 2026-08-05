@@ -418,10 +418,21 @@ def _fx_export(_p):
     if not em.execute(opts):
         return {"ok": False, "error": "exportManager.execute() returned False for the " + fmt + " export of " + target}
 
-    size = os.path.getsize(out_path) if os.path.exists(out_path) else 0
+    # Fusion may append its own extension rather than honouring the filename it
+    # was given: a USD export to "part.usd" is actually written as
+    # "part.usd.usdz" (a zip holding a .usdc). Checking only the requested path
+    # would report a false failure for an export that succeeded.
+    written = out_path
+    if not os.path.exists(written):
+        for suffix in (".usdz", ".usd", ".usdc", ".stl", ".step", ".stp", ".3mf"):
+            if os.path.exists(out_path + suffix):
+                written = out_path + suffix
+                break
+
+    size = os.path.getsize(written) if os.path.exists(written) else 0
     if size == 0:
         return {"ok": False, "error": "export reported success but no file was written to " + out_path}
-    return {"ok": True, "format": fmt, "path": out_path, "bytes": size, "target": target}
+    return {"ok": True, "format": fmt, "path": written, "bytes": size, "target": target}
 
 
 result = _fx_export(_fx_params)
