@@ -576,7 +576,12 @@ def _job_execute(app, payload):
     global _exec_globals
 
     design = adsk.fusion.Design.cast(app.activeProduct)
-    if design is None:
+    if design is None and not payload.get("allow_no_design"):
+        # Refused by default so the usual cause (nothing open, or a non-Design
+        # workspace) gets one clear message instead of an AttributeError on None
+        # from somewhere deep in the caller's script.  The opt-in exists because
+        # otherwise the bridge cannot bootstrap: creating a document is exactly
+        # what you need to do when there is no document.
         return {"ok": False, "error": NO_DESIGN_ERROR}
 
     if payload.get("reset") or _exec_globals is None:
@@ -714,7 +719,10 @@ def _parse_execute(body):
     reset = body.get("reset", False)
     if not isinstance(reset, bool):
         raise _HttpError(400, "'reset' must be a boolean")
-    return {"code": code, "reset": reset}
+    allow_no_design = body.get("allow_no_design", False)
+    if not isinstance(allow_no_design, bool):
+        raise _HttpError(400, "'allow_no_design' must be a boolean")
+    return {"code": code, "reset": reset, "allow_no_design": allow_no_design}
 
 
 def _parse_screenshot(body):
