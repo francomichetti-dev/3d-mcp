@@ -1,0 +1,13 @@
+{
+    "autodeskProduct": "Fusion360",
+    "type": "addin",
+    "id": "814f946d-0854-48db-a2fb-b650174d946c",
+    "author": "fusion-mcp",
+    "description": {
+        "": "Phase 0 symlink-loading probe - writes ~/.fusion-mcp/symlink-test.json on load"
+    },
+    "version": "0.1.0",
+    "runOnStartup": true,
+    "supportedOS": "mac",
+    "editEnabled": true
+}
