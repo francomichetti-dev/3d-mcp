@@ -452,3 +452,53 @@ The full exporter list on 2704.1.36: `createC3MFExportOptions`,
 `createOBJExportOptions`, `createSATExportOptions`, `createSMTExportOptions`,
 `createSTEPExportOptions`, `createSTEPExportOptionsForFlatPattern`,
 `createSTLExportOptions`, `createUSDExportOptions`.
+
+---
+
+### 12. Don't query faces in the same call that created a feature
+
+**Found the hard way on Fusion 2704.1.36, building a shelled enclosure.**
+
+This looks correct and fails *silently*:
+
+```python
+fillets.add(fin)                       # add a fillet...
+top = max((f for f in b.faces          # ...then pick a face, same script
+           if f.geometry.objectType == adsk.core.Plane.classType()),
+          key=lambda f: f.boundingBox.maxPoint.z)
+shells.add(shells.createInput(collection_of(top), False))
+```
+
+No exception. `shells.add()` reports success. But the face reference was resolved
+against topology Fusion had not finished recomputing, so the shell **hollowed the
+body without removing any face** — producing a sealed box with an internal void
+instead of an open-topped enclosure. From the outside it looks perfect; a
+screenshot of an open box and a sealed box are nearly identical from above.
+
+**Rule: adding a feature and querying the resulting topology belong in separate
+`fusion_execute` calls.** Re-fetch the body *and* its faces in the new call. This
+is the practical form of "entity references go stale" — it bites hardest when the
+stale read *succeeds*.
+
+**How to catch it:** count faces and measure. A correctly shelled open box has a
+thin **rim** where the removed face was — an annulus whose area is (outer − inner)
+— not a full-area face:
+
+```python
+horiz = sorted(({"z_mm": round(f.boundingBox.minPoint.z*10, 2),
+                 "area_mm2": round(f.area*100, 1)}
+                for f in b.faces
+                if f.geometry.objectType == adsk.core.Plane.classType()
+                and abs(abs(f.geometry.normal.z) - 1.0) < 1e-6),
+               key=lambda d: d["z_mm"])
+```
+Sealed (wrong): faces at z=0, 2, 13, 15 — the z=13 inner ceiling and a
+full-area z=15 top give it away.
+Open (right): z=0 outer floor, z=2 inner floor, z=15 rim at a *fraction* of the
+outer area.
+
+Related: `ShellFeature.inputEntities` raises `RuntimeError: Didn't roll editing
+feature back` when read after the fact, so you cannot introspect what a shell
+actually received — measure the resulting geometry instead. And
+`rootComponent.name` cannot be assigned (`RuntimeError: root component name
+cannot be changed`); it follows the document name.

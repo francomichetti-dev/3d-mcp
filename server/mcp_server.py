@@ -308,8 +308,14 @@ def _bridge_request(
     return body
 
 
-def _execute(code: str, reset: bool = False) -> dict[str, Any]:
-    return _bridge_request("POST", "/execute", {"code": code, "reset": reset})
+def _execute(
+    code: str, reset: bool = False, allow_no_design: bool = False
+) -> dict[str, Any]:
+    return _bridge_request(
+        "POST",
+        "/execute",
+        {"code": code, "reset": reset, "allow_no_design": allow_no_design},
+    )
 
 
 # --------------------------------------------------------------------------
@@ -562,7 +568,9 @@ def _resolve_export_path(path: str, fmt: str, name: str) -> Path:
 
 
 @mcp.tool
-def fusion_execute(code: str, reset: bool = False) -> dict[str, Any]:
+def fusion_execute(
+    code: str, reset: bool = False, allow_no_design: bool = False
+) -> dict[str, Any]:
     """Run Python inside the live Fusion 360 session.
 
     UNITS: the API's internal length unit is CENTIMETERS regardless of the
@@ -590,15 +598,24 @@ def fusion_execute(code: str, reset: bool = False) -> dict[str, Any]:
     {"ok": false, "traceback": ..., "stdout": ...} when your code raised — a
     failing script is a normal result, read the traceback and fix the code; or
     {"ok": false, "error": ...} with NO traceback and NO stdout, which means the
-    code never ran. The usual cause is "no active Fusion design" — ask the user
-    to open or create a document and switch to the Design workspace, then retry.
+    code never ran. The usual cause is "no active Fusion design".
     Always check `error` when `traceback` is absent.
+
+    NO DOCUMENT OPEN: pass allow_no_design=true to run anyway, with `design`
+    injected as None, and create one yourself — this is the only way out of that
+    state, since the guard would otherwise block the very call that fixes it:
+        doc = app.documents.add(adsk.core.DocumentTypes.FusionDesignDocumentType)
+    Every later call then sees the new design normally. Use it ONLY to bootstrap
+    a document; leave it false otherwise so the clear error keeps protecting you.
     """
     if not isinstance(code, str) or not code.strip():
         raise ToolError("`code` must be a non-empty Python source string.")
-    log.info("fusion_execute: %d chars, reset=%s", len(code), reset)
+    log.info(
+        "fusion_execute: %d chars, reset=%s, allow_no_design=%s",
+        len(code), reset, allow_no_design,
+    )
     log.debug("fusion_execute code: %s", code[:2000])
-    return _execute(code, reset=reset)
+    return _execute(code, reset=reset, allow_no_design=allow_no_design)
 
 
 @mcp.tool
