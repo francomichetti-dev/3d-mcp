@@ -1,0 +1,14 @@
+[project]
+name = "fusion-mcp-server"
+version = "0.1.0"
+description = "MCP stdio server bridging Claude Code to the local FusionBridge Fusion 360 add-in"
+requires-python = ">=3.11"
+dependencies = [
+    "fastmcp>=3.0,<4",
+    "httpx>=0.27",
+]
+
+# Not a distributable package — `uv run mcp_server.py` only needs the
+# dependency set, so skip the build backend entirely.
+[tool.uv]
+package = false
