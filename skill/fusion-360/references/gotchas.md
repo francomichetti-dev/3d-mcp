@@ -111,7 +111,7 @@ Notes that bite:
 - Wrap `finishEdit()` in `finally`. Leaving a base feature stuck in edit state poisons every later call in the persistent bridge namespace — and the next `fusion_execute` will fail for reasons that look unrelated.
 - Add **all** the bodies you need between one `startEdit()`/`finishEdit()` pair; don't open a base feature per body.
 - The body you hand to `bRepBodies.add()` becomes a **source body**; Fusion "creates a parametric copy when exiting the base feature, called the 'result body.'" `BaseFeature.sourceBodies` returns the bodies owned by the base feature; `BaseFeature.bodies` returns the bodies created or modified by the feature. Don't assume the object returned by `add()` is the one that shows up in the timeline — re-fetch after `finishEdit()`. <!-- verified: https://help.autodesk.com/cloudhelp/ENU/Fusion-360-API/files/BaseFeature.htm -->
-- **Never** flip `design.designType` to `DirectDesignType` to dodge this: "Changing an existing design from ParametricDesignType to DirectDesignType will result in the timeline and all design history being removed and further operations will not be captured in the timeline." It is destructive for Franco's model. Use the recipe instead.
+- **Never** flip `design.designType` to `DirectDesignType` to dodge this: "Changing an existing design from ParametricDesignType to DirectDesignType will result in the timeline and all design history being removed and further operations will not be captured in the timeline." It is destructive to the user's model. Use the recipe instead.
 - Prefer real timeline features (`extrudeFeatures`, `revolveFeatures`, `combineFeatures`) over temp B-Rep whenever the shape can be modeled — they stay editable and parametric. Reach for `TemporaryBRepManager` only when there's no feature that does the job.
 
 ---
@@ -341,7 +341,7 @@ proxy = native_body.createForAssemblyContext(occ)
 
 ### 9. Bridge rules — things that will hang Fusion, not just fail
 
-These are not Fusion API gotchas; they are hard constraints of *this* bridge. Violating them requires Franco to manually restart the add-in (or Fusion), and can cost unsaved work.
+These are not Fusion API gotchas; they are hard constraints of *this* bridge. Violating them requires the user to manually restart the add-in (or Fusion), and can cost unsaved work.
 
 **Never open a modal dialog.**
 - **Symptom:** the tool call times out with "code may still be executing", and every later call returns 409. Fusion sits there with an invisible-to-you dialog waiting for a click.

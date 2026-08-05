@@ -1,7 +1,7 @@
 ## 3D-printing defaults
 
-> **⚠️ These are generic FDM community defaults, NOT Franco's recorded preferences.**
-> Franco's actual tuned values for his printer, nozzle, and filament have **not** been captured anywhere yet. Everything below is a well-established starting point drawn from common FDM practice — use it when no better number exists, state which value you used, and invite confirmation. **When Franco gives a measured value, it replaces the number here.** Where a value genuinely depends on machine, nozzle, or material, that is called out rather than papered over with a single fake-precise number.
+> **⚠️ These are generic FDM community defaults, NOT the user's measured values.**
+> The user's tuned values for their printer, nozzle, and filament have **not** been captured yet. Everything below is a well-established starting point drawn from common FDM practice — use it when no better number exists, state which value you used, and invite confirmation. **When the user gives a measured value, it replaces the number here.** Where a value genuinely depends on machine, nozzle, or material, that is called out rather than papered over with a single fake-precise number.
 >
 > Suggested one-time ask, early in a print-oriented design: *"I'm using 0.4 mm nozzle assumptions (1.6 mm walls, 0.2 mm sliding clearance, M3 heat-set boss 4.0 mm ID). Do you have measured values from a tolerance test I should use instead?"*
 

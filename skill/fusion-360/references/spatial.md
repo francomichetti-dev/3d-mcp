@@ -20,7 +20,7 @@ Fusion's default modeling orientation is **Z up**: `+Z` is up, `XY` is the groun
 
 Consequences worth internalising: on a part sitting on the ground plane, **top = max Z, front = min Y, right = max X**. Origin axes are `root.xConstructionAxis` / `yConstructionAxis` / `zConstructionAxis`.
 
-> **Caveat:** the Z-up default is a *user preference* (Preferences → Design → Default modeling orientation, "Z up" vs "Y up"). The construction planes keep their API names either way, but which one reads as "the floor" flips. If a `fusion_screenshot` of a `top` view looks like a front view, that's the cause — don't compensate blindly, tell Franco.
+> **Caveat:** the Z-up default is a *user preference* (Preferences → Design → Default modeling orientation, "Z up" vs "Y up"). The construction planes keep their API names either way, but which one reads as "the floor" flips. If a `fusion_screenshot` of a `top` view looks like a front view, that's the cause — don't compensate blindly, tell the user.
 
 ### THE Z-NEGATION RULE
 
