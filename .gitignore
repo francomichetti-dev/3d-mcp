@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+*.log
+exports/
+renders/
+.DS_Store
+reference-clones/
+.claude/scheduled_tasks.lock
