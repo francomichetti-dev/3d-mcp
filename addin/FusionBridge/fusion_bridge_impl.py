@@ -48,8 +48,12 @@ import adsk.fusion
 BRIDGE_PROTOCOL_VERSION = "1"
 
 BIND_HOST = "127.0.0.1"
-BIND_PORT = 7654
-ALLOWED_HOSTS = frozenset(("127.0.0.1:7654", "localhost:7654"))
+# Overridable only so tests can run against a scratch dir and a free port.
+# Monkeypatching these after import does not work: /reload re-executes the
+# module body and silently reverts them, which would point a test at the real
+# ~/.fusion-mcp and the production port mid-run.
+BIND_PORT = int(os.environ.get("FUSION_BRIDGE_PORT") or 7654)
+ALLOWED_HOSTS = frozenset(("127.0.0.1:%d" % BIND_PORT, "localhost:%d" % BIND_PORT))
 AUTH_HEADER = "X-Fusion-Bridge-Token"
 VERSION_HEADER = "X-Bridge-Version"
 
@@ -75,7 +79,9 @@ SCREENSHOT_MAX_HEIGHT = 1440
 SCREENSHOT_MIN_PIXELS = 64
 SCREENSHOT_VIEWS = ("front", "top", "right", "iso", "fit")
 
-STATE_DIR = os.path.join(os.path.expanduser("~"), ".fusion-mcp")
+STATE_DIR = os.environ.get("FUSION_BRIDGE_STATE_DIR") or os.path.join(
+    os.path.expanduser("~"), ".fusion-mcp"
+)
 TOKEN_PATH = os.path.join(STATE_DIR, "token")
 LOG_PATH = os.path.join(STATE_DIR, "addin.log")
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
@@ -84,6 +90,9 @@ NO_DESIGN_ERROR = (
     "no active Fusion design — open or create one and switch to the Design workspace"
 )
 BUSY_ERROR = "previous execution still running"
+# Covers both causes: a genuine stop() and a /reload in flight.  Naming only the
+# first would send a user hunting for an add-in that never went away.
+SHUTTING_DOWN_ERROR = "bridge is stopping or reloading — retry in a moment"
 TIMEOUT_GUIDANCE = (
     "code may still be executing; do not resend; check fusion_state/screenshot"
 )
@@ -367,7 +376,7 @@ def _claim_job(kind):
     job = _PendingJob(uuid.uuid4().hex, kind)
     with _state_lock:
         if _shutting_down:
-            raise _HttpError(503, "bridge is shutting down")
+            raise _HttpError(503, SHUTTING_DOWN_ERROR)
         if _active_job is not None:
             raise _HttpError(409, BUSY_ERROR)
         _pending[job.id] = job
@@ -406,7 +415,7 @@ def _marshal(job, payload):
         if _shutting_down:
             with _state_lock:
                 job.abandoned = True
-            raise _HttpError(503, "bridge is shutting down")
+            raise _HttpError(503, SHUTTING_DOWN_ERROR)
         if time.monotonic() >= deadline:
             break
 
@@ -830,7 +839,13 @@ class _BridgeHandler(BaseHTTPRequestHandler):
         except _HttpError as err:
             status = err.status
             note = err.message
-            self._send_json(err.status, {"ok": False, "error": err.message})
+            # Guarded: a BrokenPipeError raised here is a sibling of the clause
+            # below, so it would escape _dispatch entirely and the request would
+            # never reach the log line at the end.
+            try:
+                self._send_json(err.status, {"ok": False, "error": err.message})
+            except Exception as send_err:
+                note = "%s (reply not delivered: %r)" % (err.message, send_err)
         except Exception:
             note = "unhandled bridge error"
             _log("unhandled error on %s %s:\n%s" % (method, path, traceback.format_exc()), "ERROR")
@@ -856,6 +871,11 @@ class _BridgeServer(ThreadingHTTPServer):
 
         The slot is released in shutdown_request, which socketserver calls
         exactly once per accepted request on both the success and error paths.
+        The acquire here and that release are only paired because
+        ``verify_request`` is never overridden — socketserver calls
+        shutdown_request *without* process_request when it returns False, which
+        would release a slot that was never acquired.  Add request filtering and
+        this pairing has to be revisited.
         """
         if not _conn_slots.acquire(blocking=False):
             try:
@@ -869,11 +889,12 @@ class _BridgeServer(ThreadingHTTPServer):
             # slot is released for a connection that never took one.
             self.close_request(request)
             return
-        try:
-            ThreadingHTTPServer.process_request(self, request, client_address)
-        except BaseException:
-            _conn_slots.release()
-            raise
+        # No try/except releasing the slot here: socketserver's
+        # _handle_request_noblock already calls shutdown_request() on both
+        # exception paths out of process_request, so releasing again would be a
+        # second release for one acquire — and BoundedSemaphore only detects
+        # that when idle, so under load it would silently raise the cap.
+        ThreadingHTTPServer.process_request(self, request, client_address)
 
     def shutdown_request(self, request):
         try:
@@ -885,6 +906,18 @@ class _BridgeServer(ThreadingHTTPServer):
                 # BoundedSemaphore guards against an over-release; never let
                 # bookkeeping kill the serving thread.
                 _log("connection slot over-released", "WARN")
+
+    def handle_error(self, request, client_address):
+        """Keep failures in addin.log instead of Fusion's stderr.
+
+        The default implementation prints a traceback to stderr, which inside
+        Fusion goes nowhere the user will ever look — and this log is the only
+        debugging window the bridge has.
+        """
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return  # the client hung up; not our problem and not worth a line
+        _log("unhandled error in a request thread:\n%s" % traceback.format_exc(), "ERROR")
 
 
 def _health_payload():
@@ -899,10 +932,29 @@ def _health_payload():
 
 
 def _serve():
+    global _httpd, _server_thread
+
     try:
         _httpd.serve_forever(poll_interval=0.25)
     except Exception:
         _log("HTTP serve loop crashed:\n%s" % traceback.format_exc(), "ERROR")
+    finally:
+        if not _shutting_down:
+            # The accept loop died on its own.  Leaving the socket bound would
+            # let clients connect via the kernel backlog and then hang for their
+            # full timeout — including /health, the one probe meant to reveal
+            # this — which looks identical to "Fusion's main thread is stuck".
+            # Closing it gives ECONNREFUSED, which the MCP server already maps
+            # to an actionable message, and lets a later start rebind.
+            _log("HTTP serve loop exited unexpectedly; closing the socket", "ERROR")
+            server, _httpd = _httpd, None
+            _server_thread = None  # not _shutdown(): it would join this thread
+            try:
+                if server is not None:
+                    server.server_close()
+            except Exception:
+                _log("server_close() after a crashed loop failed:\n%s"
+                     % traceback.format_exc(), "WARN")
 
 
 # --------------------------------------------------------------------------- #
@@ -983,9 +1035,20 @@ def _reload_worker(generation):
             # landing in that window would be dropped as "unknown job" while the
             # restore loop puts the stale job back, wedging single-flight.
             with carried["_state_lock"]:
-                _reexec_self(module)
-                for name, value in carried.items():
-                    setattr(module, name, value)
+                try:
+                    _reexec_self(module)
+                finally:
+                    # Restored even when the re-exec raises partway through.
+                    # Re-executing the body rebinds _app, _custom_event and
+                    # _handlers to their empty defaults, and _handlers is the
+                    # ONLY strong reference to the handler Fusion holds weakly —
+                    # so skipping this on the error path leaves a listener that
+                    # answers /health but can never reach the main thread again,
+                    # and /reload itself starts refusing with 503.  A pre-compile
+                    # cannot prevent this: it catches SyntaxError, not a NameError
+                    # or bad import raised while the module body runs.
+                    for name, value in carried.items():
+                        setattr(module, name, value)
             module._start(register_event=False)
             module._log("fusion_bridge_impl reloaded")
         except Exception:
@@ -1081,6 +1144,13 @@ def _start_locked(register_event):
 
 def _register_event():
     global _custom_event
+
+    # A crashed accept loop leaves _httpd None, so "crash, then hit Run" reaches
+    # here a second time.  Without this the list accumulates a dead handler per
+    # cycle, and if a re-registered event ever came back carrying its previous
+    # handlers, two live handlers would dispatch the same job and execute the
+    # user's CAD code twice.
+    del _handlers[:]
     try:
         # A crashed session can leave a stale registration behind.
         try:
