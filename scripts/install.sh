@@ -8,6 +8,11 @@
 set -euo pipefail
 umask 077
 
+# set -u catches an unset HOME but not an empty one — and an empty HOME would
+# collapse every path below to the filesystem root (mkdir/symlink under /).
+: "${HOME:?HOME must be set to a non-empty path}"
+[ -d "${HOME}" ] || { printf 'ERROR: HOME (%s) is not a directory\n' "${HOME}" >&2; exit 1; }
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
@@ -72,6 +77,11 @@ info "add-ins: ${ADDINS_DIR}"
 
 step "Preparing ${CONFIG_DIR}"
 
+if [ -L "${CONFIG_DIR}" ]; then
+    die "${CONFIG_DIR} is a symlink.
+Refusing to create the token under a redirected path. Move it aside, then re-run."
+fi
+
 # shellcheck disable=SC2174  # -m covers creation; the chmod covers a pre-existing dir
 mkdir -p -m 700 "${CONFIG_DIR}"
 chmod 700 "${CONFIG_DIR}"
@@ -88,9 +98,18 @@ if [ "${ROTATE_TOKEN}" -eq 1 ]; then
     new_token "${tmp_token}"
     mv -f "${tmp_token}" "${TOKEN_FILE}"
     info "token rotated (the add-in picks it up on the next request)"
-elif [ -e "${TOKEN_FILE}" ]; then
+elif [ -L "${TOKEN_FILE}" ]; then
+    # -e/chmod both follow symlinks: a symlinked token would chmod 0600 onto an
+    # arbitrary target and make the add-in read that file's contents as the
+    # bridge token. Same rule as the add-in link below — never follow, never delete.
+    die "${TOKEN_FILE} is a symlink, not a token file.
+Refusing to chmod or read through it. Move it aside, then re-run this script."
+elif [ -f "${TOKEN_FILE}" ]; then
     chmod 600 "${TOKEN_FILE}"
     info "existing token preserved"
+elif [ -e "${TOKEN_FILE}" ]; then
+    die "${TOKEN_FILE} exists but is not a regular file.
+Refusing to touch it. Move it aside, then re-run this script."
 else
     new_token "${TOKEN_FILE}"
     info "token created (${TOKEN_FILE}, mode 0600)"
@@ -124,6 +143,20 @@ step "Preparing the exports directory"
 mkdir -p "${EXPORTS_DIR}"
 info "${EXPORTS_DIR}"
 
+# --- server environment ------------------------------------------------------
+
+step "Building the MCP server environment (server/.venv)"
+
+# The ONE intentional, user-initiated network step in this project: uv resolves
+# and downloads the server's dependencies here, now. Every later session start
+# runs with --frozen --no-sync, so it uses this .venv and never touches an
+# index again — that is what keeps "zero external calls from our code" true by
+# construction rather than by hope.
+info "this step downloads dependencies (the only network access in the install)"
+uv sync --directory "${REPO_DIR}/server" \
+    || die "uv sync failed in ${REPO_DIR}/server — check your network and re-run."
+info "environment ready: ${REPO_DIR}/server/.venv"
+
 # --- MCP registration --------------------------------------------------------
 
 step "Registering the MCP server with Claude Code (user scope)"
@@ -135,22 +168,90 @@ if claude mcp get "${MCP_NAME}" >/dev/null 2>&1; then
     info "removed previous registration"
 fi
 
-claude mcp add "${MCP_NAME}" -s user -- uv run --directory "${REPO_DIR}/server" mcp_server.py
-info "registered as '${MCP_NAME}' (absolute path baked in)"
+# --frozen --no-sync: start from the .venv built above without re-resolving or
+# re-checking the lockfile, so a routine session start contacts no package index.
+claude mcp add "${MCP_NAME}" -s user -- \
+    uv run --frozen --no-sync --directory "${REPO_DIR}/server" mcp_server.py
+info "registered as '${MCP_NAME}' (absolute path baked in, offline start)"
 
 # --- manual step -------------------------------------------------------------
 
 cat <<EOF
 
-Install complete. One manual step is left, inside Fusion:
+Files are in place. One manual step is left, inside Fusion:
 
   Tools → Add-Ins → select FusionBridge → Run
   (auto-starts on later launches — runOnStartup is in the manifest)
 
-Then verify the bridge is answering:
+The verification command, if you ever need it by hand:
 
-  curl -sS -H "X-Fusion-Bridge-Token: \$(cat ${TOKEN_FILE})" ${BRIDGE_URL}
+  curl -fsS -H "X-Fusion-Bridge-Token: \$(cat ${TOKEN_FILE})" ${BRIDGE_URL}
 
 A healthy bridge replies with JSON containing "ok": true and "bridge_version": "1".
-If it does not, check ${CONFIG_DIR}/addin.log.
 EOF
+
+# --- verification ------------------------------------------------------------
+
+step "Verifying the bridge (${BRIDGE_URL}, up to 60s — do the step above now)"
+
+verified=0
+mismatch=""
+
+if ! command -v curl >/dev/null 2>&1; then
+    info "curl not found — skipping automatic verification"
+else
+    token="$(cat "${TOKEN_FILE}")"
+    attempt=0
+    while [ "${attempt}" -lt 30 ]; do
+        attempt=$((attempt + 1))
+        if reply="$(curl -fsS --max-time 5 -H "X-Fusion-Bridge-Token: ${token}" "${BRIDGE_URL}" 2>/dev/null)"; then
+            case "${reply}" in
+                *'"bridge_version": "1"'*|*'"bridge_version":"1"'*|\
+                *'"bridge_version": 1'*|*'"bridge_version":1'*)
+                    verified=1
+                    break
+                    ;;
+                *)
+                    mismatch="${reply}"
+                    break
+                    ;;
+            esac
+        fi
+        sleep 2
+    done
+    unset token
+fi
+
+if [ "${verified}" -eq 1 ]; then
+    cat <<EOF
+
+Install complete and VERIFIED — the bridge answered on 127.0.0.1:7654
+with bridge_version 1, using the token in ${TOKEN_FILE}.
+
+Open a new Claude Code session anywhere and the 'fusion' tools are available.
+EOF
+elif [ -n "${mismatch}" ]; then
+    cat <<EOF
+
+Install finished, but the bridge is NOT verified: it answered with an
+unexpected protocol version.
+
+  ${mismatch}
+
+This server expects bridge_version 1. Restart the add-in inside Fusion
+(Tools → Add-Ins → FusionBridge → Stop, then Run) so it picks up the
+current code, then re-run the curl command above.
+Details: ${CONFIG_DIR}/addin.log
+EOF
+else
+    cat <<EOF
+
+Install finished, but the bridge is NOT verified — nothing answered on
+127.0.0.1:7654 within 60s. That is expected if Fusion is not open yet.
+
+  1. Open Fusion, then: Tools → Add-Ins → select FusionBridge → Run
+  2. Re-run the curl command printed above (or just re-run this script)
+
+If it still does not answer, the reason is in ${CONFIG_DIR}/addin.log.
+EOF
+fi

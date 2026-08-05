@@ -63,11 +63,19 @@ def _bootstrap_failure(stage, detail):
 
 def _load_impl():
     """Import the implementation module from this add-in's own directory."""
-    existing = sys.modules.get(_IMPL_NAME)
-    if existing is not None:
-        return existing
     here = os.path.dirname(os.path.abspath(__file__))
     path = os.path.join(here, _IMPL_NAME + ".py")
+    existing = sys.modules.get(_IMPL_NAME)
+    if existing is not None:
+        # Whichever add-in loads a given name first wins it for the whole
+        # process, so trusting the key without checking where it came from would
+        # leave exactly the collision this namespaced name is meant to prevent.
+        origin = os.path.abspath(getattr(existing, "__file__", "") or "")
+        if origin == path:
+            return existing
+        raise ImportError(
+            "sys.modules[%r] belongs to %r, not this add-in" % (_IMPL_NAME, origin or None)
+        )
     spec = importlib.util.spec_from_file_location(_IMPL_NAME, path)
     if spec is None or spec.loader is None:
         raise ImportError("could not load %s from %s" % (_IMPL_NAME, path))

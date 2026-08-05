@@ -61,6 +61,12 @@ SCREENSHOT_MIN_SIDE = 64
 STATE_ENTRY_CAP = 50
 LOG_MAX_BYTES = 5 * 1024 * 1024
 
+# Mirrors the add-in's body cap. Enforced here as well because the add-in
+# answers 413 *before* draining the socket and closes the connection, so a
+# too-large POST is reset mid-write and httpx raises WriteError /
+# RemoteProtocolError instead of ever handing us the 413.
+MAX_BODY_BYTES = 5 * 1024 * 1024
+
 VIEWS = ("front", "top", "right", "iso", "fit")
 FORMATS = ("stl", "step", "3mf", "usd")
 
@@ -82,9 +88,15 @@ MSG_NO_TOKEN = (
     "to create it, then restart the FusionBridge add-in."
 )
 MSG_BAD_TOKEN = (
-    f"Bridge rejected the token (401). {TOKEN_PATH} no longer matches the token "
-    "the add-in loaded — restart the add-in (Utilities → Add-Ins → stop/run), "
-    "or re-run scripts/install.sh."
+    f"Bridge rejected the token (401). The add-in re-reads {TOKEN_PATH} on every "
+    "request, so restarting it changes nothing: either that file is unreadable "
+    "from Fusion's process, or this server is holding an older cached value. "
+    "Check ~/.fusion-mcp/addin.log, then re-run scripts/install.sh (or "
+    "scripts/install.sh --rotate-token) and retry."
+)
+MSG_TOO_LARGE = (
+    "Request body too large (413) — the bridge caps bodies at 5 MB. "
+    "Split the work across several calls."
 )
 MSG_NOT_BRIDGE = (
     f"Something is listening on {BRIDGE_BASE_URL} but it is not FusionBridge "
@@ -213,14 +225,18 @@ def _raise_for_status(response: httpx.Response, path: str) -> None:
             "interrupted; use fusion_screenshot to see where it got to."
         )
     if status == 413:
-        raise ToolError(
-            "Request body too large (413) — the bridge caps bodies at 5 MB. "
-            "Split the work across several calls."
-        )
+        # Backstop: _bridge_request rejects oversized payloads before they are
+        # sent, so this only fires if the add-in's cap is tighter than ours.
+        raise ToolError(MSG_TOO_LARGE)
     if status == 400:
         raise ToolError(f"Bridge rejected the request (400): {_detail(response)}")
     if status == 504:
         raise ToolError(MSG_TIMEOUT)
+    if status == 503:
+        raise ToolError(
+            "FusionBridge add-in is stopped or shutting down (503) — run it from "
+            "Utilities → Add-Ins (select FusionBridge → Run), then retry."
+        )
     raise ToolError(f"Bridge returned HTTP {status}: {_detail(response)}")
 
 
@@ -232,6 +248,22 @@ def _bridge_request(
     Every failure that is not "your Fusion code raised" surfaces as ToolError
     with an actionable message.
     """
+    body_bytes: bytes | None = None
+    if method == "POST":
+        # Same compact encoding httpx uses for `json=`, so this is the size that
+        # would actually go on the wire.
+        body_bytes = json.dumps(
+            payload or {}, ensure_ascii=False, separators=(",", ":")
+        ).encode("utf-8")
+        if len(body_bytes) > MAX_BODY_BYTES:
+            log.warning(
+                "refusing oversized %s body: %d bytes > %d",
+                path,
+                len(body_bytes),
+                MAX_BODY_BYTES,
+            )
+            raise ToolError(MSG_TOO_LARGE)
+
     headers = {AUTH_HEADER: _read_token(), "Accept": "application/json"}
     client = _get_client()
     started = time.monotonic()
@@ -538,9 +570,13 @@ def fusion_execute(code: str, reset: bool = False) -> dict[str, Any]:
     runs on Fusion's main thread and cannot be cancelled; the 60 s timeout only
     abandons the wait. Split long operations across several calls.
 
-    Returns {"ok": true, "result": ..., "stdout": ...}, or
+    Returns {"ok": true, "result": ..., "stdout": ...}; or
     {"ok": false, "traceback": ..., "stdout": ...} when your code raised — a
-    failing script is a normal result, read the traceback and fix the code.
+    failing script is a normal result, read the traceback and fix the code; or
+    {"ok": false, "error": ...} with NO traceback and NO stdout, which means the
+    code never ran. The usual cause is "no active Fusion design" — ask the user
+    to open or create a document and switch to the Design workspace, then retry.
+    Always check `error` when `traceback` is absent.
     """
     if not isinstance(code, str) or not code.strip():
         raise ToolError("`code` must be a non-empty Python source string.")
@@ -564,7 +600,9 @@ def fusion_screenshot(
     (keep the current camera orientation, just frame everything). Every view
     fits the model in the viewport before capturing.
 
-    Size defaults to 1200x800; the maximum is 1920x1440.
+    Size defaults to 1200x800. Width must be 64..1920 and height 64..1440;
+    values outside that range are REJECTED with an error, never clamped, so
+    pass a size inside the range rather than relying on a fallback.
     """
     if view not in VIEWS:
         raise ToolError(f"Unknown view {view!r} — valid views: {', '.join(VIEWS)}.")
@@ -672,6 +710,20 @@ def fusion_state() -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 
+class _SecureRotatingFileHandler(RotatingFileHandler):
+    """RotatingFileHandler that creates every file it opens 0600.
+
+    logging's own _open() uses builtin open(), so a one-shot chmod after
+    construction is lost at the first rollover: the fresh server.log lands at
+    whatever umask allows (0644 in practice). server.log carries the Fusion
+    Python Claude sent — design data — so the mode has to hold across rollovers.
+    """
+
+    def _open(self):
+        fd = os.open(self.baseFilename, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+        return os.fdopen(fd, self.mode.replace("b", "") or "a", encoding=self.encoding)
+
+
 def _configure_logging() -> None:
     """Log to stderr always, and to ~/.fusion-mcp/server.log when possible.
 
@@ -689,12 +741,14 @@ def _configure_logging() -> None:
 
     try:
         FUSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-        file_handler = RotatingFileHandler(
+        # mkdir(mode=...) is a no-op on a directory that already exists, so
+        # repair the mode unconditionally.
+        os.chmod(FUSION_DIR, 0o700)
+        file_handler = _SecureRotatingFileHandler(
             SERVER_LOG, maxBytes=LOG_MAX_BYTES, backupCount=2, encoding="utf-8"
         )
         file_handler.setFormatter(formatter)
         log.addHandler(file_handler)
-        os.chmod(SERVER_LOG, 0o600)
     except OSError as exc:
         log.warning("file logging disabled (%s): %s", SERVER_LOG, exc)
 
