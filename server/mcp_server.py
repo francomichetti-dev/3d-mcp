@@ -233,9 +233,14 @@ def _raise_for_status(response: httpx.Response, path: str) -> None:
     if status == 504:
         raise ToolError(MSG_TIMEOUT)
     if status == 503:
+        # 503 covers a reload in flight as well as a genuine stop, and a reload
+        # clears in a moment — so lead with the retry and keep the add-in advice
+        # as the fallback rather than sending the user to a dialog they may not
+        # need.
         raise ToolError(
-            "FusionBridge add-in is stopped or shutting down (503) — run it from "
-            "Utilities → Add-Ins (select FusionBridge → Run), then retry."
+            f"FusionBridge is stopping or reloading (503): {_detail(response)} "
+            "Retry in a moment; if it persists, run the add-in from Utilities → "
+            "Add-Ins (select FusionBridge → Run)."
         )
     raise ToolError(f"Bridge returned HTTP {status}: {_detail(response)}")
 
