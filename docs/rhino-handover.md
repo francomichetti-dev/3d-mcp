@@ -113,12 +113,33 @@ binds loopback only and refuses any request without it.
 
 ---
 
+## Status: the chain WORKS end to end
+
+Proven on your machine:
+
+```
+submit  -> broker -> poller (Rhino UI thread) -> result
+```
+
+* `state` returns the live document: units, tolerance, object count, layers.
+* `execute` runs arbitrary Rhino Python. A sphere and a box were built this
+  way, `before: 0 -> after: 2`, stdout captured, and they are still in the
+  document.
+* Rhino stayed up throughout - no crashes with this design.
+
+The broker runs as a scheduled task (`scripts/broker-service.ps1`), because a
+process launched over SSH dies when the session ends: Windows puts it in a job
+object and kills the tree. The scheduled task is owned by the task scheduler
+instead, and survives.
+
 ## What would genuinely help
 
-**The broker will not stay running when launched over SSH** — Windows kills the
-process tree when the session ends. It needs to run as something that persists:
-a scheduled task, a service, or simply a terminal window you leave open. That is
-the current blocker and it is a Windows problem, not a Rhino one.
+**`rs.Command` inside a timer tick does not behave.** The viewport-capture job
+never returned and took the broker with it. Everything else works, so this is
+isolated to running a Rhino *command* (as opposed to RhinoCommon API calls)
+from the poller. Capturing the viewport is the one Fusion feature Rhino still
+lacks, so a way to do it that does not re-enter the command pipeline would be
+genuinely valuable.
 
 After that: `rhino-poller.py` has handlers for `execute` and `state`. Adding
 `screenshot` (via `_-ViewCaptureToFile`) and `export` would bring Rhino to
