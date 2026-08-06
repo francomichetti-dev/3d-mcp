@@ -14,17 +14,27 @@ command -v uv >/dev/null 2>&1 || {
     exit 1
 }
 
-# Run from agent/ so its venv is the one uv picks up: the tests import
-# agent_service, which needs the SDK and aiohttp.
-[ -d "${REPO_DIR}/agent/.venv" ] || {
-    printf 'Setting up agent/.venv (first run)\n'
-    uv sync --directory "${REPO_DIR}/agent" --quiet
-}
+# Two environments, because the two halves have different dependencies: the
+# chat service needs the Agent SDK and aiohttp, the MCP server needs fastmcp.
+# Each test runs under whichever one it imports from.
+for project in agent server; do
+    [ -d "${REPO_DIR}/${project}/.venv" ] || {
+        printf 'Setting up %s/.venv (first run)\n' "${project}"
+        uv sync --directory "${REPO_DIR}/${project}" --quiet
+    }
+done
 
 status=0
 for test_file in "${SCRIPT_DIR}"/test_*.py; do
-    printf '\n=== %s ===\n' "$(basename "${test_file}")"
-    uv run --frozen --no-sync --directory "${REPO_DIR}/agent" python "${test_file}" || status=1
+    # A test that imports agent_service needs the agent env; everything else
+    # (bridge, installer, MCP server) runs under the server env.
+    if grep -q "^import agent_service\|^import agent_service as" "${test_file}"; then
+        project=agent
+    else
+        project=server
+    fi
+    printf '\n=== %s  [%s env] ===\n' "$(basename "${test_file}")" "${project}"
+    uv run --frozen --no-sync --directory "${REPO_DIR}/${project}" python "${test_file}" || status=1
 done
 
 printf '\n'

@@ -23,8 +23,12 @@ jobs:
       - name: Set up Python
         run: uv python install 3.11
 
-      - name: Sync the agent environment
-        run: uv sync --directory agent
+      # Two environments: the chat service needs the Agent SDK and aiohttp, the
+      # MCP server needs fastmcp. tests/run.sh picks per test.
+      - name: Sync both environments
+        run: |
+          uv sync --directory agent
+          uv sync --directory server
 
       - name: Run the offline suite
         run: tests/run.sh
