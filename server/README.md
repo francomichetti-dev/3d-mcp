@@ -79,8 +79,10 @@ bridge will say so rather than misbehaving quietly.
 
 ## Requirements
 
-macOS with Autodesk Fusion installed and launched at least once, and Python 3.11+. The server and
-add-in are plain Python; what is macOS-specific is knowing where Fusion keeps its add-ins.
+macOS with Autodesk Fusion installed and launched at least once, and Python 3.11+.
+
+Any MCP client works - this server imports nothing Claude-specific. The server and add-in are plain
+Python; what is macOS-specific is only knowing where Fusion keeps its add-ins.
 
 ## More
 

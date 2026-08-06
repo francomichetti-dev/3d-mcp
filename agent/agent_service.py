@@ -968,10 +968,15 @@ async def handle_send(request: web.Request) -> web.Response:
     active = await registry.resolve_active()
     key = (active or {}).get("key")
     if not key:
-        return web.json_response({
-            "ok": False,
-            "error": "no design is open in Fusion — open or create one first",
-        }, status=409)
+        # Distinguish "Fusion is not there" from "Fusion is there but empty".
+        # Both used to say "open or create a design", which reads as nonsense
+        # when Fusion is not even running — the first thing a new user hits.
+        if registry.bridge_ok is False:
+            error = ("Fusion is not reachable — open Fusion, then "
+                     "Utilities → Add-Ins → FusionBridge → Run.")
+        else:
+            error = "No design is open in Fusion — open or create one first."
+        return web.json_response({"ok": False, "error": error}, status=409)
 
     await registry.set_active(active)
     session = registry.session_for(key, active.get("name"))

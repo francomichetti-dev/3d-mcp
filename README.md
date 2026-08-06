@@ -214,21 +214,15 @@ A sample of what it documents, all verified against a running Fusion 2704:
 ## Requirements
 
 - macOS with Autodesk Fusion installed and launched at least once
-- [`uv`](https://docs.astral.sh/uv/), `python3`, and the `claude` CLI on `PATH`
-- For the chat panel, a `claude` CLI that is already signed in — the agent service runs the Claude
-  Agent SDK under your existing credentials and never asks for a key of its own
+- [`uv`](https://docs.astral.sh/uv/) and `python3` on `PATH`
+- **Any MCP client.** The server imports nothing Claude-specific, so Claude Desktop, Claude Code,
+  Cline, Zed and anything else that speaks MCP all work. The `claude` CLI is optional — it only
+  registers the server automatically and enables the `/fusion-chat` slash command.
+- **For the chat panel only:** credentials for the Claude Agent SDK — either a signed-in `claude`
+  CLI or an `ANTHROPIC_API_KEY`. The SDK ships its own CLI, so a separate Claude Code install is
+  not required.
 
 ## Install
-
-**Just the MCP tools**, from PyPI — no checkout needed:
-
-```sh
-uvx fusion-3d-mcp install          # copies the add-in into Fusion, creates the token
-claude mcp add fusion -- uvx fusion-3d-mcp
-uvx fusion-3d-mcp status           # check it
-```
-
-**Everything**, including the docked chat panel, the knowledge skill and the `/fusion-chat` command:
 
 ```sh
 git clone https://github.com/francomichetti-dev/3d-mcp.git
@@ -236,11 +230,32 @@ cd 3d-mcp
 scripts/install.sh
 ```
 
-The rest of this section describes the checkout install. Note the two put the add-in in place
-differently: the checkout **symlinks** it so your edits are live, while the PyPI package **copies**
-it — a `uvx` install lives in a disposable cache that a symlink would outlive. So after upgrading
-the package, re-run `uvx fusion-3d-mcp install`; if you forget, the version check between server and
-bridge says so rather than misbehaving quietly.
+That is the whole install: MCP tools, the docked chat panel, and the Fusion knowledge skill.
+
+> **Not yet on PyPI.** The package is built and its release pipeline is in place, but
+> `fusion-3d-mcp` has not been published — so `uvx fusion-3d-mcp` will not work until it is. Once
+> it is, `uvx fusion-3d-mcp install` gives you the MCP tools with no checkout. The two differ in
+> one way worth knowing: a checkout **symlinks** the add-in so your edits are live, while the
+> package **copies** it, because a `uvx` install lives in a disposable cache a symlink would
+> outlive.
+
+### Using it without the `claude` CLI
+
+`install.sh` finishes fine without it and prints a ready-to-paste config with the absolute path
+already filled in:
+
+```json
+"mcpServers": {
+  "fusion": {
+    "command": "uv",
+    "args": ["run", "--frozen", "--no-sync",
+             "--directory", "/absolute/path/to/3d-mcp/server", "fusion-3d-mcp"]
+  }
+}
+```
+
+Claude Desktop keeps that in `~/Library/Application Support/Claude/claude_desktop_config.json`.
+Other clients have their own location — the shape is the same.
 
 > `install.sh` bakes the **absolute** path of this checkout into the MCP registration and
 > symlinks the add-in from it. Moving or renaming the directory afterwards breaks both —
