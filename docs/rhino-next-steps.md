@@ -1,0 +1,125 @@
+# Rhino bridge — the blocker, and how to attack it
+
+Everything below was established on real hardware (Rhino 8.32.26160, Windows 11)
+during a live spike. Read this before writing any Rhino code; it will save you
+the five dead ends it cost us.
+
+## What already works
+
+- **A background HTTP listener survives inside Rhino.** Start it from a script,
+  let the script return, and it keeps answering. Proven: `/ping` responded long
+  after the starting script had finished.
+- **Real geometry can be built from Python inside Rhino** — a car with a body
+  filleted on 12 edges, then captured and inspected remotely.
+- **State can outlive a script run** via `scriptcontext.sticky`. Attaching to
+  the `Rhino` module does not work: it is a .NET namespace and rejects `setattr`
+  with *"type does not support setting attributes"*.
+
+## The blocker
+
+**`RhinoApp.InvokeOnUiThread` blocks the caller.** It behaves like
+`Control.Invoke` (synchronous), not `BeginInvoke` (fire-and-forget).
+
+Consequences, both observed:
+
+1. Called **from the UI thread**, it deadlocks instantly. A `rhinocode` script
+   runs *on* the UI thread — `RhinoApp.InvokeRequired` is `False` — so a script
+   that calls it never returns. This is what hung five separate probes, and it
+   was never Rhino misbehaving.
+2. Called **from a background thread** while Rhino sat idle, the callback still
+   never ran. `/state` and `/make` on the mini-bridge both timed out, and no
+   callback marker was ever written.
+
+So the marshaling primitive the Fusion bridge relies on has no direct
+equivalent, and that is the entire remaining problem.
+
+## The most promising fix: an Idle-driven queue
+
+Rhino raises `RhinoApp.Idle` from its own message loop, so a handler attached to
+it runs **on the UI thread with nobody having to marshal anything**. That turns
+the problem inside out: instead of pushing work onto the UI thread, leave work
+in a queue and let the UI thread collect it.
+
+Sketch:
+
+```python
+import queue, threading
+import Rhino
+
+_jobs = queue.Queue()          # (callable, Event, result-box)
+
+def _on_idle(sender, args):
+    # runs ON the UI thread, courtesy of Rhino's own loop
+    while True:
+        try:
+            fn, done, box = _jobs.get_nowait()
+        except queue.Empty:
+            return
+        try:
+            box["value"] = fn()
+        except BaseException as exc:
+            box["error"] = repr(exc)
+        finally:
+            done.set()
+
+Rhino.RhinoApp.Idle += _on_idle          # attach once, at startup
+
+def marshal(fn, timeout=60.0):
+    """Call from a LISTENER thread. Never from the UI thread."""
+    done, box = threading.Event(), {}
+    _jobs.put((fn, done, box))
+    box["serviced"] = done.wait(timeout)
+    return box
+```
+
+This mirrors what FusionBridge does with `registerCustomEvent` /
+`fireCustomEvent`: the HTTP thread hands work over and waits on a per-request
+event while the application's own loop performs it.
+
+**What to verify, in this order:**
+
+1. Does `Idle` fire at all when Rhino is idle and unfocused? If it only fires on
+   user interaction, this approach needs a nudge — `RhinoApp.Wait()` from the
+   listener thread, or a timer.
+2. Does the handler actually run on the UI thread? Compare
+   `threading.get_ident()` inside it against a known UI-thread id.
+3. Can it create geometry and return a value to the waiting listener thread?
+4. Does it stay attached across documents opening and closing?
+
+If `Idle` does not fire reliably, the fallback is a **real Rhino plugin** loaded
+at startup rather than a script-hosted listener, which gets proper lifecycle
+hooks.
+
+## Rules that cost us time
+
+- **Never call `InvokeOnUiThread` from a `rhinocode` script.** It is the UI
+  thread. Instant deadlock.
+- **Never wait on the UI thread for background work.** Same reason.
+- **`rhinocode script` returns no stdout** — not even tracebacks. A failing
+  script looks identical to silence. Log to a file and catch your own
+  exceptions, or you will be debugging blind.
+- **`ViewCapture.CaptureToBitmap` is not safe off the UI thread.** Use
+  `rs.Command('_-ViewCaptureToFile ...')`, which marshals itself.
+- **`rs.Command` returns `False` while succeeding.** Check the artefact.
+- **`rs.PurgeLayer` cannot purge the *current* layer.** Switch to Default first
+  or geometry silently accumulates.
+- **The scripting component loads only after `ScriptEditor` runs in the GUI**,
+  once per Rhino session, and the first run builds the Python environment
+  (about a minute — it looks like a hang).
+
+## Files here
+
+| | |
+| --- | --- |
+| `rhino-bridge-start.py` | starts the listener and returns — the shape that works |
+| `rhino-marshal-diagnose.py` | fires callbacks without waiting; proves what runs |
+| `rhino-car-test.py` | builds geometry and captures the viewport |
+| `rhino-probe2.py` | bounded environment checks |
+
+Run them with:
+
+```
+"C:\Program Files\Rhino 8\System\RhinoCode.exe" script C:\path\to\script.py
+```
+
+Each writes a `*-output.txt` beside itself. Read that, not the console.
