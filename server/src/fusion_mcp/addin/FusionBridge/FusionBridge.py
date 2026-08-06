@@ -70,8 +70,15 @@ def _load_impl():
         # Whichever add-in loads a given name first wins it for the whole
         # process, so trusting the key without checking where it came from would
         # leave exactly the collision this namespaced name is meant to prevent.
-        origin = os.path.abspath(getattr(existing, "__file__", "") or "")
-        if origin == path:
+        #
+        # Compared by realpath, not abspath: a checkout install symlinks this
+        # add-in into Fusion's AddIns folder, and abspath does not follow
+        # symlinks — so the same file reached through the link and through the
+        # repo produced two different strings and the add-in refused to load
+        # itself.  realpath collapses both to one identity while still catching
+        # a genuinely different module that grabbed the name.
+        origin = getattr(existing, "__file__", "") or ""
+        if origin and os.path.realpath(origin) == os.path.realpath(path):
             return existing
         raise ImportError(
             "sys.modules[%r] belongs to %r, not this add-in" % (_IMPL_NAME, origin or None)

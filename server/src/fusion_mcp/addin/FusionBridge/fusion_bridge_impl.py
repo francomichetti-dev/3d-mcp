@@ -1167,10 +1167,22 @@ class _BridgeHandler(BaseHTTPRequestHandler):
                 self._send_json(500, {"ok": False, "error": "internal bridge error"})
             except Exception:
                 pass
-        _log(
-            "%s %s -> %d body=%dB %.3fs %s"
-            % (method, path, status, body_size, time.monotonic() - started, note)
+        # The chat panel polls /document once a second for as long as it is
+        # open, and logging every successful poll drowns the file: measured at
+        # 10,976 of 11,046 lines, i.e. 99%, which cost this log its only real
+        # job — being the one place an add-in failure is visible, since Fusion
+        # swallows those silently. Anything that is not a routine successful
+        # poll is still logged, so a 401, a 503 or a closed-document event is
+        # never hidden by this.
+        routine_poll = (
+            method == "GET" and path == "/document" and status == 200
+            and "closed=0" in note
         )
+        if not routine_poll:
+            _log(
+                "%s %s -> %d body=%dB %.3fs %s"
+                % (method, path, status, body_size, time.monotonic() - started, note)
+            )
 
 
 class _BridgeServer(ThreadingHTTPServer):
