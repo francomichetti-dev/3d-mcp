@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NIBBLER</title>
+<style>
+  :root {
+    --bg: #2b2f33; --panel: #34383d; --line: #45494f;
+    --fg: #e6e8ea; --dim: #9aa0a6; --accent: #7cc7ff;
+    --warn: #ffb454; --danger: #ff6b6b; --ok: #7ddc9a;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font: 13px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    display: flex; flex-direction: column;
+  }
+  header {
+    padding: 10px 12px; border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 8px; flex: none;
+  }
+  header .name { font-weight: 600; letter-spacing: .04em; }
+  header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
+  header .dot.live { background: var(--ok); }
+  header .spacer { flex: 1; }
+  header button {
+    background: transparent; border: 1px solid var(--line); color: var(--dim);
+    border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer;
+  }
+  header button:hover { color: var(--fg); border-color: var(--dim); }
+
+  #log { flex: 1; overflow-y: auto; padding: 12px; }
+  .msg { margin-bottom: 12px; }
+  .msg.you { color: var(--fg); }
+  .msg.you .who { color: var(--accent); }
+  .who { font-size: 11px; text-transform: uppercase; letter-spacing: .06em;
+         color: var(--dim); margin-bottom: 3px; }
+  .body { white-space: pre-wrap; word-wrap: break-word; }
+
+  .tool {
+    font-size: 11px; color: var(--dim); border-left: 2px solid var(--line);
+    padding: 2px 0 2px 8px; margin: 4px 0; font-family: ui-monospace, monospace;
+  }
+  .tool b { color: var(--accent); font-weight: 500; }
+
+  .shot { margin: 8px 0; }
+  .shot img { width: 100%; border: 1px solid var(--line); border-radius: 5px; display: block; }
+
+  .perm {
+    border: 1px solid var(--warn); border-radius: 6px; padding: 10px;
+    margin: 8px 0; background: rgba(255,180,84,.07);
+  }
+  .perm .title { color: var(--warn); font-weight: 600; margin-bottom: 4px; }
+  .perm pre {
+    background: #24272a; border-radius: 4px; padding: 8px; overflow-x: auto;
+    font-size: 11px; max-height: 180px; margin: 8px 0 10px;
+  }
+  .perm button { border: 0; border-radius: 5px; padding: 5px 12px; cursor: pointer;
+                 font-size: 12px; margin-right: 6px; }
+  .allow { background: var(--ok); color: #14301f; }
+  .deny  { background: var(--danger); color: #3a1414; }
+
+  .err { color: var(--danger); }
+  .status { color: var(--dim); font-style: italic; font-size: 12px; }
+
+  footer { flex: none; border-top: 1px solid var(--line); padding: 8px; }
+  #row { display: flex; gap: 6px; align-items: flex-end; }
+  textarea {
+    flex: 1; resize: none; background: var(--panel); color: var(--fg);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px;
+    font: inherit; max-height: 120px; min-height: 36px;
+  }
+  textarea:focus { outline: none; border-color: var(--accent); }
+  #send { background: var(--accent); color: #0d2233; border: 0; border-radius: 6px;
+          padding: 9px 14px; font-weight: 600; cursor: pointer; }
+  #send:disabled { opacity: .45; cursor: default; }
+</style>
+</head>
+<body>
+  <header>
+    <span class="dot" id="dot"></span>
+    <span class="name">NIBBLER</span>
+    <span class="spacer"></span>
+    <button id="stop">Stop</button>
+    <button id="shot">Screenshot</button>
+  </header>
+
+  <div id="log">
+    <div class="status">Connecting…</div>
+  </div>
+
+  <footer>
+    <div id="row">
+      <textarea id="input" rows="1" placeholder="Describe what to model, or how to change it…"></textarea>
+      <button id="send">Send</button>
+    </div>
+  </footer>
+
+<script>
+const log = document.getElementById('log');
+const input = document.getElementById('input');
+const send = document.getElementById('send');
+const dot = document.getElementById('dot');
+let busy = false, current = null;
+
+function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 60; }
+function scroll() { log.scrollTop = log.scrollHeight; }
+
+function block(cls, who) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + cls;
+  if (who) { const w = document.createElement('div'); w.className = 'who'; w.textContent = who; d.appendChild(w); }
+  const b = document.createElement('div'); b.className = 'body'; d.appendChild(b);
+  log.appendChild(d); return b;
+}
+function status(text, cls) {
+  const d = document.createElement('div');
+  d.className = 'status ' + (cls || ''); d.textContent = text;
+  log.appendChild(d); scroll(); return d;
+}
+
+async function viewport() {
+  const wrap = document.createElement('div');
+  wrap.className = 'shot';
+  const img = document.createElement('img');
+  img.src = '/viewport?view=iso&t=' + Date.now();
+  img.onerror = () => wrap.remove();
+  wrap.appendChild(img); log.appendChild(wrap); scroll();
+}
+
+function permission(ev) {
+  const box = document.createElement('div');
+  box.className = 'perm';
+  const t = document.createElement('div');
+  t.className = 'title'; t.textContent = 'Approve destructive step?';
+  const why = document.createElement('div');
+  why.textContent = 'This ' + ev.reason + '.';
+  const pre = document.createElement('pre'); pre.textContent = ev.code || '(no code)';
+  const allow = document.createElement('button');
+  allow.className = 'allow'; allow.textContent = 'Run it';
+  const deny = document.createElement('button');
+  deny.className = 'deny'; deny.textContent = 'Skip';
+  const decide = async (ok) => {
+    allow.disabled = deny.disabled = true;
+    box.style.opacity = .6;
+    t.textContent = ok ? 'Approved' : 'Declined';
+    await fetch('/permission', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ id: ev.id, allow: ok })
+    });
+  };
+  allow.onclick = () => decide(true);
+  deny.onclick = () => decide(false);
+  box.append(t, why, pre, allow, deny);
+  log.appendChild(box); scroll();
+}
+
+const es = new EventSource('/events');
+es.onopen = () => { dot.classList.add('live'); };
+es.onerror = () => { dot.classList.remove('live'); };
+es.onmessage = (e) => {
+  const ev = JSON.parse(e.data);
+  const stick = atBottom();
+  if (ev.type === 'text') {
+    if (!current) current = block('claude', 'Nibbler');
+    current.textContent += ev.text;
+  } else if (ev.type === 'tool') {
+    const d = document.createElement('div');
+    d.className = 'tool';
+    d.innerHTML = '<b>' + ev.name + '</b> ' + (ev.summary || '');
+    log.appendChild(d);
+    if (ev.name === 'fusion_screenshot') setTimeout(viewport, 400);
+  } else if (ev.type === 'permission') {
+    permission(ev);
+  } else if (ev.type === 'error') {
+    status(ev.message, 'err');
+  } else if (ev.type === 'turn_end') {
+    busy = false; send.disabled = false; current = null;
+    viewport();
+  }
+  if (stick) scroll();
+};
+
+async function submit() {
+  const text = input.value.trim();
+  if (!text || busy) return;
+  block('you', 'You').textContent = text;
+  input.value = ''; input.style.height = 'auto';
+  busy = true; send.disabled = true; current = null;
+  scroll();
+  const r = await fetch('/send', {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ prompt: text })
+  });
+  if (!r.ok) { status('could not reach the agent service', 'err'); busy = false; send.disabled = false; }
+}
+
+send.onclick = submit;
+input.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); submit(); }
+});
+input.addEventListener('input', () => {
+  input.style.height = 'auto';
+  input.style.height = Math.min(input.scrollHeight, 120) + 'px';
+});
+document.getElementById('stop').onclick = () => fetch('/interrupt', {method: 'POST'});
+document.getElementById('shot').onclick = viewport;
+
+fetch('/health').then(r => r.json()).then(h => {
+  log.innerHTML = '';
+  if (!h.bridge_token) status('No bridge token — run scripts/install.sh.', 'err');
+  else status('Ready. Fusion must be open with a design.');
+}).catch(() => status('Agent service not reachable.', 'err'));
+</script>
+</body>
+</html>

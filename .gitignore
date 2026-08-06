@@ -7,3 +7,4 @@ renders/
 .DS_Store
 reference-clones/
 .claude/scheduled_tasks.lock
+agent/.venv/

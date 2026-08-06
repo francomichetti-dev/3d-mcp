@@ -1153,6 +1153,9 @@ def _start_locked(register_event):
         _clear_marshal_state("add-in start")
         _app = adsk.core.Application.get()
         _ui = _app.userInterface if _app else None
+        # UI lives on the real start/stop cycle only — a /reload must not tear
+        # down and rebuild the toolbar button underneath the user.
+        _install_panel()
 
     if not _tokens.get():
         _log("refusing to start: %s is missing, empty or unreadable" % TOKEN_PATH, "ERROR")
@@ -1274,4 +1277,52 @@ def _shutdown_locked(unregister_event):
         _server_thread = None
     if unregister_event:
         _unregister_event()
+        _uninstall_panel()
     _log("listener stopped")
+
+
+def _panel_module():
+    """The chat panel, or None when it isn't installed alongside the add-in."""
+    import importlib.util
+    import sys
+
+    existing = sys.modules.get("nibbler_panel")
+    if existing is not None:
+        return existing
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nibbler_panel.py")
+    if not os.path.exists(path):
+        return None
+    spec = importlib.util.spec_from_file_location("nibbler_panel", path)
+    if spec is None or spec.loader is None:
+        return None
+    module = importlib.util.module_from_spec(spec)
+    sys.modules["nibbler_panel"] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop("nibbler_panel", None)
+        raise
+    return module
+
+
+def _install_panel():
+    try:
+        panel = _panel_module()
+        if panel is None:
+            return
+        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        panel.install(repo)
+        _log("chat panel installed")
+    except Exception:
+        # The bridge is useful without the panel; never let UI setup stop it.
+        _log("could not install the chat panel:\n%s" % traceback.format_exc(), "WARN")
+
+
+def _uninstall_panel():
+    try:
+        import sys
+        panel = sys.modules.get("nibbler_panel")
+        if panel is not None:
+            panel.uninstall()
+    except Exception:
+        _log("could not remove the chat panel:\n%s" % traceback.format_exc(), "WARN")

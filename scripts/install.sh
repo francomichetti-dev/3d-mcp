@@ -187,6 +187,19 @@ uv sync --directory "${REPO_DIR}/server" \
     || die "uv sync failed in ${REPO_DIR}/server — check your network and re-run."
 info "environment ready: ${REPO_DIR}/server/.venv"
 
+# --- chat agent environment --------------------------------------------------
+
+step "Building the chat agent environment (agent/.venv)"
+
+if [ -d "${REPO_DIR}/agent" ]; then
+    uv sync --directory "${REPO_DIR}/agent" \
+        || die "uv sync failed in ${REPO_DIR}/agent — check your network and re-run."
+    info "environment ready: ${REPO_DIR}/agent/.venv"
+    info "the NIBBLER panel starts this service on demand from inside Fusion"
+else
+    info "no agent/ directory — skipping the chat panel"
+fi
+
 # --- MCP registration --------------------------------------------------------
 
 step "Registering the MCP server with Claude Code (user scope)"

@@ -1,0 +1,202 @@
+"""The NIBBLER chat palette — a docked webview inside Fusion.
+
+The palette points at the agent service on 127.0.0.1:7655 and talks to it
+DIRECTLY over HTTP. It deliberately does not route through this add-in's
+Python: the add-in's main thread is what serves bridge calls, so a chat
+request that went palette → add-in → agent → bridge would deadlock on the
+first Fusion tool call.
+
+Stdlib only — this runs inside Fusion's embedded interpreter.
+"""
+
+import os
+import subprocess
+import traceback
+import urllib.error
+import urllib.request
+
+import adsk.core
+
+PALETTE_ID = "NibblerChatPalette"
+PALETTE_NAME = "NIBBLER"
+CMD_ID = "NibblerChatShow"
+CMD_NAME = "NIBBLER chat"
+CMD_TOOLTIP = "Model by prompting — opens the NIBBLER chat panel"
+
+SERVICE_URL = "http://127.0.0.1:%d/" % int(os.environ.get("NIBBLER_PORT") or 7655)
+HEALTH_URL = SERVICE_URL + "health"
+
+# Populated by install(); torn down by uninstall().
+_handlers = []          # Fusion holds command handlers weakly — keep them alive
+_service = None         # subprocess.Popen for the agent service, if we spawned it
+
+
+def _log(message, level="INFO"):
+    try:
+        from . import fusion_bridge_impl          # noqa: F401  (never a package)
+    except Exception:
+        pass
+    try:
+        import sys
+        impl = sys.modules.get("fusion_bridge_impl")
+        if impl is not None:
+            impl._log("panel: " + message, level)
+    except Exception:
+        pass
+
+
+def _service_alive(timeout=1.0):
+    try:
+        with urllib.request.urlopen(HEALTH_URL, timeout=timeout):
+            return True
+    except (urllib.error.URLError, OSError):
+        return False
+
+
+def _start_service(repo_dir):
+    """Launch the agent service detached, if it is not already up.
+
+    Spawned rather than required-to-be-running so the panel works from a cold
+    Fusion start. Failure is non-fatal: the palette still opens and its own
+    health check explains what is wrong.
+    """
+    global _service
+    if _service_alive():
+        return "already running"
+    agent_dir = os.path.join(repo_dir, "agent")
+    if not os.path.isdir(agent_dir):
+        return "agent/ not found at %s" % agent_dir
+    try:
+        _service = subprocess.Popen(
+            ["uv", "run", "--frozen", "--no-sync",
+             "--directory", agent_dir, "agent_service.py"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,     # survives Fusion reloading the add-in
+        )
+        return "spawned pid %d" % _service.pid
+    except Exception:
+        _log("could not spawn the agent service:\n" + traceback.format_exc(), "ERROR")
+        return "spawn failed — see addin.log"
+
+
+def _show_palette(ui):
+    palette = ui.palettes.itemById(PALETTE_ID)
+    if palette is None:
+        palette = ui.palettes.add(
+            PALETTE_ID, PALETTE_NAME, SERVICE_URL,
+            True,    # isVisible
+            True,    # showCloseButton
+            True,    # isResizable
+            420, 620,
+        )
+        try:
+            palette.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
+        except Exception:
+            pass    # docking is a preference, not a requirement
+    palette.isVisible = True
+    return palette
+
+
+class _ShowHandler(adsk.core.CommandCreatedEventHandler):
+    """Opens the panel. The command does its work on creation — there is no
+    dialog to build, so no CommandInputs and no execute handler."""
+
+    def __init__(self, repo_dir):
+        super().__init__()
+        self._repo_dir = repo_dir
+
+    def notify(self, args):
+        app = adsk.core.Application.get()
+        ui = app.userInterface
+        try:
+            status = _start_service(self._repo_dir)
+            _log("panel opened (%s)" % status)
+            _show_palette(ui)
+            try:
+                args.command.isAutoExecute = True
+                args.command.isExecutedWhenPreEmpted = False
+            except Exception:
+                pass
+        except Exception:
+            _log("failed to open the panel:\n" + traceback.format_exc(), "ERROR")
+            ui.messageBox("NIBBLER could not open:\n" + traceback.format_exc(),
+                          "NIBBLER")
+
+
+def install(repo_dir):
+    """Add the toolbar button. Safe to call repeatedly."""
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+
+    definition = ui.commandDefinitions.itemById(CMD_ID)
+    if definition is None:
+        definition = ui.commandDefinitions.addButtonDefinition(
+            CMD_ID, CMD_NAME, CMD_TOOLTIP)
+
+    handler = _ShowHandler(repo_dir)
+    definition.commandCreated.add(handler)
+    _handlers.append(handler)          # Fusion holds this weakly; see module docstring
+
+    # UTILITIES tab on current builds, TOOLS on older ones — try both.
+    panel = None
+    for tab_id in ("ToolsTab", "UtilitiesTab"):
+        tab = ui.allToolbarTabs.itemById(tab_id)
+        if tab is None:
+            continue
+        for panel_id in ("SolidScriptsAddinsPanel", "UtilityPanel", "ToolsAddinsPanel"):
+            panel = tab.toolbarPanels.itemById(panel_id)
+            if panel is not None:
+                break
+        if panel is not None:
+            break
+
+    if panel is not None and panel.controls.itemById(CMD_ID) is None:
+        panel.controls.addCommand(definition)
+    return definition
+
+
+def uninstall():
+    """Remove the button and palette, and stop a service we spawned."""
+    global _service
+    app = adsk.core.Application.get()
+    ui = app.userInterface
+
+    palette = ui.palettes.itemById(PALETTE_ID)
+    if palette is not None:
+        try:
+            palette.deleteMe()
+        except Exception:
+            pass
+
+    for tab_id in ("ToolsTab", "UtilitiesTab"):
+        tab = ui.allToolbarTabs.itemById(tab_id)
+        if tab is None:
+            continue
+        for panel_id in ("SolidScriptsAddinsPanel", "UtilityPanel", "ToolsAddinsPanel"):
+            p = tab.toolbarPanels.itemById(panel_id)
+            if p is None:
+                continue
+            control = p.controls.itemById(CMD_ID)
+            if control is not None:
+                try:
+                    control.deleteMe()
+                except Exception:
+                    pass
+
+    definition = ui.commandDefinitions.itemById(CMD_ID)
+    if definition is not None:
+        try:
+            definition.deleteMe()
+        except Exception:
+            pass
+
+    del _handlers[:]
+
+    if _service is not None and _service.poll() is None:
+        # Only ours to stop — a service the user started stays up.
+        try:
+            _service.terminate()
+        except Exception:
+            pass
+    _service = None
