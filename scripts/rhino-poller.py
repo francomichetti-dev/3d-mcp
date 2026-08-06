@@ -131,7 +131,93 @@ def run_state(_payload):
     }
 
 
-HANDLERS = {"execute": run_execute, "state": run_state}
+VIEWS = {
+    "perspective": "Perspective",
+    "top": "Top",
+    "front": "Front",
+    "right": "Right",
+}
+# Same bounds as the Fusion bridge, and rejected rather than clamped for the
+# same reason: silently returning a different size than asked for hides a bug.
+MIN_SIDE, MAX_WIDTH, MAX_HEIGHT = 64, 1920, 1440
+
+
+def run_screenshot(payload):
+    """Capture the viewport as a PNG.
+
+    NOT rs.Command('_-ViewCaptureToFile ...'): that re-enters Rhino's command
+    pipeline from inside a timer tick, never returns, and takes the broker with
+    it. Rhino.Display.ViewCapture is a direct API call and works fine from
+    here - and unlike the command, it actually honours the requested size (the
+    command ignored _Width/_Height and gave the viewport's aspect instead).
+    """
+    import base64
+    import io as _io
+
+    view_name = str(payload.get("view", "perspective")).lower()
+    if view_name not in VIEWS and view_name != "fit":
+        return {"ok": False,
+                "error": f"unknown view '{view_name}' — one of "
+                         f"{', '.join(sorted(VIEWS))}, fit"}
+
+    width = int(payload.get("width", 1200))
+    height = int(payload.get("height", 800))
+    if not (MIN_SIDE <= width <= MAX_WIDTH and MIN_SIDE <= height <= MAX_HEIGHT):
+        return {"ok": False,
+                "error": f"size must be {MIN_SIDE}..{MAX_WIDTH} x "
+                         f"{MIN_SIDE}..{MAX_HEIGHT}, got {width}x{height}"}
+
+    doc = Rhino.RhinoDoc.ActiveDoc
+    if doc is None:
+        return {"ok": False, "error": "no active Rhino document"}
+    view = doc.Views.ActiveView
+    if view is None:
+        return {"ok": False, "error": "no active viewport"}
+
+    viewport = view.ActiveViewport
+    if view_name != "fit":
+        projection = getattr(Rhino.Display.DefinedViewportProjection,
+                             VIEWS[view_name], None)
+        if projection is not None:
+            viewport.SetProjection(projection, None, False)
+    shaded = Rhino.Display.DisplayModeDescription.FindByName("Shaded")
+    if shaded:
+        viewport.DisplayMode = shaded
+    viewport.ZoomExtents()
+    doc.Views.Redraw()
+
+    capture = Rhino.Display.ViewCapture()
+    capture.Width = width
+    capture.Height = height
+    capture.ScaleScreenItems = False
+    capture.DrawAxes = False
+    capture.DrawGrid = True
+    capture.DrawGridAxes = True
+    capture.TransparentBackground = False
+
+    bitmap = capture.CaptureToBitmap(view)
+    if bitmap is None:
+        return {"ok": False, "error": "capture returned nothing"}
+
+    # Straight to base64 through a memory stream - no temp file to clean up,
+    # and the caller gets an image rather than a path it cannot reach.
+    # System.Drawing is a separate assembly from System.IO; importing only the
+    # latter leaves ImageFormat undefined at runtime.
+    import System.Drawing.Imaging
+    import System.IO
+
+    stream = System.IO.MemoryStream()
+    bitmap.Save(stream, System.Drawing.Imaging.ImageFormat.Png)
+    data = bytes(stream.ToArray())
+    stream.Dispose()
+
+    return {"ok": True, "view": view_name, "width": width, "height": height,
+            "png_base64": base64.b64encode(data).decode("ascii"),
+            "bytes": len(data)}
+
+
+HANDLERS = {"execute": run_execute, "state": run_state,
+            "screenshot": run_screenshot}
 
 
 # --------------------------------------------------------------------------

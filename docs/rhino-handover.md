@@ -132,14 +132,29 @@ process launched over SSH dies when the session ends: Windows puts it in a job
 object and kills the tree. The scheduled task is owned by the task scheduler
 instead, and survives.
 
+Viewport capture works too, via `screenshot`:
+
+```json
+{"kind": "screenshot", "payload": {"view": "perspective", "width": 1200, "height": 800}}
+```
+
+Views: `perspective`, `top`, `front`, `right`, `fit`. Returns the PNG as
+base64, the same contract the Fusion bridge uses. Size is validated and
+REJECTED if out of range rather than quietly clamped - a capture that silently
+differs from what was asked for hides bugs.
+
+**Why not `rs.Command('_-ViewCaptureToFile ...')`:** it re-enters Rhino's
+command pipeline from inside a timer tick, never returns, and takes the broker
+down with it. `Rhino.Display.ViewCapture` is a direct API call and works fine
+from the same place - and unlike the command, it honours the requested size.
+The command ignored `_Width`/`_Height` entirely and returned the viewport's
+aspect (1116x323 when 1200x800 was asked for).
+
 ## What would genuinely help
 
-**`rs.Command` inside a timer tick does not behave.** The viewport-capture job
-never returned and took the broker with it. Everything else works, so this is
-isolated to running a Rhino *command* (as opposed to RhinoCommon API calls)
-from the poller. Capturing the viewport is the one Fusion feature Rhino still
-lacks, so a way to do it that does not re-enter the command pipeline would be
-genuinely valuable.
+`export` is the last Fusion feature Rhino lacks - STL/STEP/3DM out of the
+document. Everything needed is in place; it is another handler beside the
+three that already work.
 
 After that: `rhino-poller.py` has handlers for `execute` and `state`. Adding
 `screenshot` (via `_-ViewCaptureToFile`) and `export` would bring Rhino to
