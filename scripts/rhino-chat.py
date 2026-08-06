@@ -19,6 +19,8 @@ Runs on Rhino's own Python. Nothing to install but the SDK:
 import json
 import os
 import stat
+import subprocess
+import sys
 import threading
 import traceback
 import urllib.error
@@ -55,14 +57,44 @@ def load_config():
     return data
 
 
+def _restrict(path):
+    """Make the file readable only by this account.
+
+    os.chmod(0600) does NOT do this on Windows - measured: after chmod the ACL
+    still read `NT AUTHORITY\\SYSTEM:(I)(F)`, `BUILTIN\\Administrators:(I)(F)`,
+    `<user>:(I)(F)`, all inherited. chmod there only toggles the read-only
+    attribute, so an API key written this way stays readable by every other
+    account on the machine. icacls is what actually restricts it: drop
+    inherited ACEs, then grant this user alone.
+
+    An administrator can still take ownership and read it. That is true of
+    root on POSIX too, so the honest claim is "other users cannot read it",
+    not "nobody can".
+    """
+    if os.name == "nt":
+        user = os.environ.get("USERNAME") or ""
+        if not user:
+            return False
+        try:
+            done = subprocess.run(
+                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
+                capture_output=True, text=True, timeout=15,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
+            return done.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+        return True
+    except OSError:
+        return False
+
+
 def save_config(config):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
-    try:
-        os.chmod(CONFIG_PATH, stat.S_IRUSR | stat.S_IWUSR)   # 0600 - it holds a key
-    except OSError:
-        pass
+    return _restrict(CONFIG_PATH)
 
 
 # --------------------------------------------------------------------------
@@ -259,10 +291,12 @@ class Api:
         if model:
             self._config["model"] = model
         try:
-            save_config(self._config)
+            restricted = save_config(self._config)
         except OSError as exc:
             return {"ok": False, "error": f"could not save: {exc}"}
-        return {"ok": True}
+        # Say so if the key landed on disk without its permissions locked down,
+        # rather than letting the UI keep claiming it is protected.
+        return {"ok": True, "restricted": restricted}
 
     def test_key(self):
         """Prove the key works with the smallest possible real call."""
@@ -344,7 +378,7 @@ class Api:
         try:
             runner = client.beta.messages.tool_runner(
                 model=self._config.get("model", DEFAULT_MODEL),
-                max_tokens=8000,
+                max_tokens=16000,
                 system=SYSTEM,
                 tools=make_tools(),
                 messages=self._history,
@@ -382,6 +416,12 @@ class Api:
 
         if final is not None and final.stop_reason == "refusal":
             return {"ok": False, "error": "Claude declined that request"}
+        if final is not None and final.stop_reason == "max_tokens":
+            # Silently truncating reads as a mysteriously short answer, so name
+            # it and say what to do about it.
+            return {"ok": False, "error": (
+                "the reply hit the length limit and was cut off — ask for it in "
+                "smaller steps")}
         return {"ok": True, "turns": len(self._history)}
 
 
@@ -471,8 +511,9 @@ a{color:var(--accent)}
     <div id="settings">
       <div class="card">
         <h3>Anthropic API key</h3>
-        <p>Stored on this computer only, at <span id="cfgpath"></span>, readable
-           just by you. It is never sent anywhere except Anthropic.</p>
+        <p>Stored on this computer only, at <span id="cfgpath"></span>, locked
+           so other accounts on this machine cannot read it. It is never sent
+           anywhere except Anthropic.</p>
         <label for="key">API key</label>
         <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off">
         <label for="model">Model</label>
@@ -611,7 +652,14 @@ function note(text, cls){
 }
 $("save").onclick = async () => {
   const r = await window.pywebview.api.save_settings($("key").value, $("model").value);
-  if (r.ok){ $("key").value = ""; note("Saved.", "ok"); loadSettings(); refresh(); }
+  if (r.ok){
+    $("key").value = "";
+    note(r.restricted ? "Saved."
+                      : "Saved, but the file permissions could not be locked down — "
+                        + "anyone with an account on this PC could read the key.",
+         r.restricted ? "ok" : "err");
+    loadSettings(); refresh();
+  }
   else note(r.error, "err");
 };
 $("test").onclick = async () => {
