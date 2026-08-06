@@ -1,5 +1,15 @@
 # Rhino bridge — the blocker, and how to attack it
 
+> **Superseded in part.** Rhino was not merely deadlocking, it was CRASHING:
+> `ucrtbase.dll`, exception `0xc0000409` (`__fastfail`, a C-runtime abort), the
+> same fault offset every time. The likely cause is a background daemon thread
+> outliving the `rhinocode` script context — when RhinoCode tears the context
+> down with a thread still running, the embedded CPython aborts and takes Rhino
+> with it. So `rhino-bridge-start.py`, which deliberately leaves a listener
+> thread running after the script returns, is UNSAFE. Any in-Rhino code must
+> therefore run entirely on the UI thread via `RhinoApp.Idle`, with no threads
+> of its own. See "Revised design" at the end.
+
 Everything below was established on real hardware (Rhino 8.32.26160, Windows 11)
 during a live spike. Read this before writing any Rhino code; it will save you
 the five dead ends it cost us.
@@ -123,3 +133,58 @@ Run them with:
 ```
 
 Each writes a `*-output.txt` beside itself. Read that, not the console.
+
+
+---
+
+## Revised design: no threads inside Rhino at all
+
+The crash evidence rules out the listener-thread shape. What is left is the
+narrowest possible footprint inside Rhino:
+
+* **No HTTP server** in Rhino — it is a client, not a server.
+* **No background threads** — nothing survives the script but an `Idle`
+  subscription, which is Rhino's own event, not our thread.
+* **No `InvokeOnUiThread`** — the `Idle` handler already runs on the UI thread.
+
+```python
+import Rhino, urllib.request, json, time
+
+_last = {"t": 0.0}
+BROKER = "http://127.0.0.1:7656"
+
+def _on_idle(sender, args):
+    # Idle fires constantly, so rate-limit or Rhino feels sluggish.
+    now = time.time()
+    if now - _last["t"] < 0.25:
+        return
+    _last["t"] = now
+    try:
+        # wait=0: must NOT block, this is the UI thread
+        with urllib.request.urlopen(BROKER + "/claim?wait=0", timeout=1) as r:
+            job = json.loads(r.read())
+    except Exception:
+        return                      # broker down: stay quiet, try again later
+    if not job:
+        return
+    result = run(job)               # already on the UI thread - nothing to marshal
+    post(BROKER + "/result", {"id": job["id"], "result": result})
+
+Rhino.RhinoApp.Idle += _on_idle
+```
+
+The trade: polling latency of one `Idle` tick plus the rate limit, against a
+CAD-side footprint with nothing in it that can crash the host. Given a modelling
+operation takes seconds, a quarter-second of latency is not worth a single
+crash.
+
+**Two things still to verify, in this order, and both are cheap:**
+
+1. Does `RhinoApp.Idle` fire while Rhino is unfocused and idle? Attach a handler
+   that only appends a timestamp to a file, then look at the file. No threads,
+   no sockets, nothing that can crash anything.
+2. Does an `Idle` subscription survive without crashing, given the CRT abort
+   above? Same test answers it — if Rhino is alive a minute later, yes.
+
+If `Idle` does not fire reliably, the answer is a compiled Rhino plugin with a
+real timer, which is where a production version belongs anyway.
