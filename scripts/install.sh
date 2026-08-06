@@ -132,26 +132,72 @@ else
     info "token created (${TOKEN_FILE}, mode 0600)"
 fi
 
-# --- add-in symlink ----------------------------------------------------------
+# --- add-in link -------------------------------------------------------------
 
+# A real directory holding per-FILE symlinks, not a symlinked directory.
+#
+# Symlinking the folder makes Fusion list the add-in TWICE: it follows the link
+# and registers the resolved repo path as a second, separate add-in, so Scripts
+# and Add-Ins shows two identical FusionBridge rows and removing one from
+# Fusion's registry does not stick — it is re-discovered on the next scan.
+# A real folder gives Fusion exactly one path to record, while the files inside
+# still point at the checkout so edits remain live.
 step "Linking the FusionBridge add-in"
 
+is_ours() {
+    # Ours only if every entry is a symlink pointing into ADDIN_SOURCE. Anything
+    # else is someone's real add-in and must not be touched.
+    [ -d "$1" ] || return 1
+    local entry found=0
+    for entry in "$1"/* "$1"/.[!.]*; do
+        [ -e "${entry}" ] || [ -L "${entry}" ] || continue
+        found=1
+        [ -L "${entry}" ] || return 1
+        case "$(readlink "${entry}")" in
+            "${ADDIN_SOURCE}"/*) ;;
+            *) return 1 ;;
+        esac
+    done
+    [ "${found}" -eq 1 ]
+}
+
 if [ -L "${ADDIN_LINK}" ]; then
+    # Upgrade from the old symlinked-folder layout.
     current="$(readlink "${ADDIN_LINK}")"
-    if [ "${current}" = "${ADDIN_SOURCE}" ]; then
-        info "already linked"
-    else
-        rm -f "${ADDIN_LINK}"
-        ln -s "${ADDIN_SOURCE}" "${ADDIN_LINK}"
-        info "replaced stale symlink (was: ${current})"
-    fi
-elif [ -e "${ADDIN_LINK}" ]; then
+    rm -f "${ADDIN_LINK}"
+    info "replaced the symlinked folder that made Fusion list it twice (was: ${current})"
+elif [ -e "${ADDIN_LINK}" ] && ! is_ours "${ADDIN_LINK}"; then
     die "a real file or folder already exists at:
   ${ADDIN_LINK}
 Refusing to delete it. Move it aside, then re-run this script."
+fi
+
+mkdir -p "${ADDIN_LINK}"
+
+# Drop links whose source is gone, so a renamed or deleted file does not linger
+# and get loaded by Fusion.
+for existing in "${ADDIN_LINK}"/*; do
+    [ -L "${existing}" ] || continue
+    [ -e "${existing}" ] || { rm -f "${existing}"; info "removed stale link $(basename "${existing}")"; }
+done
+
+linked=0
+for source_file in "${ADDIN_SOURCE}"/*; do
+    [ -f "${source_file}" ] || continue
+    name="$(basename "${source_file}")"
+    target="${ADDIN_LINK}/${name}"
+    if [ -L "${target}" ] && [ "$(readlink "${target}")" = "${source_file}" ]; then
+        continue
+    fi
+    rm -f "${target}"
+    ln -s "${source_file}" "${target}"
+    linked=$((linked + 1))
+done
+
+if [ "${linked}" -eq 0 ]; then
+    info "already linked (${ADDIN_LINK})"
 else
-    ln -s "${ADDIN_SOURCE}" "${ADDIN_LINK}"
-    info "linked ${ADDIN_LINK} -> ${ADDIN_SOURCE}"
+    info "linked ${linked} file(s) into ${ADDIN_LINK}"
 fi
 
 # --- knowledge skill ---------------------------------------------------------

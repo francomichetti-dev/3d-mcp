@@ -57,11 +57,33 @@ done
 step "Removing the FusionBridge add-in link"
 
 if [ -L "${ADDIN_LINK}" ]; then
+    # The old layout: the whole folder was one symlink.
     current="$(readlink "${ADDIN_LINK}")"
     rm -f "${ADDIN_LINK}"
     info "removed symlink (was: ${current})"
+elif [ -d "${ADDIN_LINK}" ]; then
+    # The current layout: a real folder of per-file symlinks into the checkout.
+    # Removed only if EVERY entry is such a link — anything else means a real
+    # add-in is living there and it is not ours to delete.
+    ours=1
+    found=0
+    for entry in "${ADDIN_LINK}"/* "${ADDIN_LINK}"/.[!.]*; do
+        [ -e "${entry}" ] || [ -L "${entry}" ] || continue
+        found=1
+        if [ ! -L "${entry}" ]; then ours=0; break; fi
+        case "$(readlink "${entry}")" in
+            "${ADDIN_SOURCE}"/*) ;;
+            *) ours=0; break ;;
+        esac
+    done
+    if [ "${ours}" -eq 1 ] && [ "${found}" -eq 1 ]; then
+        rm -rf "${ADDIN_LINK}"
+        info "removed ${ADDIN_LINK} (links into this checkout)"
+    else
+        info "SKIPPED: ${ADDIN_LINK} holds files that are not ours — remove it yourself if you want it gone"
+    fi
 elif [ -e "${ADDIN_LINK}" ]; then
-    info "SKIPPED: ${ADDIN_LINK} is a real folder, not our symlink — remove it yourself if you want it gone"
+    info "SKIPPED: ${ADDIN_LINK} is not a folder we recognise — remove it yourself if you want it gone"
 else
     info "nothing to remove (${ADDIN_LINK} does not exist)"
 fi
