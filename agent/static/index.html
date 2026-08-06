@@ -21,7 +21,10 @@
     padding: 10px 12px; border-bottom: 1px solid var(--line);
     display: flex; align-items: center; gap: 8px; flex: none;
   }
-  header .name { font-weight: 600; letter-spacing: .04em; }
+  header .name { font-weight: 600; letter-spacing: .04em;
+                 white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+                 max-width: 190px; }
+  header .name.none { color: var(--dim); font-weight: 400; font-style: italic; }
   header .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--dim); }
   header .dot.live { background: var(--ok); }
   header .spacer { flex: 1; }
@@ -64,6 +67,15 @@
 
   .err { color: var(--danger); }
   .status { color: var(--dim); font-style: italic; font-size: 12px; }
+  .status.notice { color: var(--warn); font-style: normal; }
+
+  /* What a closed design leaves behind: collapsed, because it is background
+     for the model rather than something to read every time. */
+  .core { border: 1px solid var(--line); border-radius: 6px; margin: 0 0 12px;
+          background: var(--panel); }
+  .core summary { cursor: pointer; padding: 7px 10px; color: var(--dim);
+                  font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+  .core .body { padding: 0 10px 10px; font-size: 12px; color: var(--fg); }
 
   footer { flex: none; border-top: 1px solid var(--line); padding: 8px; }
   #row { display: flex; gap: 6px; align-items: flex-end; }
@@ -81,7 +93,7 @@
 <body>
   <header>
     <span class="dot" id="dot"></span>
-    <span class="name">Fusion Chat</span>
+    <span class="name none" id="design" title="the design this chat belongs to">no design</span>
     <span class="spacer"></span>
     <button id="stop">Stop</button>
     <button id="shot">Screenshot</button>
@@ -103,7 +115,7 @@ const log = document.getElementById('log');
 const input = document.getElementById('input');
 const send = document.getElementById('send');
 const dot = document.getElementById('dot');
-let busy = false, current = null;
+let busy = false, current = null, docKey = null;
 
 function atBottom() { return log.scrollHeight - log.scrollTop - log.clientHeight < 60; }
 function scroll() { log.scrollTop = log.scrollHeight; }
@@ -157,28 +169,86 @@ function permission(ev) {
   log.appendChild(box); scroll();
 }
 
+// One event renderer for both live events and replayed transcripts, so a
+// conversation looks identical whether you just watched it happen or came back
+// to the design an hour later. `live` gates the side effects that only make
+// sense in the moment.
+function render(ev, live) {
+  if (ev.type === 'user') {
+    current = null;
+    block('you', 'You').textContent = ev.text;
+  } else if (ev.type === 'text') {
+    if (!current) current = block('claude', 'Claude');
+    current.textContent += ev.text;
+  } else if (ev.type === 'tool') {
+    const d = document.createElement('div');
+    d.className = 'tool';
+    const b = document.createElement('b'); b.textContent = ev.name;
+    d.append(b, ' ' + (ev.summary || ''));
+    log.appendChild(d);
+    if (live && ev.name === 'fusion_screenshot') setTimeout(viewport, 400);
+  } else if (ev.type === 'notice') {
+    status(ev.text, 'notice');
+  } else if (ev.type === 'error') {
+    status(ev.message, 'err');
+  } else if (ev.type === 'permission') {
+    permission(ev);
+  }
+}
+
+function coreContext(text) {
+  const d = document.createElement('details');
+  d.className = 'core';
+  const s = document.createElement('summary');
+  s.textContent = 'core context from before this design was closed';
+  const b = document.createElement('div');
+  b.className = 'body'; b.style.whiteSpace = 'pre-wrap'; b.textContent = text;
+  d.append(s, b); log.appendChild(d);
+}
+
+// Swap the whole panel to another design's chat.
+function applyDocument(d) {
+  docKey = d.key || null;
+  const label = document.getElementById('design');
+  label.textContent = d.name || 'no design';
+  label.classList.toggle('none', !d.design);
+
+  log.innerHTML = ''; current = null;
+  if (!d.design) {
+    status('Open a design in Fusion to start a chat.');
+  } else {
+    if (d.core_context) coreContext(d.core_context);
+    (d.transcript || []).forEach((ev) => render(ev, false));
+    if (!(d.transcript || []).length && !d.core_context) {
+      status('New chat for this design.');
+    }
+  }
+  busy = !!d.busy;
+  send.disabled = busy || !d.design;
+  scroll();
+}
+
 const es = new EventSource('/events');
 es.onopen = () => { dot.classList.add('live'); };
 es.onerror = () => { dot.classList.remove('live'); };
 es.onmessage = (e) => {
   const ev = JSON.parse(e.data);
   const stick = atBottom();
-  if (ev.type === 'text') {
-    if (!current) current = block('claude', 'Claude');
-    current.textContent += ev.text;
-  } else if (ev.type === 'tool') {
-    const d = document.createElement('div');
-    d.className = 'tool';
-    d.innerHTML = '<b>' + ev.name + '</b> ' + (ev.summary || '');
-    log.appendChild(d);
-    if (ev.name === 'fusion_screenshot') setTimeout(viewport, 400);
-  } else if (ev.type === 'permission') {
-    permission(ev);
-  } else if (ev.type === 'error') {
-    status(ev.message, 'err');
-  } else if (ev.type === 'turn_end') {
+
+  if (ev.type === 'document') { applyDocument(ev); return; }
+  if (ev.type === 'bridge') {
+    if (!ev.ok) status('Fusion is not reachable — is the FusionBridge add-in running?', 'err');
+    return;
+  }
+  // Every other event belongs to one design. Anything from a design that is
+  // not on screen is dropped rather than bleeding into the wrong conversation.
+  if (ev.doc && ev.doc !== docKey) return;
+
+  if (ev.type === 'turn_end') {
     busy = false; send.disabled = false; current = null;
     viewport();
+  } else {
+    render(ev, true);
   }
   if (stick) scroll();
 };
@@ -186,15 +256,28 @@ es.onmessage = (e) => {
 async function submit() {
   const text = input.value.trim();
   if (!text || busy) return;
-  block('you', 'You').textContent = text;
+  // Not echoed locally: the service emits the message back tagged with the
+  // design it landed in, which is also what gets stored in the transcript.
+  // Rendering it here too would double it, and would show it against the wrong
+  // design if the identity turns out to differ.
   input.value = ''; input.style.height = 'auto';
   busy = true; send.disabled = true; current = null;
-  scroll();
-  const r = await fetch('/send', {
-    method: 'POST', headers: {'Content-Type': 'application/json'},
-    body: JSON.stringify({ prompt: text })
-  });
-  if (!r.ok) { status('could not reach the agent service', 'err'); busy = false; send.disabled = false; }
+  let r;
+  try {
+    r = await fetch('/send', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ prompt: text })
+    });
+  } catch (err) {
+    status('could not reach the agent service', 'err');
+    busy = false; send.disabled = false; input.value = text; return;
+  }
+  if (!r.ok) {
+    let msg = 'could not reach the agent service';
+    try { msg = (await r.json()).error || msg; } catch (err) { /* keep default */ }
+    status(msg, 'err');
+    busy = false; send.disabled = false; input.value = text;
+  }
 }
 
 send.onclick = submit;
@@ -208,11 +291,24 @@ input.addEventListener('input', () => {
 document.getElementById('stop').onclick = () => fetch('/interrupt', {method: 'POST'});
 document.getElementById('shot').onclick = viewport;
 
-fetch('/health').then(r => r.json()).then(h => {
+// Initial paint. /document already knows which design is active and carries its
+// transcript, so a reopened panel comes back to the conversation it was showing
+// rather than a blank page.
+Promise.all([
+  fetch('/health').then(r => r.json()),
+  fetch('/document').then(r => r.json()),
+]).then(([h, d]) => {
+  if (!h.bridge_token) {
+    log.innerHTML = '';
+    status('No bridge token — run scripts/install.sh.', 'err');
+    send.disabled = true;
+    return;
+  }
+  applyDocument(d);
+}).catch(() => {
   log.innerHTML = '';
-  if (!h.bridge_token) status('No bridge token — run scripts/install.sh.', 'err');
-  else status('Ready. Fusion must be open with a design.');
-}).catch(() => status('Agent service not reachable.', 'err'));
+  status('Agent service not reachable.', 'err');
+});
 </script>
 </body>
 </html>

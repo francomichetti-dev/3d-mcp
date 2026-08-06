@@ -91,6 +91,20 @@ NO_DESIGN_ERROR = (
     "no active Fusion design — open or create one and switch to the Design workspace"
 )
 BUSY_ERROR = "previous execution still running"
+# A chat is bound to one design, but adsk always acts on whatever document is
+# active *now*.  A turn that outlived a tab switch would therefore start editing
+# the design the user just moved to, so pinned turns are refused outright.
+DOC_MISMATCH_ERROR = (
+    "refused: this turn belongs to a design that is no longer active in Fusion. "
+    "Switch back to it, or start a new message in the design you want to change."
+)
+
+# Identity for a document's chat.  Attributes are stored in the document and
+# survive Save, Save As and rename, which document.name emphatically does not:
+# every unsaved document reports the name "Untitled" — the "(1)"/"(3)" in the
+# tab strip is decoration Fusion adds for display and never reaches the API.
+DOC_ATTR_GROUP = "FusionChat"
+DOC_ATTR_NAME = "chatKey"
 # Covers both causes: a genuine stop() and a /reload in flight.  Naming only the
 # first would send a user hunting for an add-in that never went away.
 SHUTTING_DOWN_ERROR = "bridge is stopping or reloading — retry in a moment"
@@ -147,6 +161,17 @@ _cached_app_version = None
 _cached_document = None
 _bootstrap_alert_shown = False
 
+# Per-document chat state.  _active_doc is a descriptor of the document Fusion
+# is showing, kept warm by the documentActivated handler so GET /document can be
+# answered off the HTTP thread without ever occupying the main thread — the chat
+# service polls it, and must not have to queue behind a modelling job to notice
+# that the user changed tabs.
+_active_doc = None
+_closed_docs = []       # keys awaiting delivery to the chat service
+_pinned_doc = None      # key a running turn is fenced to; see DOC_MISMATCH_ERROR
+_doc_handlers = []      # Fusion holds event handlers weakly — keep them alive
+_doc_lock = threading.Lock()
+
 # Values that must survive a reload: the live handler registration, the user's
 # persistent exec namespace, and every lock/counter whose identity matters.  The
 # module is re-executed into this same __dict__, so the already-registered
@@ -160,6 +185,14 @@ _CARRIED_ATTRS = (
     "_cached_app_version",
     "_cached_document",
     "_bootstrap_alert_shown",
+    # Document events are registered on the real start/stop cycle, so the
+    # handler instances and everything they maintain must outlive a reload.
+    # Dropping _pinned_doc in particular would unfence a turn mid-flight.
+    "_active_doc",
+    "_closed_docs",
+    "_pinned_doc",
+    "_doc_handlers",
+    "_doc_lock",
     # Carried so a reload performed while an abandoned job still occupies the
     # main thread keeps its single-flight guard instead of silently dropping it.
     "_state_lock",
@@ -520,10 +553,17 @@ def _dispatch_marshal_event(args):
         _terminate_active_command()
         app = adsk.core.Application.get()
         _refresh_cached_state(app)
-        if kind == "execute":
+        violation = _fence_violation() if kind in ("execute", "screenshot") else None
+        if violation is not None:
+            reply = {"ok": False, "error": violation}
+        elif kind == "execute":
             reply = _job_execute(app, payload)
         elif kind == "screenshot":
             reply = _job_screenshot(app, payload)
+        elif kind == "document":
+            # The only job that may stamp an identity, so it is the only one
+            # that can mark an otherwise-clean document as modified.
+            reply = {"ok": True, "active": _refresh_active_doc(app, create=True)}
         else:
             reply = {"ok": False, "error": "unknown job kind '%s'" % kind}
     except BaseException:
@@ -555,6 +595,195 @@ def _refresh_cached_state(app):
         _cached_document = document.name if document else None
     except Exception:
         _cached_document = None
+    # Belt and braces for the event-driven cache: a job is already on the main
+    # thread, so refreshing costs one attribute lookup and covers any transition
+    # documentActivated does not report.
+    _refresh_active_doc(app, create=False)
+
+
+# --------------------------------------------------------------------------- #
+# Document identity — main thread only
+# --------------------------------------------------------------------------- #
+
+
+def _design_of(document):
+    """The Design product of a specific document.
+
+    Deliberately not ``app.activeProduct``: documentClosing has to identify the
+    document going away, which by then is not necessarily the active one.
+    """
+    try:
+        return adsk.fusion.Design.cast(
+            document.products.itemByProductType("DesignProductType")
+        )
+    except Exception:
+        return None
+
+
+def _document_key(document, create):
+    """Stable identity for a document's chat, or None if it has none yet.
+
+    Resolution order matters:
+
+    1. An attribute we stamped earlier — checked *first* so a document that is
+       saved after its chat began keeps that chat, rather than being renamed
+       into a second identity by the dataFile that just appeared.
+    2. ``dataFile.id`` for a saved document — free, and stamping nothing means
+       merely chatting about a saved design never marks it modified.
+    3. Only with ``create``: a fresh UUID stamped into the document. Reached
+       only for unsaved documents, which carry unsaved edits anyway.
+    """
+    design = _design_of(document)
+    if design is not None:
+        try:
+            attribute = design.attributes.itemByName(DOC_ATTR_GROUP, DOC_ATTR_NAME)
+            if attribute is not None and attribute.value:
+                return attribute.value
+        except Exception:
+            _log("could not read the chat key attribute:\n%s" % traceback.format_exc(), "WARN")
+
+    try:
+        data_file = document.dataFile
+    except Exception:
+        data_file = None
+    if data_file is not None:
+        try:
+            return "file:" + data_file.id
+        except Exception:
+            pass
+
+    if not create or design is None:
+        return None
+
+    key = "doc:" + uuid.uuid4().hex
+    try:
+        design.attributes.add(DOC_ATTR_GROUP, DOC_ATTR_NAME, key)
+    except Exception:
+        _log("could not stamp the chat key attribute:\n%s" % traceback.format_exc(), "ERROR")
+        return None
+    return key
+
+
+def _describe_document(document, create=False):
+    if document is None:
+        return None
+    try:
+        name = document.name
+    except Exception:
+        name = None
+    try:
+        saved = bool(document.dataFile)
+    except Exception:
+        saved = False
+    return {
+        "key": _document_key(document, create),
+        "name": name,
+        "saved": saved,
+        "design": _design_of(document) is not None,
+    }
+
+
+def _refresh_active_doc(app, create=False):
+    global _active_doc
+    try:
+        _active_doc = _describe_document(app.activeDocument, create)
+    except Exception:
+        _active_doc = None
+    return _active_doc
+
+
+def _set_pinned_doc(key):
+    """Fence the main thread to one design, or unfence it with None.
+
+    A module-level setter rather than ``global`` inside the request handler:
+    that handler reads _pinned_doc in an earlier branch, and a global statement
+    after a read in the same scope is a SyntaxError.
+    """
+    global _pinned_doc
+    _pinned_doc = key
+    return _pinned_doc
+
+
+def _fence_violation():
+    """Non-None when a pinned turn is aimed at a design that is no longer active.
+
+    The chat service also interrupts the turn when it notices the switch, but it
+    only polls once a second; this closes the window where a tool call is already
+    in flight.
+    """
+    pinned = _pinned_doc
+    if not pinned:
+        return None
+    if (_active_doc or {}).get("key") == pinned:
+        return None
+    return DOC_MISMATCH_ERROR
+
+
+# --------------------------------------------------------------------------- #
+# Document events
+# --------------------------------------------------------------------------- #
+
+
+class _DocumentActivatedHandler(adsk.core.DocumentEventHandler):
+    """Bare delegation for the same reason as _MarshalEventHandler: the instance
+    Fusion registered belongs to the pre-reload class, so real logic here would
+    be frozen until an add-in Stop/Run."""
+
+    def notify(self, args):
+        _on_document_activated(args)
+
+
+class _DocumentClosingHandler(adsk.core.DocumentEventHandler):
+    def notify(self, args):
+        _on_document_closing(args)
+
+
+def _on_document_activated(args):
+    try:
+        app = adsk.core.Application.get()
+        # create=False: merely looking at a design must never modify it.
+        _refresh_active_doc(app, create=False)
+    except Exception:
+        _log("documentActivated handler failed:\n%s" % traceback.format_exc(), "WARN")
+
+
+def _on_document_closing(args):
+    """Queue the closing document's key so the chat service can compress it."""
+    try:
+        document = getattr(args, "document", None)
+        key = _document_key(document, create=False) if document is not None else None
+        if not key:
+            return          # never chatted about — nothing to compress
+        with _doc_lock:
+            if key not in _closed_docs:
+                _closed_docs.append(key)
+        _log("document closing, chat queued for compression: %s" % key)
+    except Exception:
+        _log("documentClosing handler failed:\n%s" % traceback.format_exc(), "WARN")
+
+
+def _register_document_events():
+    del _doc_handlers[:]
+    for event_name, handler_class in (
+        ("documentActivated", _DocumentActivatedHandler),
+        ("documentClosing", _DocumentClosingHandler),
+    ):
+        try:
+            event = getattr(_app, event_name)
+            handler = handler_class()
+            event.add(handler)
+            _doc_handlers.append((event_name, handler))
+        except Exception:
+            _log("could not register %s:\n%s" % (event_name, traceback.format_exc()), "ERROR")
+
+
+def _unregister_document_events():
+    for event_name, handler in list(_doc_handlers):
+        try:
+            getattr(_app, event_name).remove(handler)
+        except Exception:
+            pass
+    del _doc_handlers[:]
 
 
 # --------------------------------------------------------------------------- #
@@ -840,6 +1069,38 @@ class _BridgeHandler(BaseHTTPRequestHandler):
             self._check_token()
             if method == "GET" and path == "/health":
                 status, payload = 200, _health_payload()
+            elif method == "GET" and path == "/document":
+                # Answered from the event-warmed cache. The chat service polls
+                # this once a second, and must never be able to starve the main
+                # thread or queue behind a long modelling job to learn that the
+                # user switched tabs.
+                with _doc_lock:
+                    closed = list(_closed_docs)
+                    del _closed_docs[:]
+                status, payload = 200, {
+                    "ok": True, "active": _active_doc, "closed": closed,
+                    "pinned": _pinned_doc,
+                }
+                note = "active=%s closed=%d" % ((_active_doc or {}).get("key"), len(closed))
+            elif method == "POST" and path == "/document":
+                # Resolving with create=True can stamp an attribute, so it is a
+                # real main-thread job rather than a cache read.
+                job = _claim_job("document")
+                try:
+                    self._read_body()
+                except BaseException:
+                    _release_job(job)
+                    raise
+                status, payload = 200, _marshal(job, {})
+                note = "key=%s" % (payload.get("active") or {}).get("key")
+            elif method == "POST" and path == "/pin":
+                body, body_size = self._read_json()
+                key = body.get("key")
+                if key is not None and not isinstance(key, str):
+                    raise _HttpError(400, "'key' must be a string or null")
+                pinned = _set_pinned_doc(key or None)
+                status, payload = 200, {"ok": True, "pinned": pinned}
+                note = "pinned=%s" % pinned
             elif method == "POST" and path == "/execute":
                 job = _claim_job("execute")
                 try:
@@ -1081,7 +1342,17 @@ def _reload_worker(generation):
             # module is re-executed into this same __dict__, so the handler
             # instance already registered with Fusion dispatches into new code.
             _shutdown(unregister_event=False)
-            carried = {name: getattr(module, name, None) for name in _CARRIED_ATTRS}
+            # A local sentinel, deliberately not a module-level one: the module
+            # dict is about to be re-executed, so any name looked up through it
+            # afterwards is a *different* object and every `is` test below would
+            # silently go the wrong way.
+            missing = object()
+            # State introduced by the edit being loaded does not exist on the
+            # running module.  Carrying getattr(..., None) would then clobber the
+            # new module body's own initialisers — turning a fresh Lock() into
+            # None and crashing the first caller that tries to hold it — so a
+            # name that was absent before is left at whatever the new body set.
+            carried = {name: getattr(module, name, missing) for name in _CARRIED_ATTRS}
             # Held across the swap so a job completing on the main thread can
             # never observe the half-rebuilt module dict — re-executing the
             # module body mints a fresh _pending/_active_job, and a _complete()
@@ -1101,7 +1372,8 @@ def _reload_worker(generation):
                     # cannot prevent this: it catches SyntaxError, not a NameError
                     # or bad import raised while the module body runs.
                     for name, value in carried.items():
-                        setattr(module, name, value)
+                        if value is not missing:
+                            setattr(module, name, value)
             module._start(register_event=False)
             module._log("fusion_bridge_impl reloaded")
         except Exception:
@@ -1172,6 +1444,9 @@ def _start_locked(register_event):
         except Exception:
             _cached_app_version = None
         _refresh_cached_state(_app)
+        # documentActivated does not fire for the document that is already open
+        # when the add-in starts, so the cache above is what seeds it.
+        _register_document_events()
         if not _register_event():
             return
 
@@ -1277,6 +1552,7 @@ def _shutdown_locked(unregister_event):
         _server_thread = None
     if unregister_event:
         _unregister_event()
+        _unregister_document_events()
         _uninstall_panel()
     _log("listener stopped")
 

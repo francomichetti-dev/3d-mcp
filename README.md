@@ -82,6 +82,48 @@ The palette talks to the agent service **directly** rather than through the add-
 implementation detail: the add-in's main thread is what serves bridge calls, so routing chat through
 it would deadlock on the agent's first Fusion tool call.
 
+### One chat per design
+
+Every design gets its own conversation, with its own memory. Switch tabs in Fusion and the panel
+switches with you — three designs open means three separate chats, and nothing one knows leaks into
+another. The header names the design you are talking to.
+
+Identity is the hard part, because `document.name` cannot do it: **every unsaved document reports
+the name `Untitled`**. The `(1)`/`(3)` in Fusion's tab strip is decoration for display and never
+reaches the API, so two untitled designs are indistinguishable by name. Instead:
+
+| Document | Key | Cost |
+| --- | --- | --- |
+| Saved | its `dataFile.id` URN | free — chatting never marks a saved design modified |
+| Unsaved | a UUID stamped into `design.attributes` | marks it modified, on first message only |
+
+The attribute is checked **first**, so an unsaved design that you later save keeps its conversation
+instead of being renamed into a second identity by the `dataFile` that just appeared.
+
+Switching is event-driven: the add-in's `documentActivated` handler keeps a cached key that
+`GET /document` answers from the HTTP thread, so following your tabs never occupies Fusion's main
+thread or queues behind a long modelling job.
+
+**Switching mid-turn stops the turn.** `fusion_execute` always acts on whatever document is active,
+so a turn that outlived a tab switch would start editing the design you just moved to. The panel
+says so, and the bridge independently refuses any pinned turn whose design is no longer active —
+which closes the gap where a tool call is already in flight.
+
+### Memory, and what happens when a design closes
+
+Conversations survive restarts. `~/.fusion-mcp/chats.json` (0600) stores a pointer to the SDK's own
+session plus what the panel needs to redraw; reopening resumes the real context, so the model still
+remembers what you were doing.
+
+**Closing a design compresses its chat.** The conversation is replayed once — forked, with no Fusion
+tools attached, since the design is gone — and reduced to core context: intent, key dimensions and
+parameters, meaningful entity names, decisions and rejected approaches, and anything left unfinished.
+Tool mechanics, code, retries and dead ends are dropped. The full session is then discarded, so a
+design worked on for months does not carry months of transcript. Reopening it seeds a fresh
+conversation with that summary, marked as something to verify rather than trust.
+
+The file is bounded at 50 designs, evicted least-recently-touched.
+
 Geometry runs automatically — being asked to confirm every extrude defeats the point. Anything that
 could **destroy** existing work pauses for approval in the panel instead:
 
@@ -91,7 +133,8 @@ could **destroy** existing work pauses for approval in the panel instead:
 | `deleteAllAfterMarker`, `markerPosition =` | rolls the timeline back over existing work |
 | `designType =` | switching parametric/direct erases the timeline |
 | `combineFeatures`, Cut / Intersect operations | boolean operations consume existing geometry |
-| `save()`, `saveAs()`, `close()` | writes over or discards a saved document |
+| `save()`, `saveAs()` | writes over a saved document |
+| any `.close(` | closes a document, discarding anything unsaved in it |
 
 The gate is a **PreToolUse hook**, not a permission callback. A permission callback only fires when
 the flow resolves to a prompt, so under `defaultMode: auto` it never ran — a body was deleted
@@ -241,6 +284,9 @@ add-in exceptions silently.
 | `no active Fusion design` | Open or create a document and switch to the Design workspace. |
 | A burst of parallel requests gets 503 | The connection cap (8) refused the excess so a flood cannot exhaust threads inside Fusion. Send requests serially. |
 | Panel opens but shows a connection error | The agent service isn't up. `scripts/fusion-chat.sh --status`, then check `agent.log`. |
+| Panel says "no design" with a design clearly open | It is not a Design document (drawing, or a non-Design workspace). The header names what the bridge sees. |
+| A design's chat looks empty after reopening it | Closing a design compresses its chat by design — expand "core context from before this design was closed" at the top. |
+| Two unsaved designs seem to share a chat | Neither has been messaged yet: identity is stamped on first message, so both correctly show an empty panel until then. |
 | `agent.log` says `uv not found` | Fusion launched from Finder inherits a minimal `PATH`. The panel probes absolute locations; if `uv` is elsewhere, start the service from a terminal with `scripts/fusion-chat.sh`. |
 | `agent.log` shows `ModuleNotFoundError: No module named 'encodings'` | Fusion's `PYTHONHOME`/`PYTHONPATH` leaked into the child. The spawn strips every `PYTHON*` variable — if you see this, the add-in is running stale code, so Stop/Run it. |
 
@@ -260,7 +306,7 @@ when the add-in is stopped, and 400 on a syntax error — with the running bridg
 ```sh
 scripts/uninstall.sh            # add-in symlink, skill link, MCP registration,
                                 # /fusion-chat command, and the agent service
-scripts/uninstall.sh --purge    # also deletes ~/.fusion-mcp (token + logs)
+scripts/uninstall.sh --purge    # also deletes ~/.fusion-mcp (token, logs, chats)
 ```
 
 Exports in `~/Documents/fusion-mcp-exports/` are never touched.
@@ -274,6 +320,10 @@ reload behaviour is covered by an offline harness that stubs `adsk`.
 
 The chat panel is verified from a genuine cold start — no service, no palette — by firing the
 command definition rather than calling its handler, so the test takes the same path a click does.
+Per-design chats are verified against three real open documents: separate conversations, transcripts
+restored on switching back, a mid-turn switch stopping the turn, context surviving a service restart
+(the model still answers from the resumed session, not just the redrawn transcript), and a closed
+design compressing to core context.
 
 Not yet done: a GPU render pipeline for photoreal product shots and turntables of exported models.
 

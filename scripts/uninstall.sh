@@ -143,7 +143,7 @@ purge_config_dir() {
     rm -rf "${CONFIG_DIR}"
 }
 
-step "Token and logs (${CONFIG_DIR})"
+step "Token, logs and saved chats (${CONFIG_DIR})"
 
 if [ ! -d "${CONFIG_DIR}" ]; then
     info "nothing to remove"
@@ -151,7 +151,7 @@ elif [ "${PURGE}" -eq 1 ]; then
     purge_config_dir
     info "deleted ${CONFIG_DIR}"
 elif [ -t 0 ]; then
-    printf '  Delete %s (token, addin.log, server.log)? [y/N] ' "${CONFIG_DIR}"
+    printf '  Delete %s (token, logs, and every design chat)? [y/N] ' "${CONFIG_DIR}"
     read -r reply
     case "${reply}" in
         [yY]|[yY][eE][sS]) purge_config_dir; info "deleted ${CONFIG_DIR}" ;;
