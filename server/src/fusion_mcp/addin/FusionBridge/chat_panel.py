@@ -242,8 +242,51 @@ def uninstall():
 
     if _service is not None and _service.poll() is None:
         # Only ours to stop — a service the user started stays up.
-        try:
-            _service.terminate()
-        except Exception:
-            pass
+        _stop_service(_service)
     _service = None
+
+
+def _stop_service(service):
+    """Stop the whole spawned tree, without holding up Fusion's quit.
+
+    _service is the `uv run` wrapper, and it was started with
+    start_new_session=True, so terminate() signals the wrapper alone — if uv
+    does not forward it, the Python child survives as an orphan still holding
+    port 7655 and still polling a bridge that no longer exists. Signalling the
+    process GROUP reaches both.
+
+    Every wait here is deliberately short: this runs on Fusion's main thread
+    while it is quitting, so seconds spent here are seconds the application
+    appears to hang.
+    """
+    import signal
+    import time
+
+    try:
+        group = os.getpgid(service.pid)
+    except OSError:
+        group = None
+
+    try:
+        if group is not None:
+            os.killpg(group, signal.SIGTERM)
+        else:
+            service.terminate()
+    except OSError:
+        return          # already gone
+
+    deadline = time.monotonic() + 1.5
+    while time.monotonic() < deadline:
+        if service.poll() is not None:
+            return
+        time.sleep(0.05)
+
+    # Refused to go quietly. Kill it outright and do not wait — an orphan on
+    # the port is worse than a hard kill, and a hung quit is worse than both.
+    try:
+        if group is not None:
+            os.killpg(group, signal.SIGKILL)
+        else:
+            service.kill()
+    except OSError:
+        pass

@@ -1412,7 +1412,15 @@ def run(context=None):
 
 
 def stop(context=None):
-    _shutdown(unregister_event=True)
+    # Timed because "Fusion is slow to quit" is otherwise unfalsifiable: this
+    # runs on the main thread during shutdown, so any time spent here is time
+    # the application appears frozen. The number in the log says whether the
+    # add-in is responsible or merely present while something else is slow.
+    started = time.monotonic()
+    try:
+        _shutdown(unregister_event=True)
+    finally:
+        _log("stop() took %.2fs" % (time.monotonic() - started))
 
 
 def _start(register_event):
