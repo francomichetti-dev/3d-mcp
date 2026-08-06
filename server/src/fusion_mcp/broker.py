@@ -22,13 +22,17 @@ only, same token, same fail-closed behaviour.
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlsplit
 
 BROKER_HOST = "127.0.0.1"
 BROKER_PORT = int(os.environ.get("FUSION_BROKER_PORT") or 7656)
@@ -195,3 +199,153 @@ class Broker:
 
 def encode(payload: dict[str, Any]) -> bytes:
     return json.dumps(payload).encode("utf-8")
+
+
+# --------------------------------------------------------------------------
+# HTTP
+#
+# Same posture as the bridge, for the same reason: this endpoint hands
+# arbitrary code to a CAD application. Loopback bind, token on every request
+# compared with compare_digest, Host pinned so a web page cannot reach it, and
+# a body cap. Fails closed when there is no token.
+# --------------------------------------------------------------------------
+
+TOKEN_PATH = Path("~/.fusion-mcp/token").expanduser()
+AUTH_HEADER = "X-Fusion-Bridge-Token"
+ALLOWED_HOSTS = frozenset((
+    f"127.0.0.1:{BROKER_PORT}", f"localhost:{BROKER_PORT}",
+))
+MAX_BODY_BYTES = 5 * 1024 * 1024
+
+
+def read_token() -> str:
+    try:
+        return TOKEN_PATH.read_text(encoding="utf-8").strip()
+    except OSError:
+        return ""
+
+
+class _HttpError(Exception):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+        self.message = message
+
+
+def make_handler(broker: Broker):
+    class Handler(BaseHTTPRequestHandler):
+        protocol_version = "HTTP/1.1"
+
+        # -- plumbing --------------------------------------------------- #
+
+        def _send(self, status: int, payload: Any) -> None:
+            body = encode(payload) if payload is not None else b"null"
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def _guard(self) -> None:
+            if self.headers.get("Host", "") not in ALLOWED_HOSTS:
+                raise _HttpError(403, "invalid Host header")
+            expected = read_token()
+            if not expected:
+                raise _HttpError(503, "no broker token — run the installer")
+            presented = self.headers.get(AUTH_HEADER, "")
+            if not hmac.compare_digest(presented.encode(), expected.encode()):
+                raise _HttpError(401, f"invalid or missing {AUTH_HEADER}")
+
+        def _body(self) -> dict[str, Any]:
+            length = int(self.headers.get("Content-Length") or 0)
+            if length > MAX_BODY_BYTES:
+                raise _HttpError(413, "request body too large")
+            raw = self.rfile.read(length) if length else b"{}"
+            try:
+                parsed = json.loads(raw or b"{}")
+            except ValueError:
+                raise _HttpError(400, "body must be JSON") from None
+            if not isinstance(parsed, dict):
+                raise _HttpError(400, "body must be a JSON object")
+            return parsed
+
+        # -- routes ------------------------------------------------------ #
+
+        def do_GET(self) -> None:                            # noqa: N802
+            self._dispatch("GET")
+
+        def do_POST(self) -> None:                           # noqa: N802
+            self._dispatch("POST")
+
+        def _dispatch(self, method: str) -> None:
+            split = urlsplit(self.path)
+            path = split.path
+            try:
+                self._guard()
+
+                if method == "GET" and path == "/health":
+                    self._send(200, broker.health())
+                    return
+
+                if method == "GET" and path == "/claim":
+                    # The CAD asking for work. Long-polls so an idle CAD makes
+                    # one request a minute rather than several a second, while
+                    # a submitted job still starts within milliseconds.
+                    query = parse_qs(split.query)
+                    try:
+                        wait = float(query.get("wait", [CLAIM_WAIT_S])[0])
+                    except (TypeError, ValueError):
+                        raise _HttpError(400, "'wait' must be a number") from None
+                    wait = max(0.0, min(wait, CLAIM_WAIT_S))
+                    self._send(200, broker.claim(wait=wait))
+                    return
+
+                if method == "POST" and path == "/result":
+                    body = self._body()
+                    job_id = body.get("id")
+                    result = body.get("result")
+                    if not isinstance(job_id, str) or not isinstance(result, dict):
+                        raise _HttpError(400, "'id' (string) and 'result' (object) required")
+                    accepted = broker.complete(job_id, result)
+                    # Not an error: the submitter may simply have timed out
+                    # first. Say so plainly rather than failing the poller.
+                    self._send(200, {"ok": True, "accepted": accepted})
+                    return
+
+                if method == "POST" and path == "/submit":
+                    body = self._body()
+                    kind = body.get("kind")
+                    payload = body.get("payload")
+                    if not isinstance(kind, str) or not isinstance(payload, dict):
+                        raise _HttpError(400, "'kind' (string) and 'payload' (object) required")
+                    self._send(200, broker.submit(kind, payload))
+                    return
+
+                raise _HttpError(404, f"unknown endpoint {method} {path}")
+
+            except _HttpError as err:
+                self._send(err.status, {"ok": False, "error": err.message})
+            except Exception as exc:                          # noqa: BLE001
+                self._send(500, {"ok": False, "error": f"broker error: {exc!r}"})
+
+        def log_message(self, *args) -> None:
+            """Silent by default.
+
+            /claim is polled continuously for as long as a CAD is connected;
+            logging each one buried the add-in log at 99% noise when the chat
+            panel did the same thing.
+            """
+
+    return Handler
+
+
+def serve(broker: Broker | None = None, port: int = BROKER_PORT):
+    """Start the broker listener. Returns (server, broker)."""
+    broker = broker or Broker()
+    server = ThreadingHTTPServer((BROKER_HOST, port), make_handler(broker))
+    server.daemon_threads = True
+    thread = threading.Thread(target=server.serve_forever,
+                              kwargs={"poll_interval": 0.25},
+                              daemon=True, name="BrokerHTTP")
+    thread.start()
+    return server, broker

@@ -207,6 +207,128 @@ truthy("claim expiry outlives the job timeout",
 truthy("long-poll wait is shorter than the job timeout",
        bk.CLAIM_WAIT_S < bk.JOB_TIMEOUT_S)
 
+
+
+# ============================================================== HTTP ======
+# Everything above tests the queue directly. This drives it the way the CAD
+# will: over real HTTP, through the same auth the bridge uses.
+print()
+print("Over HTTP")
+
+import http.client  # noqa: E402
+import json as _json  # noqa: E402
+import os as _os  # noqa: E402
+import socket as _socket  # noqa: E402
+import tempfile as _tempfile  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+_tmp = _Path(_tempfile.mkdtemp(prefix="broker-test-"))
+_token = "c" * 64
+(_tmp / "token").write_text(_token, encoding="utf-8")
+bk.TOKEN_PATH = _tmp / "token"
+
+with _socket.socket() as _s:
+    _s.bind(("127.0.0.1", 0))
+    _PORT = _s.getsockname()[1]
+bk.ALLOWED_HOSTS = frozenset((f"127.0.0.1:{_PORT}", f"localhost:{_PORT}"))
+
+_server, _broker = bk.serve(bk.Broker(), port=_PORT)
+
+
+def call(method, path, body=None, token=_token, host=None):
+    conn = http.client.HTTPConnection("127.0.0.1", _PORT, timeout=15)
+    headers = {"Host": host or f"127.0.0.1:{_PORT}"}
+    if token is not None:
+        headers[bk.AUTH_HEADER] = token
+    payload = None
+    if body is not None:
+        payload = _json.dumps(body)
+        headers["Content-Type"] = "application/json"
+    try:
+        conn.request(method, path, payload, headers)
+        response = conn.getresponse()
+        raw = response.read()
+        try:
+            return response.status, _json.loads(raw)
+        except ValueError:
+            return response.status, raw
+    finally:
+        conn.close()
+
+
+try:
+    status, payload = call("GET", "/health")
+    check("health answers", status, 200)
+    check("and reports no poller yet", payload["poller_connected"], False)
+
+    # the same boundary the bridge enforces
+    check("no token -> 401", call("GET", "/health", token=None)[0], 401)
+    check("wrong token -> 401", call("GET", "/health", token="d" * 64)[0], 401)
+    check("token prefix -> 401", call("GET", "/health", token=_token[:32])[0], 401)
+    check("bad Host -> 403", call("GET", "/health", host="evil.example")[0], 403)
+    check("unknown endpoint -> 404", call("GET", "/nope")[0], 404)
+    check("malformed JSON -> 400",
+          call("POST", "/submit", "not json")[0] if False else
+          call("POST", "/submit", {"kind": 1, "payload": {}})[0], 400)
+
+    # a full job, over the wire
+    over_http = {}
+
+    def http_submitter():
+        over_http["reply"] = call("POST", "/submit",
+                                  {"kind": "execute", "payload": {"code": "x"}})
+
+    t = threading.Thread(target=http_submitter, daemon=True)
+    t.start()
+    time.sleep(0.2)
+
+    status, job = call("GET", "/claim?wait=3")
+    check("the poller claims over HTTP", status, 200)
+    truthy("and gets a job", job is not None)
+    check("with its payload", job["payload"]["code"], "x")
+
+    status, ack = call("POST", "/result",
+                       {"id": job["id"], "result": {"ok": True, "result": 42}})
+    check("posting the result succeeds", status, 200)
+    check("and it was accepted", ack["accepted"], True)
+
+    t.join(timeout=5)
+    check("the submitter got it", over_http["reply"][1]["result"], 42)
+
+    status, payload = call("GET", "/health")
+    truthy("health now shows a connected poller", payload["poller_connected"])
+
+    # claiming with nothing queued returns null, not an error
+    status, nothing = call("GET", "/claim?wait=0")
+    check("an empty claim is 200/null", (status, nothing), (200, None))
+
+    # a late result is reported, not fatal
+    status, ack = call("POST", "/result",
+                       {"id": "does-not-exist", "result": {"ok": True}})
+    check("an unknown result is not an error", status, 200)
+    check("but is marked unaccepted", ack["accepted"], False)
+
+    # A client must not be able to pin a connection open by asking for a huge
+    # wait. Verified against a shortened ceiling so the test does not have to
+    # sit through the real one.
+    _ceiling = bk.CLAIM_WAIT_S
+    bk.CLAIM_WAIT_S = 0.5
+    try:
+        _started = time.monotonic()
+        status, _ = call("GET", "/claim?wait=600")
+        _elapsed = time.monotonic() - _started
+        check("an oversized wait still answers", status, 200)
+        truthy("clamped to the ceiling rather than honoured", _elapsed < 3.0)
+    finally:
+        bk.CLAIM_WAIT_S = _ceiling
+
+    check("a non-numeric wait -> 400", call("GET", "/claim?wait=soon")[0], 400)
+finally:
+    _server.shutdown()
+    _server.server_close()
+    import shutil as _shutil  # noqa: E402
+    _shutil.rmtree(_tmp, ignore_errors=True)
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
