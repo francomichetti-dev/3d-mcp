@@ -1,0 +1,107 @@
+name: release
+
+# Tag-driven: `git tag v0.1.0 && git push --tags`. The tag must match the
+# version in server/pyproject.toml and server.json — the guard below refuses
+# the release rather than shipping a package whose registry entry points at a
+# version that does not exist on PyPI.
+on:
+  push:
+    tags: ["v*"]
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Versions must agree with the tag
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          pkg=$(grep -m1 '^version = ' server/pyproject.toml | cut -d'"' -f2)
+          srv=$(python3 -c 'import json;print(json.load(open("server.json"))["version"])')
+          pkgver=$(python3 -c 'import json;print(json.load(open("server.json"))["packages"][0]["version"])')
+          init=$(grep -m1 '__version__' server/src/fusion_mcp/__init__.py | cut -d'"' -f2)
+          printf 'tag=%s pyproject=%s server.json=%s package=%s __init__=%s\n' \
+            "$tag" "$pkg" "$srv" "$pkgver" "$init"
+          [ "$tag" = "$pkg" ] && [ "$tag" = "$srv" ] && [ "$tag" = "$pkgver" ] && [ "$tag" = "$init" ] || {
+            echo "::error::version mismatch — the tag, server/pyproject.toml, server.json (both places) and __init__.py must all match"
+            exit 1
+          }
+
+      - name: The registry verifies ownership through this marker
+        run: |
+          grep -q "mcp-name: io.github.francomichetti-dev/3d-mcp" server/README.md || {
+            echo "::error::server/README.md is missing the mcp-name marker; PyPI ownership check would fail"
+            exit 1
+          }
+
+  pypi:
+    needs: check
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # Trusted publishing: PyPI verifies this workflow's OIDC identity, so
+      # there is no API token stored in the repository at all.
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Build
+        run: uv build --directory server --out-dir "$GITHUB_WORKSPACE/dist"
+
+      - name: The wheel must carry the add-in, or install is a dead end
+        run: |
+          python3 - <<'PY'
+          import glob, sys, zipfile
+          names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
+          needed = [
+              "fusion_mcp/addin/FusionBridge/FusionBridge.py",
+              "fusion_mcp/addin/FusionBridge/FusionBridge.manifest",
+              "fusion_mcp/addin/FusionBridge/fusion_bridge_impl.py",
+          ]
+          missing = [n for n in needed if n not in names]
+          if missing:
+              sys.exit("wheel is missing the add-in: " + ", ".join(missing))
+          print("add-in present in the wheel")
+          PY
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+
+  registry:
+    needs: pypi
+    runs-on: ubuntu-latest
+    permissions:
+      # OIDC again, this time so mcp-publisher can prove the io.github.* namespace
+      # belongs to this repository's owner. No secrets either.
+      id-token: write
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Wait for PyPI to serve the new version
+        run: |
+          # The registry validates that the package exists before accepting the
+          # entry, and PyPI's API is not instantly consistent after an upload.
+          version="${GITHUB_REF_NAME#v}"
+          for i in $(seq 1 30); do
+            if curl -fsS "https://pypi.org/pypi/fusion-3d-mcp/$version/json" >/dev/null 2>&1; then
+              echo "fusion-3d-mcp $version is live on PyPI"; exit 0
+            fi
+            sleep 10
+          done
+          echo "::error::fusion-3d-mcp $version did not appear on PyPI in 5 minutes"
+          exit 1
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" \
+            | tar xz mcp-publisher
+
+      - name: Publish to the MCP registry
+        run: |
+          ./mcp-publisher login github-oidc
+          ./mcp-publisher publish

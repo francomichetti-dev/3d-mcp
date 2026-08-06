@@ -1581,12 +1581,37 @@ def _panel_module():
     return module
 
 
+def _find_repo():
+    """Walk up looking for the checkout that owns this add-in.
+
+    Not a fixed number of dirname() calls: the add-in is nested differently
+    depending on how it got here — symlinked out of a checkout by install.sh, or
+    copied out of an installed wheel by `fusion-3d-mcp install`, where there is
+    no checkout above it at all.  Identified by the agent/ directory because that
+    is the thing the panel actually needs.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    for _ in range(8):
+        parent = os.path.dirname(here)
+        if parent == here:
+            break
+        here = parent
+        if os.path.isdir(os.path.join(here, "agent")):
+            return here
+    return None
+
+
 def _install_panel():
     try:
         panel = _panel_module()
         if panel is None:
             return
-        repo = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        repo = _find_repo()
+        if repo is None:
+            # Installed from PyPI rather than a checkout: the MCP tools work
+            # exactly as before, there is simply no chat service to launch.
+            _log("chat panel skipped — no checkout found above the add-in")
+            return
         panel.install(repo)
         _log("chat panel installed")
     except Exception:

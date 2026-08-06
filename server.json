@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.francomichetti-dev/3d-mcp",
+  "title": "Autodesk Fusion",
+  "description": "Model in Autodesk Fusion by prompting: write Fusion API Python, run it in a live session, look at the result through viewport screenshots, and export print-ready STL/STEP/3MF/USD.",
+  "version": "0.1.0",
+  "websiteUrl": "https://github.com/francomichetti-dev/3d-mcp",
+  "repository": {
+    "url": "https://github.com/francomichetti-dev/3d-mcp",
+    "source": "github"
+  },
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "fusion-3d-mcp",
+      "version": "0.1.0",
+      "runtimeHint": "uvx",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}

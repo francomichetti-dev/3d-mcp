@@ -28,7 +28,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-ADDIN_SOURCE="${REPO_DIR}/addin/FusionBridge"
+ADDIN_SOURCE="${REPO_DIR}/server/src/fusion_mcp/addin/FusionBridge"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
 ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
 
@@ -78,7 +78,8 @@ command -v uv      >/dev/null 2>&1 || die "uv not found — install it (https://
 command -v claude  >/dev/null 2>&1 || die "claude CLI not found — install Claude Code and re-run."
 
 [ -d "${ADDIN_SOURCE}" ] || die "add-in source missing: ${ADDIN_SOURCE}"
-[ -f "${REPO_DIR}/server/mcp_server.py" ] || die "MCP server missing: ${REPO_DIR}/server/mcp_server.py"
+[ -f "${REPO_DIR}/server/src/fusion_mcp/server.py" ] \
+    || die "MCP server missing: ${REPO_DIR}/server/src/fusion_mcp/server.py"
 
 if [ ! -d "${ADDINS_DIR}" ]; then
     die "Fusion AddIns directory not found:
@@ -247,7 +248,7 @@ fi
 # --frozen --no-sync: start from the .venv built above without re-resolving or
 # re-checking the lockfile, so a routine session start contacts no package index.
 claude mcp add "${MCP_NAME}" -s user -- \
-    uv run --frozen --no-sync --directory "${REPO_DIR}/server" mcp_server.py
+    uv run --frozen --no-sync --directory "${REPO_DIR}/server" fusion-3d-mcp
 info "registered as '${MCP_NAME}' (absolute path baked in, offline start)"
 
 # --- manual step -------------------------------------------------------------

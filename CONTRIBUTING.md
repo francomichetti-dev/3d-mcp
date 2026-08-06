@@ -57,6 +57,43 @@ palette caches its page, so re-pointing it at the service is what forces a reloa
 - **Loopback stays loopback.** A change that binds anything to a non-loopback address, weakens the
   token check, or adds an outbound call will not be merged.
 
+## Layout
+
+```
+server/src/fusion_mcp/          the published package (PyPI: fusion-3d-mcp)
+    server.py                   the MCP server itself
+    cli.py                      `fusion-3d-mcp` — bare invocation serves stdio
+    bootstrap.py                `install` / `uninstall` / `status`
+    addin/FusionBridge/         the Fusion add-in, shipped inside the package
+agent/                          the docked chat panel's service (repo only)
+skill/fusion-360/               Fusion API knowledge, linked into ~/.claude/skills
+```
+
+The add-in lives inside the package rather than at the repo root for a build reason: `uv build`
+builds the wheel from the sdist, and a `force-include` cannot reach outside the sdist root — an
+add-in above `server/` simply would not ship. One canonical copy also means the symlink a checkout
+creates and the copy `fusion-3d-mcp install` makes are always the same code.
+
+## Releasing
+
+Tag-driven, and every version must agree:
+
+```sh
+# bump all three, then:
+git tag v0.2.0 && git push --tags
+```
+
+- `server/pyproject.toml` → `version`
+- `server.json` → `version` **and** `packages[0].version`
+- `server/src/fusion_mcp/__init__.py` → `__version__`
+
+CI refuses the release if the tag and those disagree, or if `server/README.md` has lost its
+`mcp-name:` marker — the registry uses that marker to verify the PyPI package is yours, so a release
+without it would be rejected after the package was already published.
+
+Publishing uses OIDC throughout: PyPI trusted publishing and `mcp-publisher login github-oidc`. No
+tokens are stored in the repository.
+
 ## Reporting bugs
 
 Include your Fusion version (`Help → About`), what you asked for, and the relevant part of

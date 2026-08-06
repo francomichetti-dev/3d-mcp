@@ -37,12 +37,16 @@ Claude Code ──┐
 chat panel ───┘                       │
  (agent/)                             │  HTTP 127.0.0.1:7654 + token
                                       ▼
-                                   addin/    (Fusion add-in, Python)
+                              FusionBridge   (Fusion add-in, Python)
                                       │
                                       │  CustomEvent marshal → main thread
                                       ▼
                                Fusion API (adsk.core / adsk.fusion)
 ```
+
+The add-in lives at `server/src/fusion_mcp/addin/FusionBridge/` — inside the package rather than at
+the repo root, so a PyPI install ships it and `fusion-3d-mcp install` can put it where Fusion looks.
+A checkout symlinks it from there instead, so edits are live.
 
 Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-chat-panel) docked
 inside Fusion. Both speak MCP to the same server.
@@ -216,18 +220,34 @@ A sample of what it documents, all verified against a running Fusion 2704:
 
 ## Install
 
+**Just the MCP tools**, from PyPI — no checkout needed:
+
+```sh
+uvx fusion-3d-mcp install          # copies the add-in into Fusion, creates the token
+claude mcp add fusion -- uvx fusion-3d-mcp
+uvx fusion-3d-mcp status           # check it
+```
+
+**Everything**, including the docked chat panel, the knowledge skill and the `/fusion-chat` command:
+
 ```sh
 git clone https://github.com/francomichetti-dev/3d-mcp.git
 cd 3d-mcp
 scripts/install.sh
 ```
 
+The rest of this section describes the checkout install. Note the two put the add-in in place
+differently: the checkout **symlinks** it so your edits are live, while the PyPI package **copies**
+it — a `uvx` install lives in a disposable cache that a symlink would outlive. So after upgrading
+the package, re-run `uvx fusion-3d-mcp install`; if you forget, the version check between server and
+bridge says so rather than misbehaving quietly.
+
 > `install.sh` bakes the **absolute** path of this checkout into the MCP registration and
 > symlinks the add-in from it. Moving or renaming the directory afterwards breaks both —
 > re-run `scripts/install.sh` from the new location if you do.
 
 The installer creates `~/.fusion-mcp/` (0700) with a random 64-hex-char token (0600), symlinks
-`addin/FusionBridge` into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
+the add-in into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
 builds the server **and agent** venvs with `uv sync`, registers the MCP server with Claude Code at
 user scope, and generates the `/fusion-chat` command in `~/.claude/commands/`. Everything is
 registered with absolute paths, so it works from any directory and in any project.

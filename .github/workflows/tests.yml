@@ -42,7 +42,7 @@ jobs:
           python-version: '3.11'
 
       - name: Compile every Python file
-        run: python -m compileall -q addin server agent tests
+        run: python -m compileall -q server agent tests
 
       - name: Check every shell script parses
         run: for f in scripts/*.sh tests/*.sh; do bash -n "$f"; done

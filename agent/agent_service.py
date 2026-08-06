@@ -418,7 +418,7 @@ class Session:
                     "args": [
                         "run", "--frozen", "--no-sync",
                         "--directory", str(SERVER_DIR),
-                        "mcp_server.py",
+                        "fusion-3d-mcp",
                     ],
                 }
             },
