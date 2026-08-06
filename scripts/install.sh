@@ -75,7 +75,14 @@ step "Checking prerequisites"
 
 command -v python3 >/dev/null 2>&1 || die "python3 not found (needed to generate the token)."
 command -v uv      >/dev/null 2>&1 || die "uv not found — install it (https://docs.astral.sh/uv/) and re-run."
-command -v claude  >/dev/null 2>&1 || die "claude CLI not found — install Claude Code and re-run."
+
+# The claude CLI is a CONVENIENCE, not a requirement. The MCP server imports
+# nothing Claude-specific and works with any MCP client; the CLI is only used
+# here to register it automatically and to install the /fusion-chat command.
+# Failing the whole install without it locked out everyone using Claude Desktop,
+# Cline, Zed or anything else that speaks MCP.
+HAVE_CLAUDE=1
+command -v claude >/dev/null 2>&1 || HAVE_CLAUDE=0
 
 [ -d "${ADDIN_SOURCE}" ] || die "add-in source missing: ${ADDIN_SOURCE}"
 [ -f "${REPO_DIR}/server/src/fusion_mcp/server.py" ] \
@@ -206,6 +213,10 @@ fi
 # directories, and a repo-local file would only load inside this repo.
 step "Linking the Fusion knowledge skill"
 
+if [ "${HAVE_CLAUDE}" -eq 0 ]; then
+    info "note: skills are a Claude Code feature; linking anyway, harmless if unused"
+fi
+
 mkdir -p "${SKILLS_DIR}"
 
 if [ -L "${SKILL_LINK}" ]; then
@@ -238,7 +249,13 @@ if [ -L "${COMMANDS_DIR}" ]; then
 fi
 mkdir -p "${COMMANDS_DIR}"
 
-if [ -f "${REPO_DIR}/commands/fusion-chat.md" ]; then
+if [ "${HAVE_CLAUDE}" -eq 0 ]; then
+    # A slash command is meaningless without Claude Code. The panel itself
+    # still works - open it from the Fusion Chat button in Fusion's ADD-INS
+    # panel, or run scripts/fusion-chat.sh.
+    info "skipped: no claude CLI — slash commands are a Claude Code feature"
+    info "the chat panel still works: use the Fusion Chat button inside Fusion"
+elif [ -f "${REPO_DIR}/commands/fusion-chat.md" ]; then
     sed "s#__REPO__#${REPO_DIR}#g" "${REPO_DIR}/commands/fusion-chat.md" \
         > "${COMMANDS_DIR}/fusion-chat.md"
     info "installed ${COMMANDS_DIR}/fusion-chat.md"
@@ -282,9 +299,22 @@ fi
 
 # --- MCP registration --------------------------------------------------------
 
-step "Registering the MCP server with Claude Code (user scope)"
+step "Registering the MCP server"
 
-if claude mcp get "${MCP_NAME}" >/dev/null 2>&1; then
+if [ "${HAVE_CLAUDE}" -eq 0 ]; then
+    # Any MCP client can run this server; only auto-registration needs the CLI.
+    info "no claude CLI found — add this to your MCP client's config instead:"
+    printf '\n'
+    printf '    "mcpServers": {\n'
+    printf '      "%s": {\n' "${MCP_NAME}"
+    printf '        "command": "uv",\n'
+    printf '        "args": ["run", "--frozen", "--no-sync",\n'
+    printf '                 "--directory", "%s/server", "fusion-3d-mcp"]\n' "${REPO_DIR}"
+    printf '      }\n'
+    printf '    }\n\n'
+    info "Claude Desktop: ~/Library/Application Support/Claude/claude_desktop_config.json"
+    info "others: see the README"
+elif claude mcp get "${MCP_NAME}" >/dev/null 2>&1; then
     # No -s: remove from whichever scope holds it, so a stale local-scope entry
     # cannot shadow the user-scope one we are about to add.
     claude mcp remove "${MCP_NAME}" >/dev/null 2>&1 || true
@@ -293,9 +323,11 @@ fi
 
 # --frozen --no-sync: start from the .venv built above without re-resolving or
 # re-checking the lockfile, so a routine session start contacts no package index.
-claude mcp add "${MCP_NAME}" -s user -- \
-    uv run --frozen --no-sync --directory "${REPO_DIR}/server" fusion-3d-mcp
-info "registered as '${MCP_NAME}' (absolute path baked in, offline start)"
+if [ "${HAVE_CLAUDE}" -eq 1 ]; then
+    claude mcp add "${MCP_NAME}" -s user -- \
+        uv run --frozen --no-sync --directory "${REPO_DIR}/server" fusion-3d-mcp
+    info "registered as '${MCP_NAME}' (absolute path baked in, offline start)"
+fi
 
 # --- manual step -------------------------------------------------------------
 
