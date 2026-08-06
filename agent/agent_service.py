@@ -1070,8 +1070,9 @@ async def handle_events(request: web.Request) -> web.StreamResponse:
 async def handle_viewport(request: web.Request) -> web.Response:
     """Current viewport as a PNG, straight from the bridge.
 
-    The chat shows this after every turn so the person sees the model without
-    the agent having to spend a tool call on it.
+    Requested by the panel's Screenshot button. Deliberately not fired at the
+    end of a turn: the panel is docked beside the viewport, so repeating the
+    finished result as an image only pushes the conversation off screen.
     """
     token = read_token()
     if token is None:

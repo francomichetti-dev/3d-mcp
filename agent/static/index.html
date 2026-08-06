@@ -202,7 +202,7 @@ function permission(ev) {
 // conversation looks identical whether you just watched it happen or came back
 // to the design an hour later. `live` gates the side effects that only make
 // sense in the moment.
-function render(ev, live) {
+function render(ev) {
   if (ev.type === 'user') {
     current = null;
     const body = block('you', 'You');
@@ -229,7 +229,10 @@ function render(ev, live) {
     const b = document.createElement('b'); b.textContent = ev.name;
     d.append(b, ' ' + (ev.summary || ''));
     log.appendChild(d);
-    if (live && ev.name === 'fusion_screenshot') setTimeout(viewport, 400);
+    // The agent still screenshots after every geometry change — that is how it
+    // catches a wrong extrude — but the panel does not mirror the image back.
+    // It sits beside the viewport; the tool line above is enough to say it
+    // looked.
   } else if (ev.type === 'notice') {
     status(ev.text, 'notice');
   } else if (ev.type === 'error') {
@@ -261,7 +264,7 @@ function applyDocument(d) {
     status('Open a design in Fusion to start a chat.');
   } else {
     if (d.core_context) coreContext(d.core_context);
-    (d.transcript || []).forEach((ev) => render(ev, false));
+    (d.transcript || []).forEach(render);
     if (!(d.transcript || []).length && !d.core_context) {
       status('New chat for this design.');
     }
@@ -289,11 +292,13 @@ es.onmessage = (e) => {
   if (ev.doc && ev.doc !== docKey) return;
 
   if (ev.type === 'turn_end') {
+    // No automatic screenshot here: the panel is docked next to the viewport,
+    // so the finished result is already on screen. The Screenshot button is
+    // there for when a still is actually wanted.
     busy = false; send.disabled = false; current = null;
     document.getElementById('attach').disabled = false;
-    viewport();
   } else {
-    render(ev, true);
+    render(ev);
   }
   if (stick) scroll();
 };
