@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 #
-# Open the NIBBLER chat panel inside Fusion.
+# Open the Fusion Chat panel inside Fusion.
 #
-#   scripts/nibbler.sh          start the agent service (if needed) and show the panel
-#   scripts/nibbler.sh --stop   hide the panel and stop the service
-#   scripts/nibbler.sh --status report what is and isn't running
+#   scripts/fusion-chat.sh          start the agent service (if needed) and show the panel
+#   scripts/fusion-chat.sh --stop   hide the panel and stop the service
+#   scripts/fusion-chat.sh --status report what is and isn't running
 #
 # Idempotent: safe to run repeatedly. Opens the palette through the bridge, so
 # it never requires stopping and re-running the add-in.
@@ -20,11 +20,11 @@ REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 AGENT_DIR="${REPO_DIR}/agent"
 TOKEN_FILE="${HOME}/.fusion-mcp/token"
 BRIDGE="http://127.0.0.1:7654"
-PORT="${NIBBLER_PORT:-7655}"
+PORT="${FUSION_CHAT_PORT:-7655}"
 SERVICE="http://127.0.0.1:${PORT}"
 LOG="${HOME}/.fusion-mcp/agent.log"
 
-PALETTE_ID="NibblerChatPalette"
+PALETTE_ID="FusionChatPalette"
 
 info() { printf '  %s\n' "$*"; }
 step() { printf '\n==> %s\n' "$*"; }
@@ -51,7 +51,7 @@ show_palette() {
     IFS= read -r -d '' code <<PY || true
 pal = ui.palettes.itemById("${PALETTE_ID}")
 if pal is None:
-    pal = ui.palettes.add("${PALETTE_ID}", "NIBBLER", "${SERVICE}/", True, True, True, 420, 620)
+    pal = ui.palettes.add("${PALETTE_ID}", "Fusion Chat", "${SERVICE}/", True, True, True, 420, 620)
     try:
         pal.dockingState = adsk.core.PaletteDockingStates.PaletteDockStateRight
     except Exception:
@@ -84,7 +84,7 @@ PY
 
 case "${1:-}" in
     --stop)
-        step "Stopping NIBBLER"
+        step "Stopping Fusion Chat"
         hide_palette
         info "panel hidden"
         if pkill -f "agent_service.py" >/dev/null 2>&1; then
@@ -142,11 +142,24 @@ fi
 
 step "Opening the panel in Fusion"
 show_palette >/dev/null || die "could not open the palette — see ${HOME}/.fusion-mcp/addin.log"
-info "NIBBLER is docked on the right of the Fusion window."
+info "Fusion Chat is docked on the right of the Fusion window."
 
-agent_state="$(curl -fsS --max-time 2 "${SERVICE}/health" 2>/dev/null || echo '{}')"
-case "${agent_state}" in
-    *'"agent": true'*)  info "agent ready — type in the panel to start modelling" ;;
-    *)                  info "agent still connecting — the panel will say when it's ready" ;;
-esac
+# The service binds its port before the agent client finishes connecting, so a
+# health check taken the instant the port opens still reports agent:false. Give
+# it a few seconds rather than telling the user to wait for something that has
+# almost certainly already happened.
+agent_ready=""
+for _ in $(seq 1 10); do
+    agent_state="$(curl -fsS --max-time 2 "${SERVICE}/health" 2>/dev/null || echo '{}')"
+    case "${agent_state}" in
+        *'"agent": true'*) agent_ready=1; break ;;
+    esac
+    sleep 1
+done
+
+if [ -n "${agent_ready}" ]; then
+    info "agent ready — type in the panel to start modelling"
+else
+    info "agent still connecting — the panel will say when it's ready"
+fi
 printf '\n'

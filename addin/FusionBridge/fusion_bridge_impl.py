@@ -1286,21 +1286,21 @@ def _panel_module():
     import importlib.util
     import sys
 
-    existing = sys.modules.get("nibbler_panel")
+    existing = sys.modules.get("chat_panel")
     if existing is not None:
         return existing
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "nibbler_panel.py")
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chat_panel.py")
     if not os.path.exists(path):
         return None
-    spec = importlib.util.spec_from_file_location("nibbler_panel", path)
+    spec = importlib.util.spec_from_file_location("chat_panel", path)
     if spec is None or spec.loader is None:
         return None
     module = importlib.util.module_from_spec(spec)
-    sys.modules["nibbler_panel"] = module
+    sys.modules["chat_panel"] = module
     try:
         spec.loader.exec_module(module)
     except BaseException:
-        sys.modules.pop("nibbler_panel", None)
+        sys.modules.pop("chat_panel", None)
         raise
     return module
 
@@ -1321,7 +1321,7 @@ def _install_panel():
 def _uninstall_panel():
     try:
         import sys
-        panel = sys.modules.get("nibbler_panel")
+        panel = sys.modules.get("chat_panel")
         if panel is not None:
             panel.uninstall()
     except Exception:

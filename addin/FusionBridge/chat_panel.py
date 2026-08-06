@@ -1,4 +1,4 @@
-"""The NIBBLER chat palette — a docked webview inside Fusion.
+"""The Fusion Chat palette — a docked webview inside Fusion.
 
 The palette points at the agent service on 127.0.0.1:7655 and talks to it
 DIRECTLY over HTTP. It deliberately does not route through this add-in's
@@ -17,13 +17,13 @@ import urllib.request
 
 import adsk.core
 
-PALETTE_ID = "NibblerChatPalette"
-PALETTE_NAME = "NIBBLER"
-CMD_ID = "NibblerChatShow"
-CMD_NAME = "NIBBLER chat"
-CMD_TOOLTIP = "Model by prompting — opens the NIBBLER chat panel"
+PALETTE_ID = "FusionChatPalette"
+PALETTE_NAME = "Fusion Chat"
+CMD_ID = "FusionChatShow"
+CMD_NAME = "Fusion Chat"
+CMD_TOOLTIP = "Model by prompting — opens the Fusion Chat panel"
 
-SERVICE_URL = "http://127.0.0.1:%d/" % int(os.environ.get("NIBBLER_PORT") or 7655)
+SERVICE_URL = "http://127.0.0.1:%d/" % int(os.environ.get("FUSION_CHAT_PORT") or 7655)
 HEALTH_URL = SERVICE_URL + "health"
 
 # Populated by install(); torn down by uninstall().
@@ -95,7 +95,7 @@ def _start_service(repo_dir):
     uv = _find_uv()
     if uv is None:
         _log("uv not found on any known path; cannot start the agent service", "ERROR")
-        return "uv not found — run scripts/nibbler.sh from a terminal instead"
+        return "uv not found — run scripts/fusion-chat.sh from a terminal instead"
 
     # Fusion embeds its own CPython and exports PYTHONHOME/PYTHONPATH to point
     # at it. Inherited by the subprocess, those make the venv's interpreter
@@ -167,8 +167,8 @@ class _ShowHandler(adsk.core.CommandCreatedEventHandler):
                 pass
         except Exception:
             _log("failed to open the panel:\n" + traceback.format_exc(), "ERROR")
-            ui.messageBox("NIBBLER could not open:\n" + traceback.format_exc(),
-                          "NIBBLER")
+            ui.messageBox("Fusion Chat could not open:\n" + traceback.format_exc(),
+                          "Fusion Chat")
 
 
 def install(repo_dir):

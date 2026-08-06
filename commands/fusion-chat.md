@@ -1,10 +1,10 @@
 ---
-description: Open the NIBBLER chat panel inside Fusion 360
+description: Open the Fusion Chat panel inside Fusion 360
 argument-hint: "[--stop | --status]"
-allowed-tools: Bash(__REPO__/scripts/nibbler.sh:*)
+allowed-tools: Bash(__REPO__/scripts/fusion-chat.sh:*)
 ---
 
-Run `__REPO__/scripts/nibbler.sh $ARGUMENTS` once and report the result.
+Run `__REPO__/scripts/fusion-chat.sh $ARGUMENTS` once and report the result.
 
 The script is idempotent: it starts the agent service if it isn't already up
 and opens (or focuses) the docked panel in Fusion. Do not run it more than once

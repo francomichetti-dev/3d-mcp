@@ -1,4 +1,4 @@
-"""NIBBLER chat service — a local agent loop that drives Fusion by prompt.
+"""Fusion Chat service — a local agent loop that drives Fusion by prompt.
 
 Architecture
 ------------
@@ -54,14 +54,14 @@ REPO = Path(__file__).resolve().parent.parent
 SERVER_DIR = REPO / "server"
 
 BIND_HOST = "127.0.0.1"
-BIND_PORT = int(os.environ.get("NIBBLER_PORT") or 7655)
+BIND_PORT = int(os.environ.get("FUSION_CHAT_PORT") or 7655)
 
 BRIDGE_URL = "http://127.0.0.1:7654"
 TOKEN_PATH = Path("~/.fusion-mcp/token").expanduser()
 
 STATIC = Path(__file__).resolve().parent / "static"
 
-log = logging.getLogger("nibbler")
+log = logging.getLogger("fusion-chat")
 
 
 # --------------------------------------------------------------------------
@@ -172,13 +172,13 @@ class Session:
             return {"hookSpecificOutput": {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
-                "permissionDecisionReason": "approved in the NIBBLER panel",
+                "permissionDecisionReason": "approved in the Fusion Chat panel",
             }}
         return {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
             "permissionDecisionReason": (
-                "The person declined this destructive step in the NIBBLER panel. "
+                "The person declined this destructive step in the Fusion Chat panel. "
                 "Do not retry it; propose a non-destructive alternative instead."
             ),
         }}
@@ -455,7 +455,7 @@ def build_app() -> web.Application:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="NIBBLER chat service")
+    parser = argparse.ArgumentParser(description="Fusion Chat service")
     parser.add_argument("--port", type=int, default=BIND_PORT)
     args = parser.parse_args()
 

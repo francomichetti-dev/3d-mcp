@@ -1,5 +1,5 @@
 [project]
-name = "nibbler-agent"
+name = "fusion-chat-agent"
 version = "0.1.0"
 description = "Local chat service that drives Fusion 360 via the Claude Agent SDK"
 requires-python = ">=3.11"

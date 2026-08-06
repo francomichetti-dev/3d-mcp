@@ -167,11 +167,11 @@ else
     info "linked ${SKILL_LINK} -> ${SKILL_SOURCE}"
 fi
 
-# --- /nibbler slash command --------------------------------------------------
+# --- /fusion-chat slash command ----------------------------------------------
 
 # Generated rather than symlinked: the command needs this checkout's absolute
-# path baked in so `/nibbler` works from any directory.
-step "Installing the /nibbler slash command"
+# path baked in so `/fusion-chat` works from any directory.
+step "Installing the /fusion-chat slash command"
 
 COMMANDS_DIR="${HOME}/.claude/commands"
 if [ -L "${COMMANDS_DIR}" ]; then
@@ -179,13 +179,13 @@ if [ -L "${COMMANDS_DIR}" ]; then
 fi
 mkdir -p "${COMMANDS_DIR}"
 
-if [ -f "${REPO_DIR}/commands/nibbler.md" ]; then
-    sed "s#__REPO__#${REPO_DIR}#g" "${REPO_DIR}/commands/nibbler.md" \
-        > "${COMMANDS_DIR}/nibbler.md"
-    info "installed ${COMMANDS_DIR}/nibbler.md"
-    info "type /nibbler in any Claude Code session to open the panel"
+if [ -f "${REPO_DIR}/commands/fusion-chat.md" ]; then
+    sed "s#__REPO__#${REPO_DIR}#g" "${REPO_DIR}/commands/fusion-chat.md" \
+        > "${COMMANDS_DIR}/fusion-chat.md"
+    info "installed ${COMMANDS_DIR}/fusion-chat.md"
+    info "type /fusion-chat in any Claude Code session to open the panel"
 else
-    info "commands/nibbler.md not found — skipping"
+    info "commands/fusion-chat.md not found — skipping"
 fi
 
 # --- exports dir -------------------------------------------------------------
@@ -216,7 +216,7 @@ if [ -d "${REPO_DIR}/agent" ]; then
     uv sync --directory "${REPO_DIR}/agent" \
         || die "uv sync failed in ${REPO_DIR}/agent — check your network and re-run."
     info "environment ready: ${REPO_DIR}/agent/.venv"
-    info "the NIBBLER panel starts this service on demand from inside Fusion"
+    info "the Fusion Chat panel starts this service on demand from inside Fusion"
 else
     info "no agent/ directory — skipping the chat panel"
 fi

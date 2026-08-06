@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NIBBLER</title>
+<title>Fusion Chat</title>
 <style>
   :root {
     --bg: #2b2f33; --panel: #34383d; --line: #45494f;
@@ -81,7 +81,7 @@
 <body>
   <header>
     <span class="dot" id="dot"></span>
-    <span class="name">NIBBLER</span>
+    <span class="name">Fusion Chat</span>
     <span class="spacer"></span>
     <button id="stop">Stop</button>
     <button id="shot">Screenshot</button>
@@ -164,7 +164,7 @@ es.onmessage = (e) => {
   const ev = JSON.parse(e.data);
   const stick = atBottom();
   if (ev.type === 'text') {
-    if (!current) current = block('claude', 'Nibbler');
+    if (!current) current = block('claude', 'Claude');
     current.textContent += ev.text;
   } else if (ev.type === 'tool') {
     const d = document.createElement('div');

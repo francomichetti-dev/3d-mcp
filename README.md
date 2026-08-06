@@ -21,16 +21,20 @@ wrong direction, a profile that grabbed the wrong region — with no exception r
 ## How it works
 
 ```
-Claude Code  ←── stdio / MCP ──→  server/   (Python, FastMCP)
-                                     │
-                                     │  HTTP 127.0.0.1:7654 + token
-                                     ▼
-                                  addin/    (Fusion add-in, Python)
-                                     │
-                                     │  CustomEvent marshal → main thread
-                                     ▼
-                              Fusion API (adsk.core / adsk.fusion)
+Claude Code ──┐
+              ├── stdio / MCP ──→  server/   (Python, FastMCP)
+chat panel ───┘                       │
+ (agent/)                             │  HTTP 127.0.0.1:7654 + token
+                                      ▼
+                                   addin/    (Fusion add-in, Python)
+                                      │
+                                      │  CustomEvent marshal → main thread
+                                      ▼
+                               Fusion API (adsk.core / adsk.fusion)
 ```
+
+Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-chat-panel) docked
+inside Fusion. Both speak MCP to the same server.
 
 Fusion has no external API — `adsk.*` exists only inside Fusion, and it is **main-thread-only**.
 So the add-in runs an HTTP listener on a background thread and marshals every request onto Fusion's
@@ -52,6 +56,49 @@ needed on every single session and shouldn't require bespoke code each time.
 
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so
 Claude can read it and fix its own code.
+
+## The chat panel
+
+The MCP tools assume you are already in a Claude Code session. The panel removes that assumption:
+it docks a chat inside Fusion, so you describe what you want in the window where the model lives.
+
+Open it either way — both reach the same service, and both are idempotent:
+
+- **In Fusion:** the **Fusion Chat** button in **UTILITIES → ADD-INS**
+- **In any Claude Code session, in any project:** `/fusion-chat`
+
+Whichever you use, it starts the agent service if it isn't running and opens (or focuses) the
+docked palette. `/fusion-chat --status` reports what is up; `/fusion-chat --stop` closes the panel
+and stops the service.
+
+```
+palette (webview, docked in Fusion)
+   │  HTTP 127.0.0.1:7655
+   ▼
+agent/   ── Claude Agent SDK ──→  MCP (stdio) ──→ server/ ──→ bridge ──→ Fusion
+```
+
+The palette talks to the agent service **directly** rather than through the add-in. That is not an
+implementation detail: the add-in's main thread is what serves bridge calls, so routing chat through
+it would deadlock on the agent's first Fusion tool call.
+
+Geometry runs automatically — being asked to confirm every extrude defeats the point. Anything that
+could **destroy** existing work pauses for approval in the panel instead:
+
+| Guarded | Because |
+| --- | --- |
+| `deleteMe()`, `.remove()`, `removeAll()` | deletes bodies, features, sketches, components |
+| `deleteAllAfterMarker`, `markerPosition =` | rolls the timeline back over existing work |
+| `designType =` | switching parametric/direct erases the timeline |
+| `combineFeatures`, Cut / Intersect operations | boolean operations consume existing geometry |
+| `save()`, `saveAs()`, `close()` | writes over or discards a saved document |
+
+The gate is a **PreToolUse hook**, not a permission callback. A permission callback only fires when
+the flow resolves to a prompt, so under `defaultMode: auto` it never ran — a body was deleted
+without asking during testing. The hook runs unconditionally.
+
+> Still worth working in a scratch Fusion project while iterating. Generated code can mangle a
+> design in ways no pattern list anticipates.
 
 ## The knowledge layer
 
@@ -83,6 +130,8 @@ A sample of what it documents, all verified against a running Fusion 2704:
 
 - macOS with Autodesk Fusion installed and launched at least once
 - [`uv`](https://docs.astral.sh/uv/), `python3`, and the `claude` CLI on `PATH`
+- For the chat panel, a `claude` CLI that is already signed in — the agent service runs the Claude
+  Agent SDK under your existing credentials and never asks for a key of its own
 
 ## Install
 
@@ -98,8 +147,9 @@ scripts/install.sh
 
 The installer creates `~/.fusion-mcp/` (0700) with a random 64-hex-char token (0600), symlinks
 `addin/FusionBridge` into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
-builds the server venv with `uv sync`, and registers the MCP server with Claude Code at user scope
-using absolute paths, so it works from any directory.
+builds the server **and agent** venvs with `uv sync`, registers the MCP server with Claude Code at
+user scope, and generates the `/fusion-chat` command in `~/.claude/commands/`. Everything is
+registered with absolute paths, so it works from any directory and in any project.
 
 Re-running is safe — an existing token is preserved. `--rotate-token` replaces it; the add-in
 re-reads the token per request, so Fusion does not need restarting.
@@ -123,6 +173,10 @@ curl -sS -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" http://127.0.0.1
 # {"ok": true, "app_version": "...", "bridge_version": "1", "document": "...", "busy": null}
 
 claude mcp list   # from any directory — 'fusion' should be listed and connected
+
+scripts/fusion-chat.sh --status
+# bridge:  {"ok": true, ...}
+# agent:   {"ok": true, "agent": true, "agent_error": null, "bridge_token": true}
 ```
 
 ## Timeouts
@@ -171,6 +225,8 @@ add-in exceptions silently.
 
 - **`addin.log`** — the add-in: startup, bind errors, every request, full tracebacks.
 - **`server.log`** — the MCP server (it can never log to stdout; that would corrupt JSON-RPC).
+- **`agent.log`** — the chat service, including anything a Fusion-spawned start printed before it
+  could log for itself.
 
 | Symptom | Likely cause |
 | --- | --- |
@@ -184,6 +240,9 @@ add-in exceptions silently.
 | Tool call times out at the Claude Code layer | `MCP_TOOL_TIMEOUT` too low — see above. |
 | `no active Fusion design` | Open or create a document and switch to the Design workspace. |
 | A burst of parallel requests gets 503 | The connection cap (8) refused the excess so a flood cannot exhaust threads inside Fusion. Send requests serially. |
+| Panel opens but shows a connection error | The agent service isn't up. `scripts/fusion-chat.sh --status`, then check `agent.log`. |
+| `agent.log` says `uv not found` | Fusion launched from Finder inherits a minimal `PATH`. The panel probes absolute locations; if `uv` is elsewhere, start the service from a terminal with `scripts/fusion-chat.sh`. |
+| `agent.log` shows `ModuleNotFoundError: No module named 'encodings'` | Fusion's `PYTHONHOME`/`PYTHONPATH` leaked into the child. The spawn strips every `PYTHON*` variable — if you see this, the add-in is running stale code, so Stop/Run it. |
 
 ### Reloading after an edit
 
@@ -199,7 +258,8 @@ when the add-in is stopped, and 400 on a syntax error — with the running bridg
 ## Uninstall
 
 ```sh
-scripts/uninstall.sh            # removes the add-in symlink, skill link and MCP registration
+scripts/uninstall.sh            # add-in symlink, skill link, MCP registration,
+                                # /fusion-chat command, and the agent service
 scripts/uninstall.sh --purge    # also deletes ~/.fusion-mcp (token + logs)
 ```
 
@@ -211,6 +271,9 @@ Working and verified end to end against **Fusion 2704.1.36** on macOS: parametri
 confirmed by measurement, STL validated, all failure paths (bad code, wrong token, bad host,
 oversized requests, timeouts, reload edge cases) exercised. The add-in's concurrency, timeout and
 reload behaviour is covered by an offline harness that stubs `adsk`.
+
+The chat panel is verified from a genuine cold start — no service, no palette — by firing the
+command definition rather than calling its handler, so the test takes the same path a click does.
 
 Not yet done: a GPU render pipeline for photoreal product shots and turntables of exported models.
 

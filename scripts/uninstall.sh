@@ -83,6 +83,38 @@ else
     info "nothing to remove (${SKILL_LINK} does not exist)"
 fi
 
+# --- /fusion-chat slash command ----------------------------------------------
+
+step "Removing the /fusion-chat slash command"
+
+COMMAND_FILE="${HOME}/.claude/commands/fusion-chat.md"
+
+if [ -L "${COMMAND_FILE}" ]; then
+    info "SKIPPED: ${COMMAND_FILE} is a symlink — not ours, remove it yourself"
+elif [ -f "${COMMAND_FILE}" ]; then
+    # install.sh generates this file with our checkout's path baked in. Only
+    # delete a file that still points at this repo, so a hand-written command
+    # of the same name survives.
+    if grep -qF "${REPO_DIR}/scripts/fusion-chat.sh" "${COMMAND_FILE}" 2>/dev/null; then
+        rm -f "${COMMAND_FILE}"
+        info "removed ${COMMAND_FILE}"
+    else
+        info "SKIPPED: ${COMMAND_FILE} does not point at ${REPO_DIR} — left alone"
+    fi
+else
+    info "nothing to remove (${COMMAND_FILE} does not exist)"
+fi
+
+# --- agent service -----------------------------------------------------------
+
+step "Stopping the chat agent service"
+
+if pkill -f "agent_service.py" >/dev/null 2>&1; then
+    info "stopped"
+else
+    info "was not running"
+fi
+
 # --- MCP registration --------------------------------------------------------
 
 step "Removing the MCP registration"
