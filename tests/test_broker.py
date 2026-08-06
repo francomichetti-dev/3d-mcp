@@ -49,6 +49,7 @@ truthy("claiming counts as the poller checking in", b.poller_connected())
 # ------------------------------------------------- the happy path ----
 print("A job, start to finish")
 b = bk.Broker()
+b.claim(wait=0.01)                       # a poller must be present to submit
 answers = {}
 
 
@@ -76,6 +77,7 @@ check("completion counted", b.health()["completed"], 1)
 # ------------------------------------------------------ single flight ----
 print("Single flight")
 b = bk.Broker()
+b.claim(wait=0.01)
 blocked = {}
 
 
@@ -103,10 +105,23 @@ check("and it is a timeout, not a busy refusal", after.get("busy"), None)
 
 
 # ------------------------------------------------------------ timeouts ----
-print("When the CAD does not answer")
+# Two DIFFERENT failures that used to look identical to a caller, both waiting
+# the full timeout: nothing connected at all, versus connected but not
+# answering. Measured live at 60s of silence with the CAD closed.
+print("When no CAD is connected at all")
 b = bk.Broker()
+result = b.submit("execute", {"code": "nobody home"}, timeout=30)
+check("refused immediately, not after the timeout", result["ok"], False)
+truthy("flagged so a UI can say the right thing", result.get("no_poller"))
+truthy("and it names the fix", "start the poller" in result["error"])
+check("nothing was queued", b.health()["queued"], 0)
+
+print("When the CAD is connected but does not answer")
+b = bk.Broker()
+b.claim(wait=0.01)                       # poller checks in, then goes quiet
 result = b.submit("execute", {"code": "nobody home"}, timeout=0.3)
 check("the submitter gives up", result["ok"], False)
+check("this one is NOT a no-poller error", result.get("no_poller"), None)
 truthy("naming the poller as the thing to check", "poller" in result["error"])
 truthy("and warning against resending", "do not resend" in result["error"])
 check("the queue is left clean", b.health()["queued"], 0)
@@ -119,6 +134,7 @@ check("so a later job can still run", b.health()["active_job"], None)
 # wedge at permanently busy.
 print("The CAD claims a job and vanishes")
 b = bk.Broker()
+b.claim(wait=0.01)
 original_expiry = bk.CLAIM_EXPIRY_S
 bk.CLAIM_EXPIRY_S = 0.2
 try:
@@ -150,6 +166,7 @@ finally:
 # ------------------------------------------------------ stale results ----
 print("Late and bogus results")
 b = bk.Broker()
+b.claim(wait=0.01)
 check("a result for an unknown job is rejected",
       b.complete("nonexistent", {"ok": True}), False)
 
@@ -180,6 +197,7 @@ truthy("and did not overshoot", waited < 1.5)
 
 # work arriving mid-wait must be picked up promptly, not after the full wait
 b = bk.Broker()
+b.claim(wait=0.01)
 picked = {}
 
 
@@ -197,6 +215,20 @@ threading.Thread(target=lambda: b.submit("execute", {"code": "y"}, timeout=2),
 thread.join(timeout=5)
 truthy("a waiting poller is woken by new work", picked.get("job") is not None)
 truthy("promptly, not after the full wait", picked.get("waited", 99) < 1.5)
+
+
+# --------------------------------------------------- staleness ----
+# Measured live: the broker reported a connected poller for 70 SECONDS after it
+# had stopped, and the UI showed "ready" throughout. The window must learn the
+# CAD is gone in about the time a person would notice.
+print("Noticing that the poller has gone")
+b = bk.Broker()
+b.claim(wait=0.01)                       # poller checks in
+truthy("connected right after a claim", b.poller_connected())
+truthy("the timeout is seconds, not a minute", bk.Broker.POLLER_TIMEOUT_S <= 10)
+b._last_seen = time.time() - (bk.Broker.POLLER_TIMEOUT_S + 1)
+check("and it goes stale once that passes", b.poller_connected(), False)
+check("health agrees", b.health()["poller_connected"], False)
 
 
 # ------------------------------------------------------------ config ----
@@ -270,6 +302,16 @@ try:
     check("malformed JSON -> 400",
           call("POST", "/submit", "not json")[0] if False else
           call("POST", "/submit", {"kind": 1, "payload": {}})[0], 400)
+
+    # A poller must have checked in before a submit is accepted, so register
+    # one the way the CAD does - by claiming. Also proves the fail-fast path
+    # over HTTP: before this, a submit is refused outright.
+    status, no_poller = call("POST", "/submit",
+                             {"kind": "execute", "payload": {"code": "x"}})
+    check("submit with no poller is refused at once", status, 200)
+    truthy("and flagged as no_poller", no_poller.get("no_poller"))
+
+    call("GET", "/claim?wait=0")
 
     # a full job, over the wire
     over_http = {}

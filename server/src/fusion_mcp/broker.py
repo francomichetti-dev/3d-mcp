@@ -97,6 +97,15 @@ class Broker:
         """
         job = Job(id=uuid.uuid4().hex, kind=kind, payload=payload)
         with self._work:
+            # Fail fast when nothing is there to do the work. Measured: with the
+            # CAD closed, a submit sat for the full 60s timeout before saying so,
+            # and the caller has no way to tell "Rhino is busy" from "Rhino is
+            # gone". The poller checks in constantly, so its absence is known
+            # immediately and there is no reason to make anyone wait for it.
+            if not self.poller_connected():
+                return {"ok": False, "no_poller": True, "error": (
+                    "the CAD is not connected — open Rhino and start the "
+                    "poller, then try again")}
             if self._active is not None or self._queued:
                 return {"ok": False, "error": "previous job still running",
                         "busy": True}
@@ -150,8 +159,16 @@ class Broker:
 
     # -- state ------------------------------------------------------------- #
 
-    def poller_connected(self, within: float = 60.0) -> bool:
+    # The poller claims every ~0.4s, so anything beyond a couple of seconds of
+    # silence means it is gone. 60s was far too generous: measured live, the
+    # broker went on reporting a connected poller for 70 SECONDS after it was
+    # stopped, and the window faithfully showed "ready" the whole time. A status
+    # that lies for a minute is worse than no status.
+    POLLER_TIMEOUT_S = 5.0
+
+    def poller_connected(self, within: float | None = None) -> bool:
         """Has a CAD poller checked in recently? Drives the 'is it up' message."""
+        within = self.POLLER_TIMEOUT_S if within is None else within
         if self._last_seen is None:
             return False
         return (time.time() - self._last_seen) < within
