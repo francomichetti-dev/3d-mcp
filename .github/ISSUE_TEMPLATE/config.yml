@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/francomichetti-dev/3d-mcp/security/advisories/new
+    about: >
+      Report privately instead of opening an issue. Note that arbitrary code
+      execution via fusion_execute is the intended design, not a vulnerability —
+      see SECURITY.md for what is in scope.

@@ -1,0 +1,53 @@
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  offline-tests:
+    # The suite stubs everything it touches, so it needs neither Fusion nor a
+    # network. Linux is included to catch anything that quietly assumes macOS.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Sync the agent environment
+        run: uv sync --directory agent
+
+      - name: Run the offline suite
+        run: tests/run.sh
+
+  syntax:
+    # Everything the installer touches, checked for parse errors. The add-in
+    # cannot be imported outside Fusion (adsk does not exist), so compiling is
+    # as far as static checking goes for it.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Compile every Python file
+        run: python -m compileall -q addin server agent tests
+
+      - name: Check every shell script parses
+        run: for f in scripts/*.sh tests/*.sh; do bash -n "$f"; done
+
+      - name: Shellcheck
+        run: |
+          sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+          shellcheck -S warning scripts/*.sh tests/*.sh

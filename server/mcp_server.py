@@ -684,8 +684,8 @@ def fusion_export(
         name ("Housing:1") or a component name. Mesh refinement is set to high.
       - "step" is COMPONENT-ONLY: passing a body name returns an error naming
         the components that contain it. Export the component instead.
-      - "usd" is component-only too (it is the interchange format for the
-        render pipeline).
+      - "usd" is component-only too (it is the interchange format for
+        rendering and DCC tools).
       - A name that matches more than one thing returns an error listing the
         candidates — retry with an exact occurrence name.
 

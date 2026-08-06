@@ -13,6 +13,18 @@ umask 077
 : "${HOME:?HOME must be set to a non-empty path}"
 [ -d "${HOME}" ] || { printf 'ERROR: HOME (%s) is not a directory\n' "${HOME}" >&2; exit 1; }
 
+# Only the install paths are macOS-specific — the add-in, MCP server and chat
+# service are plain Python. Refusing here beats silently creating an AddIns
+# directory Fusion will never look in and leaving the user to wonder why
+# nothing appeared.
+if [ "$(uname -s)" != "Darwin" ]; then
+    printf 'ERROR: this installer supports macOS only (found %s).\n\n' "$(uname -s)" >&2
+    printf 'The bridge itself is portable; what is missing is the path Fusion\n' >&2
+    printf 'uses for add-ins on your platform, and a launcher. Contributions\n' >&2
+    printf 'welcome — see CONTRIBUTING.md.\n' >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 

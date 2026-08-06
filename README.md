@@ -1,5 +1,9 @@
 # 3d-mcp
 
+[![tests](https://github.com/francomichetti-dev/3d-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/francomichetti-dev/3d-mcp/actions/workflows/tests.yml)
+[![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![macOS](https://img.shields.io/badge/macOS-Fusion%202704%2B-lightgrey.svg)](#requirements)
+
 **Model in Autodesk Fusion by prompting.** An MCP server that lets Claude write Fusion API
 Python, run it inside a live Fusion session, *look at the result through viewport screenshots*,
 correct itself, and export print-ready files.
@@ -15,6 +19,13 @@ The screenshot loop is the point. A fixed set of "create box / create hole" tool
 the Fusion API, and a model writing CAD code blind gets things subtly wrong — an extrude in the
 wrong direction, a profile that grabbed the wrong region — with no exception raised. Giving Claude
 **arbitrary API access plus eyes** turns that into a design → look → correct loop.
+
+> [!WARNING]
+> That last sentence is literal. `fusion_execute` runs **arbitrary Python inside your Fusion
+> session** with your privileges — not a sandbox, and not trying to be one. The only boundary is
+> that the listener is bound to `127.0.0.1` and requires a token generated at install. **Never
+> expose it to a network.** Generated code can also mangle an open design, so work in a scratch
+> Fusion project while you get a feel for it. Read [SECURITY.md](SECURITY.md) before installing.
 
 ---
 
@@ -206,7 +217,7 @@ A sample of what it documents, all verified against a running Fusion 2704:
 ## Install
 
 ```sh
-git clone https://github.com/<you>/3d-mcp.git
+git clone https://github.com/francomichetti-dev/3d-mcp.git
 cd 3d-mcp
 scripts/install.sh
 ```
@@ -281,12 +292,16 @@ the entire point, so the channel is gated tightly instead:
   concurrent connections; one execution at a time.
 - `~/.fusion-mcp` is 0700 and its files 0600; the token is never logged.
 
-Exports are confined to `~/Documents/fusion-mcp-exports/`. Nothing third-party executes inside
-Fusion, and the tooling adds zero new network surface — the one deliberate exception is `uv sync`
-at install time.
+Exports are confined to `~/Documents/fusion-mcp-exports/`, attachments to `~/.fusion-mcp/attachments/`.
+Nothing third-party executes inside Fusion, and the bridge, MCP server and chat service make no
+outbound calls — the deliberate exceptions are `uv sync` at install time, and the chat panel's own
+calls to Anthropic, which is what makes it a chat.
 
 **Work in a scratch Fusion document while iterating.** Generated code can mangle a design, and the
 timeline is the only safety net.
+
+The full threat model, including what does and does not count as a vulnerability, is in
+[SECURITY.md](SECURITY.md).
 
 ## Troubleshooting
 
@@ -352,7 +367,18 @@ restored on switching back, a mid-turn switch stopping the turn, context survivi
 (the model still answers from the resumed session, not just the redrawn transcript), and a closed
 design compressing to core context.
 
-Not yet done: a GPU render pipeline for photoreal product shots and turntables of exported models.
+Verified on macOS only. The bridge and MCP server are plain Python and have nothing macOS-specific
+in them, but `scripts/install.sh` knows only where Fusion keeps its add-ins on macOS, so Windows
+needs that path adding and a look at the launcher.
+
+## Contributing
+
+```sh
+tests/run.sh     # offline: no Fusion, no network, no API key
+```
+
+`fusion_bridge_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
+[CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to.
 
 ## Prior art
 
