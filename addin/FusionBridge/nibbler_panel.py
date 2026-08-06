@@ -45,6 +45,31 @@ def _log(message, level="INFO"):
         pass
 
 
+# Fusion launched from Finder inherits a minimal PATH (/usr/bin:/bin:/usr/sbin:
+# /sbin) with no Homebrew, so `uv` is not resolvable by name from inside the
+# add-in even though it works in a terminal. Resolve it by absolute path.
+_UV_CANDIDATES = (
+    "/opt/homebrew/bin/uv",
+    "/usr/local/bin/uv",
+    os.path.expanduser("~/.local/bin/uv"),
+    os.path.expanduser("~/.cargo/bin/uv"),
+)
+
+_EXTRA_PATH = "/opt/homebrew/bin:/usr/local/bin:" + os.path.expanduser("~/.local/bin")
+
+
+def _find_uv():
+    import shutil
+
+    found = shutil.which("uv")
+    if found:
+        return found
+    for candidate in _UV_CANDIDATES:
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
+
+
 def _service_alive(timeout=1.0):
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=timeout):
@@ -66,12 +91,34 @@ def _start_service(repo_dir):
     agent_dir = os.path.join(repo_dir, "agent")
     if not os.path.isdir(agent_dir):
         return "agent/ not found at %s" % agent_dir
+
+    uv = _find_uv()
+    if uv is None:
+        _log("uv not found on any known path; cannot start the agent service", "ERROR")
+        return "uv not found — run scripts/nibbler.sh from a terminal instead"
+
+    # Fusion embeds its own CPython and exports PYTHONHOME/PYTHONPATH to point
+    # at it. Inherited by the subprocess, those make the venv's interpreter
+    # load Fusion's stdlib and die instantly with
+    #   ModuleNotFoundError: No module named 'encodings'
+    # Scrub every PYTHON* variable so the child bootstraps from its own prefix.
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
+    env["PATH"] = _EXTRA_PATH + ":" + env.get("PATH", "")
+
+    log_path = os.path.join(os.path.expanduser("~/.fusion-mcp"), "agent.log")
+    try:
+        handle = open(log_path, "ab")
+    except OSError:
+        handle = subprocess.DEVNULL
+
     try:
         _service = subprocess.Popen(
-            ["uv", "run", "--frozen", "--no-sync",
+            [uv, "run", "--frozen", "--no-sync",
              "--directory", agent_dir, "agent_service.py"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=handle,
+            stdin=subprocess.DEVNULL,
+            env=env,
             start_new_session=True,     # survives Fusion reloading the add-in
         )
         return "spawned pid %d" % _service.pid

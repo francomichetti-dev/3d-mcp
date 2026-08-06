@@ -167,6 +167,27 @@ else
     info "linked ${SKILL_LINK} -> ${SKILL_SOURCE}"
 fi
 
+# --- /nibbler slash command --------------------------------------------------
+
+# Generated rather than symlinked: the command needs this checkout's absolute
+# path baked in so `/nibbler` works from any directory.
+step "Installing the /nibbler slash command"
+
+COMMANDS_DIR="${HOME}/.claude/commands"
+if [ -L "${COMMANDS_DIR}" ]; then
+    die "${COMMANDS_DIR} is a symlink. Refusing to write through it."
+fi
+mkdir -p "${COMMANDS_DIR}"
+
+if [ -f "${REPO_DIR}/commands/nibbler.md" ]; then
+    sed "s#__REPO__#${REPO_DIR}#g" "${REPO_DIR}/commands/nibbler.md" \
+        > "${COMMANDS_DIR}/nibbler.md"
+    info "installed ${COMMANDS_DIR}/nibbler.md"
+    info "type /nibbler in any Claude Code session to open the panel"
+else
+    info "commands/nibbler.md not found — skipping"
+fi
+
 # --- exports dir -------------------------------------------------------------
 
 step "Preparing the exports directory"
