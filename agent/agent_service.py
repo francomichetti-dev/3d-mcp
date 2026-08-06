@@ -28,6 +28,7 @@ import argparse
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -68,6 +69,24 @@ STATIC = Path(__file__).resolve().parent / "static"
 # needs to redraw — the model's real context lives in the SDK session store.
 CHATS_PATH = Path("~/.fusion-mcp/chats.json").expanduser()
 
+# Attached images are kept on disk, not in chats.json: the transcript stores a
+# reference so the panel can redraw a conversation, while the bytes themselves
+# stay out of a file that is read and rewritten constantly.
+ATTACH_DIR = Path("~/.fusion-mcp/attachments").expanduser()
+ALLOWED_IMAGE_TYPES = {
+    "image/png": ".png",
+    "image/jpeg": ".jpg",
+    "image/gif": ".gif",
+    "image/webp": ".webp",
+}
+# Anthropic rejects images over 5 MB. The panel downscales before uploading, so
+# reaching this means something genuinely oversized arrived.
+MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMAGES_PER_MESSAGE = 8
+# id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
+# serving, so a crafted id cannot walk out of the attachments directory.
+ATTACHMENT_ID = re.compile(r"^[0-9a-f]{16}/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$")
+
 DOC_POLL_SECONDS = 1.0
 # Per-viewer backlog before the oldest events are dropped. A panel that stops
 # reading must not be able to stall a turn or grow memory without bound.
@@ -92,14 +111,6 @@ log = logging.getLogger("fusion-chat")
 # --------------------------------------------------------------------------
 
 DESTRUCTIVE_PATTERNS: list[tuple[str, str]] = [
-    (r"\.deleteMe\s*\(", "deletes a body, feature, sketch or component"),
-    (r"deleteAllAfterMarker", "deletes every timeline feature after the marker"),
-    (r"\.markerPosition\s*=", "rolls the timeline back over existing work"),
-    (r"\.designType\s*=", "switches parametric/direct mode, which erases the timeline"),
-    (r"combineFeatures", "boolean-combines bodies (can consume existing geometry)"),
-    (r"CutFeatureOperation|IntersectFeatureOperation",
-     "cuts or intersects against existing geometry"),
-    (r"\.remove\s*\(|removeAll\s*\(", "removes entities from the design"),
     # Deliberately any .close(, not documents.<something>.close(: the two forms
     # that actually get written — app.activeDocument.close(False) and
     # app.documents.item(0).close(False) — both slipped through the narrower
@@ -108,6 +119,62 @@ DESTRUCTIVE_PATTERNS: list[tuple[str, str]] = [
     (r"\.close\s*\(", "closes a document, discarding anything unsaved in it"),
     (r"\.saveAs\s*\(|\.save\s*\(", "writes over a saved document"),
 ]
+
+# Deliberately NOT gated, at the owner's request: deleteMe, remove/removeAll,
+# deleteAllAfterMarker, markerPosition, designType, combineFeatures and
+# Cut/Intersect operations. Modelling is subtractive — cuts and combines fire
+# constantly in ordinary work — and every one of these is recoverable through
+# the timeline or undo. The two above are not recoverable by any means, which
+# is the whole reason they stay.
+#
+# To gate deletes again, move the patterns back into the list above:
+#   (r"\.deleteMe\s*\(",        "deletes a body, feature, sketch or component"),
+#   (r"deleteAllAfterMarker",   "deletes every timeline feature after the marker"),
+#   (r"\.markerPosition\s*=",   "rolls the timeline back over existing work"),
+#   (r"\.designType\s*=",       "switches parametric/direct mode, erasing the timeline"),
+#   (r"combineFeatures",        "boolean-combines bodies"),
+#   (r"CutFeatureOperation|IntersectFeatureOperation", "cuts against existing geometry"),
+#   (r"\.remove\s*\(|removeAll\s*\(", "removes entities from the design"),
+
+
+def design_folder(key: str) -> Path:
+    """Attachments live under a hash of the design key.
+
+    The key itself is unusable as a path component: a saved design's key is a
+    URN full of colons, and an attacker-shaped key must not be able to steer
+    where bytes land.
+    """
+    return ATTACH_DIR / hashlib.sha256(key.encode("utf-8")).hexdigest()[:16]
+
+
+def save_attachment(key: str, name: str, media_type: str, raw: bytes) -> dict[str, Any]:
+    """Persist one image and return the reference the transcript keeps."""
+    folder = design_folder(key)
+    # mkdir(parents=True) applies `mode` only to the leaf, so the intermediate
+    # attachments/ directory would be left at the process umask.
+    ATTACH_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(ATTACH_DIR, 0o700)
+    folder.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(folder, 0o700)
+    filename = uuid.uuid4().hex + ALLOWED_IMAGE_TYPES[media_type]
+    path = folder / filename
+    path.write_bytes(raw)
+    os.chmod(path, 0o600)
+    return {
+        "id": f"{folder.name}/{filename}",
+        "name": name[:120] or filename,
+        "media_type": media_type,
+    }
+
+
+def forget_attachments(key: str) -> None:
+    folder = design_folder(key)
+    try:
+        for child in folder.iterdir():
+            child.unlink()
+        folder.rmdir()
+    except OSError:
+        pass            # never existed, or already gone
 
 
 def destructive_reason(tool_name: str, tool_input: dict[str, Any]) -> str | None:
@@ -163,6 +230,9 @@ class Store:
         oldest = sorted(designs.items(), key=lambda kv: kv[1].get("updated") or 0)
         for key, _ in oldest[:excess]:
             designs.pop(key, None)
+            # Otherwise the images outlive the only record that referenced them
+            # and nothing would ever delete them.
+            forget_attachments(key)
         log.info("pruned %d old design chat(s)", excess)
 
     def save(self) -> None:
@@ -192,6 +262,7 @@ class Store:
 
     def forget(self, key: str) -> None:
         self.data["designs"].pop(key, None)
+        forget_attachments(key)
         self.save()
 
 
@@ -427,7 +498,44 @@ class Session:
 
     # -- one turn --------------------------------------------------------- #
 
-    async def run_turn(self, prompt: str) -> None:
+    async def _send(self, prompt: str, images: list[dict[str, Any]]) -> None:
+        """Hand the message to the SDK, with images inline when there are any.
+
+        Verified against the SDK: a message dict yielded from an async iterable
+        is written to the CLI verbatim, so standard Anthropic image blocks reach
+        the model directly — no tool call, and the images land in the session
+        itself, which is what lets a resumed conversation still see them.
+        """
+        assert self.client is not None
+        if not images:
+            await self.client.query(prompt)
+            return
+
+        content: list[dict[str, Any]] = [
+            {
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": image["media_type"],
+                    "data": image["b64"],
+                },
+            }
+            for image in images
+        ]
+        if prompt:
+            content.append({"type": "text", "text": prompt})
+
+        async def stream():
+            yield {
+                "type": "user",
+                "message": {"role": "user", "content": content},
+                "parent_tool_use_id": None,
+            }
+
+        await self.client.query(stream())
+
+    async def run_turn(self, prompt: str,
+                       images: list[dict[str, Any]] | None = None) -> None:
         try:
             await asyncio.wait_for(self.ready.wait(), timeout=60)
         except asyncio.TimeoutError:
@@ -443,7 +551,7 @@ class Session:
             # second; this refuses a tool call that is already in flight.
             await self.registry.pin(self.key)
             try:
-                await self.client.query(prompt)
+                await self._send(prompt, images or [])
                 async for message in self.client.receive_response():
                     self._capture_session_id(message)
                     for event in _render(message):
@@ -747,6 +855,9 @@ class Registry:
                     "text": "Design closed — this conversation was compressed to core context.",
                 }],
             )
+            # The transcript that referenced them is gone, and whatever mattered
+            # about them is in the summary now.
+            forget_attachments(key)
             log.info("compressed chat for %s (%d chars)", key, len(summary))
         except Exception:                                 # noqa: BLE001
             log.exception("compression failed for %s", key)
@@ -806,10 +917,48 @@ async def handle_index(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(STATIC / "index.html")
 
 
+def _decode_images(raw_images: Any) -> tuple[list[dict[str, Any]], str | None]:
+    """Validate what the panel uploaded. Returns (images, error)."""
+    if not raw_images:
+        return [], None
+    if not isinstance(raw_images, list):
+        return [], "attachments must be a list"
+    if len(raw_images) > MAX_IMAGES_PER_MESSAGE:
+        return [], f"at most {MAX_IMAGES_PER_MESSAGE} images per message"
+
+    images: list[dict[str, Any]] = []
+    for item in raw_images:
+        if not isinstance(item, dict):
+            return [], "malformed attachment"
+        media_type = item.get("media_type")
+        if media_type not in ALLOWED_IMAGE_TYPES:
+            return [], f"unsupported image type {media_type!r}"
+        try:
+            # validate=True so stray characters are rejected rather than
+            # silently skipped into a corrupt image the model cannot read.
+            raw = base64.b64decode(item.get("data") or "", validate=True)
+        except (ValueError, TypeError):
+            return [], "attachment was not valid base64"
+        if not raw:
+            return [], "empty attachment"
+        if len(raw) > MAX_IMAGE_BYTES:
+            return [], (f"{item.get('name') or 'image'} is "
+                        f"{len(raw) // (1024 * 1024)} MB — the limit is "
+                        f"{MAX_IMAGE_BYTES // (1024 * 1024)} MB")
+        images.append({"name": str(item.get("name") or "image"),
+                       "media_type": media_type, "raw": raw})
+    return images, None
+
+
 async def handle_send(request: web.Request) -> web.Response:
     body = await request.json()
     prompt = (body.get("prompt") or "").strip()
-    if not prompt:
+    images, error = _decode_images(body.get("images"))
+    if error is not None:
+        return web.json_response({"ok": False, "error": error}, status=400)
+    # An image on its own is a perfectly good message — "make this" with a
+    # reference photo needs no prose.
+    if not prompt and not images:
         return web.json_response({"ok": False, "error": "empty prompt"}, status=400)
     registry: Registry = request.app["registry"]
 
@@ -826,9 +975,33 @@ async def handle_send(request: web.Request) -> web.Response:
 
     await registry.set_active(active)
     session = registry.session_for(key, active.get("name"))
-    await session.emit({"type": "user", "text": prompt})
-    asyncio.create_task(session.run_turn(prompt))
-    return web.json_response({"ok": True, "doc": key})
+
+    # Saved before the turn so the transcript can redraw them later; only the
+    # reference goes into chats.json, never the bytes.
+    stored = [save_attachment(key, i["name"], i["media_type"], i["raw"]) for i in images]
+    for image, ref in zip(images, stored):
+        image["b64"] = base64.b64encode(image.pop("raw")).decode("ascii")
+        image["id"] = ref["id"]
+
+    event: dict[str, Any] = {"type": "user", "text": prompt}
+    if stored:
+        event["images"] = [{"id": r["id"], "name": r["name"]} for r in stored]
+    await session.emit(event)
+    asyncio.create_task(session.run_turn(prompt, images))
+    return web.json_response({"ok": True, "doc": key, "images": len(stored)})
+
+
+async def handle_attachment(request: web.Request) -> web.StreamResponse:
+    """Serve a stored attachment back to the panel."""
+    attachment_id = request.match_info["folder"] + "/" + request.match_info["name"]
+    # Matched against an exact shape rather than sanitised: the id is generated
+    # here and never user-supplied, so anything that does not match is hostile.
+    if not ATTACHMENT_ID.match(attachment_id):
+        return web.Response(status=404)
+    path = ATTACH_DIR / attachment_id
+    if not path.is_file():
+        return web.Response(status=404)
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
 
 async def handle_documents(request: web.Request) -> web.Response:
@@ -971,6 +1144,7 @@ def build_app() -> web.Application:
     app.router.add_get("/events", handle_events)
     app.router.add_get("/viewport", handle_viewport)
     app.router.add_get("/document", handle_documents)
+    app.router.add_get("/attachment/{folder}/{name}", handle_attachment)
     app.router.add_post("/send", handle_send)
     app.router.add_post("/permission", handle_permission)
     app.router.add_post("/interrupt", handle_interrupt)

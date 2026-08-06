@@ -82,6 +82,25 @@ The palette talks to the agent service **directly** rather than through the add-
 implementation detail: the add-in's main thread is what serves bridge calls, so routing chat through
 it would deadlock on the agent's first Fusion tool call.
 
+### Attaching images
+
+Reference photos, sketches on paper, a screenshot of a part you want copied — three ways to get one
+in, because a webview embedded in Fusion may not be permitted to open a native file picker:
+
+- the **＋** button next to the input
+- **drag and drop** anywhere onto the panel
+- **paste** from the clipboard
+
+Images go into the conversation as real image content, not as a file the model has to open — no tool
+call, and because they land in the session itself, a resumed conversation can still see them. Up to
+8 per message.
+
+The panel downscales before uploading (longest edge 1568 px, Anthropic's efficient maximum), so a
+multi-megapixel phone photo does not cost tokens for detail the model cannot use. The service keeps
+the bytes on disk under `~/.fusion-mcp/attachments/` (0700, files 0600) and stores only a reference
+in the transcript, so `chats.json` stays small and the panel can redraw a conversation later.
+Attachments are deleted when their design's chat is compressed or pruned.
+
 ### One chat per design
 
 Every design gets its own conversation, with its own memory. Switch tabs in Fusion and the panel
@@ -124,21 +143,29 @@ conversation with that summary, marked as something to verify rather than trust.
 
 The file is bounded at 50 designs, evicted least-recently-touched.
 
-Geometry runs automatically — being asked to confirm every extrude defeats the point. Anything that
-could **destroy** existing work pauses for approval in the panel instead:
+Modelling runs automatically — being asked to confirm every extrude defeats the point, and modelling
+is subtractive, so cuts, combines and deletes are ordinary work. The line is drawn at
+**recoverability**, not at how destructive an operation sounds:
 
-| Guarded | Because |
-| --- | --- |
-| `deleteMe()`, `.remove()`, `removeAll()` | deletes bodies, features, sketches, components |
-| `deleteAllAfterMarker`, `markerPosition =` | rolls the timeline back over existing work |
-| `designType =` | switching parametric/direct erases the timeline |
-| `combineFeatures`, Cut / Intersect operations | boolean operations consume existing geometry |
-| `save()`, `saveAs()` | writes over a saved document |
-| any `.close(` | closes a document, discarding anything unsaved in it |
+| Operation | Recoverable via | Asks? |
+| --- | --- | --- |
+| `deleteMe()`, `.remove()`, `removeAll()` | timeline / undo | no |
+| `deleteAllAfterMarker`, `markerPosition =` | timeline | no |
+| `designType =` | undo | no |
+| `combineFeatures`, Cut / Intersect | timeline | no |
+| `save()`, `saveAs()` | **nothing** — overwrites the saved file | **yes** |
+| any `.close(` | **nothing** — discards everything unsaved | **yes** |
+
+Restoring the prompt for deletes is a matter of moving the patterns back into `DESTRUCTIVE_PATTERNS`
+in `agent/agent_service.py`; they are kept next to it, commented, for exactly that.
 
 The gate is a **PreToolUse hook**, not a permission callback. A permission callback only fires when
 the flow resolves to a prompt, so under `defaultMode: auto` it never ran — a body was deleted
-without asking during testing. The hook runs unconditionally.
+without asking during testing. The hook runs unconditionally, which is what makes the two rows
+above actually hold.
+
+> Work in a scratch Fusion project while iterating. With deletes ungated, the timeline is the safety
+> net, and it only covers what happened since the document was opened.
 
 > Still worth working in a scratch Fusion project while iterating. Generated code can mangle a
 > design in ways no pattern list anticipates.

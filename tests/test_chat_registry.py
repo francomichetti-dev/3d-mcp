@@ -155,15 +155,18 @@ asyncio.run(fanout_checks())
 
 
 # ------------------------------------------- destructive gate (unchanged) ----
-print("Destructive gate still intact")
+print("Destructive gate: only the unrecoverable operations ask")
 cases = [
-    ("body.deleteMe()", True),
-    ("design.timeline.deleteAllAfterMarker()", True),
-    ("tl.markerPosition = 3", True),
-    ("design.designType = adsk.fusion.DesignTypes.DirectDesignType", True),
-    ("root.features.combineFeatures.add(inp)", True),
-    ("adsk.fusion.FeatureOperations.CutFeatureOperation", True),
-    ("sketches.remove(s)", True),
+    # Recoverable through the timeline / undo — deliberately NOT gated, so the
+    # chat does not interrupt ordinary subtractive modelling.
+    ("body.deleteMe()", False),
+    ("design.timeline.deleteAllAfterMarker()", False),
+    ("tl.markerPosition = 3", False),
+    ("design.designType = adsk.fusion.DesignTypes.DirectDesignType", False),
+    ("root.features.combineFeatures.add(inp)", False),
+    ("adsk.fusion.FeatureOperations.CutFeatureOperation", False),
+    ("sketches.remove(s)", False),
+    # Not recoverable by any means — these still ask.
     ("app.documents.item(0).close(False)", True),
     ("app.activeDocument.close(False)", True),
     ("doc.close(True)", True),
@@ -179,6 +182,54 @@ for code, expect_blocked in cases:
 
 check("gate ignores non-execute tools",
       svc.destructive_reason("mcp__fusion__fusion_screenshot", {"code": "x.deleteMe()"}), None)
+
+
+# ----------------------------------------------------------- attachments ----
+print("Attachments")
+
+# ids are generated, never user-supplied, so they are matched against an exact
+# shape rather than sanitised
+good = "a0e4b165d25040c1/dd6ec782b14048beab65bc43d7147249.png"
+truthy("accepts a real id", svc.ATTACHMENT_ID.match(good))
+for bad in [
+    "../../../../etc/passwd",
+    "a0e4b165d25040c1/../../../etc/passwd",
+    "AAAA/BBBB.png",
+    "a0e4b165d25040c1/dd6ec782b14048beab65bc43d7147249.exe",
+    "a0e4b165d25040c1/dd6ec782b14048beab65bc43d7147249.png/../x",
+    "/etc/passwd",
+    "a0e4b165d25040c1\\dd6ec782b14048beab65bc43d7147249.png",
+    "A0E4B165D25040C1/dd6ec782b14048beab65bc43d7147249.png",   # uppercase hex
+]:
+    check(f"rejects {bad[:44]}", svc.ATTACHMENT_ID.match(bad) is None, True)
+
+# the design key never becomes a path component: a saved key is a URN of colons
+folder = svc.design_folder("file:urn:adsk.wipprod:dm.lineage:dQ6U4Jnt")
+check("key hashed into one safe component", len(folder.name), 16)
+truthy("hash is hex", all(c in "0123456789abcdef" for c in folder.name))
+check("stays under the attachments dir", folder.parent, svc.ATTACH_DIR)
+check("traversal in a key cannot escape",
+      svc.design_folder("../../etc").parent, svc.ATTACH_DIR)
+
+# upload validation
+def dec(images):
+    return svc._decode_images(images)
+
+check("no images -> empty", dec(None), ([], None))
+check("not a list", dec("nope")[1], "attachments must be a list")
+truthy("too many images", dec([{"media_type": "image/png", "data": "AA=="}] * 99)[1])
+truthy("bad media type", dec([{"media_type": "image/svg+xml", "data": "AA=="}])[1])
+truthy("bad base64", dec([{"media_type": "image/png", "data": "not!base64"}])[1])
+truthy("empty payload", dec([{"media_type": "image/png", "data": ""}])[1])
+import base64 as _b64
+big = _b64.b64encode(b"x" * (svc.MAX_IMAGE_BYTES + 1)).decode()
+truthy("oversized rejected", dec([{"media_type": "image/png", "data": big, "name": "big.png"}])[1])
+ok_images, err = dec([{"media_type": "image/png", "data": _b64.b64encode(b"hello").decode(),
+                       "name": "a.png"}])
+check("valid image accepted", err, None)
+check("decoded to bytes", ok_images[0]["raw"], b"hello")
+truthy("every allowed type has an extension",
+       all(svc.ALLOWED_IMAGE_TYPES.values()))
 
 
 # ------------------------------------------------------------ constants ----
