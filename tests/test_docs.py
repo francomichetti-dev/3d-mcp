@@ -39,7 +39,8 @@ def truthy(label, got):
 
 MARKDOWN = sorted(
     p for p in list(REPO.glob("*.md")) + list(REPO.glob("docs/*.md"))
-    + list(REPO.glob("scripts/**/*.md"))
+    + list(REPO.glob("scripts/**/*.md")) + list(REPO.glob("skill/**/*.md"))
+    + list(REPO.glob("tests/**/*.md"))
     if ".git" not in p.parts
 )
 
@@ -232,6 +233,56 @@ for command in re.findall(r"`(scripts/[\w/.-]+\.(?:sh|ps1|cmd|py))`", readme):
 if "SETUP.md" in readme:
     truthy("SETUP.md exists where the README says",
            (REPO / "scripts" / "rhino" / "SETUP.md").exists())
+
+
+# ----------------------------------------------------- knowledge skill -----
+# The README calls this "more important than the bridge code", and it is the
+# one component that fails SILENTLY: a malformed frontmatter means Claude Code
+# never loads the skill, and the only symptom is a model that models slightly
+# worse. Nothing else in the repo would notice.
+print("The knowledge skill loads")
+SKILL_DIR = REPO / "skill" / "fusion-360"
+skill_md = SKILL_DIR / "SKILL.md"
+truthy("SKILL.md exists", skill_md.exists())
+
+skill_text = skill_md.read_text(encoding="utf-8") if skill_md.exists() else ""
+front = re.match(r"^---\n(.*?)\n---\n", skill_text, re.S)
+truthy("it opens with YAML frontmatter", front)
+if front:
+    fields = dict(re.findall(r"^(\w+):\s*(.+)$", front.group(1), re.M))
+    # The name is how the skill is addressed; a mismatch with the directory is
+    # the kind of thing that looks fine and simply never loads.
+    check("the skill names itself after its directory",
+          fields.get("name"), SKILL_DIR.name)
+    truthy("it has a description", len(fields.get("description", "")) > 40)
+    # The description is the ONLY thing Claude sees when deciding whether to
+    # load it, so it has to name the tools it is about.
+    for tool in ("fusion_execute", "fusion_screenshot", "fusion_state", "fusion_export"):
+        truthy(f"the description mentions {tool}", tool in fields.get("description", ""))
+
+# The reference files are cited in backticks, not as markdown links, so the
+# link checker above cannot see them. Both directions matter: a citation with
+# no file sends Claude to read nothing, and a file nothing cites never loads.
+cited = set(re.findall(r"`references/(\w+\.md)`", skill_text))
+on_disk = {p.name for p in (SKILL_DIR / "references").glob("*.md")}
+check("every reference the skill cites exists", cited - on_disk, set())
+check("and every reference file is cited", on_disk - cited, set())
+truthy("there are references to check", len(on_disk) >= 3)
+
+# The README lists them by name in a brace expansion and quotes the skill's
+# size; both go stale the moment a reference is added or SKILL.md grows.
+listed_refs = re.search(r"`references/\{([\w,]+)\}\.md`", readme)
+truthy("the README lists the reference files", listed_refs)
+if listed_refs:
+    check("and the list matches what is on disk",
+          {n + ".md" for n in listed_refs.group(1).split(",")}, on_disk)
+
+quoted_kb = re.search(r"`SKILL\.md`\s*\(~(\d+)\s*KB\)", readme)
+truthy("the README quotes the skill's size", quoted_kb)
+if quoted_kb and skill_md.exists():
+    actual_kb = skill_md.stat().st_size / 1024
+    check("and it is within a kilobyte of the real one",
+          abs(actual_kb - int(quoted_kb.group(1))) < 1.0, True)
 
 
 # --------------------------------------------------- security doc ---------
