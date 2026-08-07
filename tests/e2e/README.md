@@ -10,7 +10,18 @@ front door is covered — MCP protocol, tool discovery, argument passing, image
 blocks, error propagation. RhinoCommon itself is not; only a real Rhino can
 prove that.
 
-Run it:
+## Automatically
+
+`tests/test_e2e_chain.py` runs this whole chain as part of `tests/run.sh` — it
+starts a broker, this stub and the MCP server, and drives the MCP protocol
+directly. Nothing to set up, and it runs in CI.
+
+That covers the joins. What it deliberately does not cover is the *model*: it
+speaks MCP itself rather than asking Claude to. For that, use the manual
+procedure below — it is the only way to check that Claude can actually see a
+screenshot, and no amount of protocol testing substitutes for it.
+
+## By hand, with real Claude Code
 
 ```sh
 # 1. broker on a test port

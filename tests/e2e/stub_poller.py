@@ -4,9 +4,8 @@ Lets the whole chain be exercised without a Windows machine or a CAD licence -
 claude -> MCP server -> broker -> (this) -> back. What it cannot prove is
 RhinoCommon itself; everything between Claude and Rhino's front door it can.
 """
-import json, os, sys, threading, time, urllib.request
+import json, os, threading, time, urllib.request
 
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../../../server/src"))
 BROKER = os.environ.get("FUSION_BROKER_URL", "http://127.0.0.1:7699")
 TOKEN = os.environ["FUSION_BRIDGE_TOKEN"]   # no relative path to break
 
