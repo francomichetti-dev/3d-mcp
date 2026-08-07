@@ -153,16 +153,10 @@ for pattern, what in PRIVATE:
 # inside the older versions of the privacy check itself, before it moved to
 # digests.
 #
-# KNOWN_HISTORY_BLOBS is a baseline, not an exemption. Those blobs need a
-# history rewrite to remove; until that runs, this test still catches anything
-# NEW. After the rewrite the set empties and this becomes a plain assertion.
+# This carried a baseline of six known-bad blobs while they waited for a
+# history rewrite. The rewrite has run, the blobs are gone, and the exemption
+# went with them - so this is now what it should be: no exceptions at all.
 print("No personal data in git history")
-KNOWN_HISTORY_BLOBS = {
-    # scripts/JOIN-TAILSCALE.cmd - a collaborator's handle in --hostname
-    "95c650305089bc359ad6cbc053a841ed4e77026b",
-    # tests/test_docs.py, before the digests landed in this session
-    "ab755032", "de632b5f", "d6634f8b", "0a01f630", "ae802f2f",
-}
 
 
 def history_blobs():
@@ -214,8 +208,6 @@ truthy(f"and has real history to scan (saw {commit_count} commits)",
 
 history_hits = []
 for sha, name, text in history_blobs():
-    if sha in KNOWN_HISTORY_BLOBS or sha[:8] in KNOWN_HISTORY_BLOBS:
-        continue
     for num, line in enumerate(text.splitlines(), 1):
         words = re.findall(r"[a-z0-9]+", line.lower())
         shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
