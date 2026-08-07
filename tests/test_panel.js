@@ -186,6 +186,51 @@ check('a plan event with no steps at all is survivable', plan(h).hidden, true);
 h.deliver({ type: 'plan', doc: 'design-1', steps: [{ title: 'x' }] });
 check('a step with no status renders as todo', plan(h).steps[0][0], 'todo');
 
+// ------------------------------------------------------- drag and drop -----
+// Reported as "drag and drop images into the chat is not working".
+//
+// A drop only ever reaches the page if dragover called preventDefault first.
+// The panel guarded that on dataTransfer.types containing 'Files', which is
+// what a normal browser reports — but the palette is a CEF webview inside
+// Fusion, and a host that describes the drag any other way meant the guard
+// never fired, the browser kept its default handling, and no drop event was
+// ever delivered. Nothing in the panel was broken; it simply never ran.
+console.log('Drag and drop');
+
+h = start();
+const png = { name: 'ref.png', type: 'image/png' };
+
+// The shape a normal browser sends.
+truthy('dragover is accepted when the host says Files',
+       h.fire('dragover', { dataTransfer: { types: ['Files'], files: [png] } }));
+
+// The shapes that used to be ignored. Each one is a real host: some report an
+// empty type list, some report a MIME type, some populate items instead.
+truthy('...and when it reports no types at all',
+       h.fire('dragover', { dataTransfer: { types: [], files: [png] } }));
+truthy('...and when it names the MIME type instead',
+       h.fire('dragover', { dataTransfer: { types: ['image/png'], files: [png] } }));
+truthy('...and when only items is populated',
+       h.fire('dragover', { dataTransfer: { types: [], items: [{ kind: 'file' }], files: [] } }));
+
+// Text being dragged is not an attachment and must keep its normal behaviour,
+// or dragging a selection into the input box stops working.
+check('dragging plain text is left alone',
+      h.fire('dragover', { dataTransfer: { types: ['text/plain'], files: [] } }), false);
+
+// And the drop itself has to reach addFiles.
+// The drop itself must be accepted. Asserting on the tray would mean driving
+// the whole async shrink-and-encode path; what actually broke is upstream of
+// that — whether the panel takes the drop at all.
+h = start();
+truthy('a dropped image is accepted',
+       h.fire('drop', { dataTransfer: { types: ['Files'], files: [png] } }));
+truthy('...even from a host that only fills items',
+       h.fire('drop', { dataTransfer: { types: [], files: [],
+                                        items: [{ kind: 'file', getAsFile: () => png }] } }));
+check('but a dropped text selection is still left alone',
+      h.fire('drop', { dataTransfer: { types: ['text/plain'], files: [] } }), false);
+
 console.log();
 console.log(`${PASS} passed, ${FAIL} failed`);
 process.exit(FAIL ? 1 : 0);

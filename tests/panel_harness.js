@@ -65,7 +65,10 @@ function buildDocument(ids) {
       return byId.get(id);
     },
     createElement(tag) { return new El(tag); },
-    addEventListener() {},
+    // Recorded, not discarded: drag-and-drop lives entirely on document-level
+    // listeners, so a test has to be able to fire them.
+    _docListeners: {},
+    addEventListener(kind, fn) { (this._docListeners[kind] ||= []).push(fn); },
     body: new El('body'),
     documentElement: new El('html'),
   };
@@ -106,6 +109,14 @@ function makeHarness(ids) {
   return {
     sandbox, doc, sent,
     deliver: (ev) => listeners.message({ data: JSON.stringify(ev) }),
+    // Fire a document-level event and report whether the panel asked the host
+    // to stop its default handling — which is the whole game for a drop.
+    fire: (kind, event) => {
+      let prevented = false;
+      const e = { preventDefault: () => { prevented = true; }, ...event };
+      (doc._docListeners[kind] || []).forEach((fn) => fn(e));
+      return prevented;
+    },
     drop: () => listeners.error({}),
     reconnect: () => listeners.open({}),
   };

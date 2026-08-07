@@ -555,20 +555,53 @@ attachBtn.onclick = () => filePicker.click();
 filePicker.onchange = () => { addFiles(filePicker.files); filePicker.value = ''; };
 
 let dragDepth = 0;
+
+// Whether a drag is carrying files, asked as loosely as is safe.
+//
+// A drop only reaches the page if dragover called preventDefault first, so
+// getting this wrong does not degrade drag-and-drop — it removes it. The
+// original test was `types.includes('Files')`, which is what a plain browser
+// reports and is not what the palette reports: inside Fusion's embedded
+// webview the drop event simply never arrived, and the panel looked broken
+// while being entirely uninvolved.
+//
+// So: treat a drag as files unless it positively announces itself as text.
+// The cost of a false positive is swallowing a text drag onto the panel; the
+// cost of a false negative is the feature not existing.
+function dragHasFiles(dt) {
+  if (!dt) return false;
+  const types = Array.from(dt.types || []);
+  if (types.includes('Files')) return true;
+  if (dt.items && Array.from(dt.items).some((i) => i.kind === 'file')) return true;
+  if (dt.files && dt.files.length) return true;
+  return !types.some((t) => String(t).startsWith('text/'));
+}
+
 document.addEventListener('dragenter', (e) => {
-  if (!e.dataTransfer || !Array.from(e.dataTransfer.types).includes('Files')) return;
+  if (!dragHasFiles(e.dataTransfer)) return;
   e.preventDefault(); dragDepth++; document.body.classList.add('dragging');
 });
 document.addEventListener('dragover', (e) => {
-  if (e.dataTransfer && Array.from(e.dataTransfer.types).includes('Files')) e.preventDefault();
+  if (dragHasFiles(e.dataTransfer)) e.preventDefault();
 });
 document.addEventListener('dragleave', () => {
   if (--dragDepth <= 0) { dragDepth = 0; document.body.classList.remove('dragging'); }
 });
 document.addEventListener('drop', (e) => {
-  if (!e.dataTransfer || !e.dataTransfer.files.length) return;
+  if (!dragHasFiles(e.dataTransfer)) return;
+  // Before anything else: once the host's default handling wins, the file is
+  // navigated to instead of attached and there is no second chance.
   e.preventDefault(); dragDepth = 0; document.body.classList.remove('dragging');
-  addFiles(e.dataTransfer.files);
+  const dt = e.dataTransfer;
+  // Some hosts populate items and leave files empty.
+  let files = Array.from(dt.files || []);
+  if (!files.length && dt.items) {
+    files = Array.from(dt.items)
+      .filter((i) => i.kind === 'file')
+      .map((i) => i.getAsFile())
+      .filter(Boolean);
+  }
+  if (files.length) addFiles(files);
 });
 document.addEventListener('paste', (e) => {
   if (!e.clipboardData) return;
