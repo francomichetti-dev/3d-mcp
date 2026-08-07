@@ -432,6 +432,15 @@ class Session:
 
         return create_sdk_mcp_server(name="plan", tools=[plan_tool])
 
+    async def clear_plan(self) -> None:
+        """Drop the checklist. No-op when there is nothing to drop, so an
+        ordinary chat turn does not emit a pointless event."""
+        if not self.plan:
+            return
+        self.plan = []
+        self.registry.store.update(self.key, plan=[])
+        await self.emit({"type": "plan", "steps": []})
+
     async def apply_plan(self, raw: Any) -> str:
         """Store a plan, persist it, and show it. Returns what to tell the model.
 
@@ -706,6 +715,16 @@ class Session:
                 self.registry.publish({"type": "turn_end", "doc": self.key})
                 return
             self.busy = True
+            # A new instruction starts a new build, so the previous build's
+            # checklist goes with it. Left standing it reads as the plan for
+            # what is happening now, which is worse than showing nothing —
+            # the model will publish a fresh one if this turn needs one.
+            #
+            # Deliberately here, at the top of the turn, and NOT inside the
+            # retry loop below: a turn resumed after a dropped connection is
+            # the same build continuing, and clearing there would throw away
+            # the checklist precisely when it is most useful.
+            await self.clear_plan()
             # Fence the bridge to this design for the whole turn. The document
             # watcher also interrupts on a tab switch, but it only polls once a
             # second; this refuses a tool call that is already in flight.

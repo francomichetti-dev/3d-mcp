@@ -62,7 +62,7 @@ Two ways to get a change back upstream, in order of preference:
    of a diff.
 
 Either way: **run the test suite** (`tests/run.sh` in the repo) before saying it
-works. There are 716 assertions and they are quick.
+works. There are 723 assertions and they are quick.
 
 ---
 

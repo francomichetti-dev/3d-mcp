@@ -392,6 +392,7 @@ async def recovery_checks():
         session.busy = False
         session.transport_failures = 0
         session.sdk_session_id = None
+        session.plan = []
 
         session.events = []
 
@@ -486,6 +487,7 @@ async def hardening_checks():
         s.busy = False
         s.transport_failures = 0
         s.sdk_session_id = None
+        s.plan = []
         s.events = []
 
         async def emit(event):
@@ -624,6 +626,7 @@ async def auto_resume_checks():
         s.start_error, s.busy = None, False
         s.transport_failures = 0
         s.sdk_session_id = None
+        s.plan = []
         s.events, s.sent = [], []
 
         async def emit(event):
@@ -778,6 +781,90 @@ async def plan_checks():
 
 
 asyncio.run(plan_checks())
+
+
+# A checklist left standing from an earlier build reads as the plan for what is
+# happening now. Reported from a real session: the panel showed 5/6 of a wheel
+# build while a completely different question was being asked.
+print("A new instruction clears the previous checklist")
+
+
+async def plan_lifecycle_checks():
+    from claude_agent_sdk import CLIJSONDecodeError
+
+    def session_with(client):
+        registry = svc.Registry.__new__(svc.Registry)
+        registry.subscribers = set()
+        registry.store = svc.Store(Path(tempfile.mkdtemp()) / "chats.json")
+        registry._dirty = False
+
+        async def pin(_key):
+            return None
+
+        registry.pin = pin
+        registry.publish = lambda event: None
+        registry.append_transcript = lambda *a, **k: None
+
+        s = svc.Session.__new__(svc.Session)
+        s.key, s.name, s.registry = "k", "d", registry
+        s.client = client
+        s.pending, s.lock = {}, asyncio.Lock()
+        s.ready = asyncio.Event(); s.ready.set()
+        s.start_error, s.busy = None, False
+        s.transport_failures = 0
+        s.sdk_session_id = None
+        s.plan = []
+        s.plan = [{"title": "an old step", "status": "done"}]
+        s.registry.store.update("k", plan=s.plan)
+        s.events, s.sent = [], []
+
+        async def emit(event):
+            s.events.append(event)
+
+        s.emit = emit
+
+        async def send(prompt, images):
+            s.sent.append(prompt)
+
+        s._send = send
+
+        async def start():
+            s.client = _GoodClient()
+            s.ready.set()
+
+        s.start = start
+        return s
+
+    s = session_with(_GoodClient())
+    await asyncio.wait_for(s.run_turn("something completely different"), timeout=5)
+    check("the old checklist is gone", s.plan, [])
+    check("and the panel is told to hide it",
+          [e for e in s.events if e.get("type") == "plan"][0]["steps"], [])
+    check("which also persists, so switching back does not resurrect it",
+          s.registry.store.get("k").get("plan"), [])
+
+    # The turn resumed after a dropped connection is the SAME build continuing.
+    # Clearing there would wipe the checklist exactly when it is most useful —
+    # it is the only record of where the interruption landed.
+    boom = CLIJSONDecodeError("oversized", ValueError("oversized"))
+    s = session_with(_FlakyClient(boom, fail_after=2))
+    await asyncio.wait_for(s.run_turn("build a tower"), timeout=5)
+    check("the resume did not clear it a second time",
+          len([e for e in s.events if e.get("type") == "plan"]), 1)
+    check("and the turn really did resume", len(s.sent), 2)
+    check("with the resume prompt, not the original", s.sent[1], svc.RESUME_PROMPT)
+
+    # A design with no checklist must not emit a pointless event on every turn.
+    s = session_with(_GoodClient())
+    s.plan = []
+    s.registry.store.update("k", plan=[])
+    s.events.clear()
+    await asyncio.wait_for(s.run_turn("hello"), timeout=5)
+    check("no checklist, no event",
+          [e for e in s.events if e.get("type") == "plan"], [])
+
+
+asyncio.run(plan_lifecycle_checks())
 
 
 # ------------------------------------------------------- the working banner --
