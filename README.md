@@ -100,6 +100,13 @@ Claude can read it and fix its own code.
 The MCP tools assume you are already in a Claude Code session. The panel removes that assumption:
 it docks a chat inside Fusion, so you describe what you want in the window where the model lives.
 
+<p align="center">
+  <img src="docs/images/chat-panel-lego-tower.png" alt="The Fusion Chat panel docked on the right of Fusion. The prompt reads 'generate a lego mediaval tower'; Claude's reply plans a studded baseplate, round tower, battlements, arched door and arrow slits, followed by a stream of fusion_execute and fusion_state tool calls. The viewport shows the finished tower on a LEGO baseplate." width="880">
+</p>
+
+<p align="center"><em>Six words in, and the tool calls streaming underneath. Every step is real Fusion
+API Python — nothing here is a preset.</em></p>
+
 Open it either way — both reach the same service, and both are idempotent:
 
 - **In Fusion:** the **Fusion Chat** button in **UTILITIES → ADD-INS**
@@ -166,6 +173,14 @@ so a turn that outlived a tab switch would start editing the design you just mov
 says so, and the bridge independently refuses any pinned turn whose design is no longer active —
 which closes the gap where a tool call is already in flight.
 
+<p align="center">
+  <img src="docs/images/chat-design-switch-stops-turn.png" alt="The Fusion Chat panel mid-conversation. An amber line reads 'Stopped — you switched to another design while this was running.' The user then types 'continue', and Claude replies 'Back on the tower design. Finishing the tube bores.' before resuming its fusion_execute calls." width="880">
+</p>
+
+<p align="center"><em>What that looks like in practice: the turn halts the moment you change tabs,
+and says why. Come back, type <code>continue</code>, and it picks the same design up where it
+stopped — the conversation was never lost, only paused.</em></p>
+
 ### Memory, and what happens when a design closes
 
 Conversations survive restarts. `~/.fusion-mcp/chats.json` (0600) stores a pointer to the SDK's own
@@ -178,6 +193,13 @@ parameters, meaningful entity names, decisions and rejected approaches, and anyt
 Tool mechanics, code, retries and dead ends are dropped. The full session is then discarded, so a
 design worked on for months does not carry months of transcript. Reopening it seeds a fresh
 conversation with that summary, marked as something to verify rather than trust.
+
+<p align="center">
+  <img src="docs/images/chat-closed-design-core-context.png" alt="Fusion showing a blocky orange robot model named claude-bot-3d. Its chat panel holds a single collapsed entry, 'CORE CONTEXT FROM BEFORE THIS DESIGN WAS CLOSED', under an amber note reading 'Design closed — this conversation was compressed to core context.'" width="880">
+</p>
+
+<p align="center"><em>Reopened after being closed. The transcript is gone and what remains is one
+collapsed summary — intent, dimensions, decisions — which is all the next session needs.</em></p>
 
 The file is bounded at 50 designs, evicted least-recently-touched.
 
@@ -234,6 +256,14 @@ thread by construction — the marshaling problem disappears rather than being s
 ```
 claude ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker (127.0.0.1:7656) ──▶ poller inside Rhino
 ```
+
+<p align="center">
+  <img src="docs/images/rhino-mcp-cube.png" alt="A plain grey box sitting on the origin in a Rhino viewport, captured through the bridge." width="620">
+</p>
+
+<p align="center"><em>The first thing that ever came back through that chain. A plain box is a dull
+picture and the right test: it means the prompt reached Rhino, RhinoCommon built real geometry, and
+the capture travelled back as an image Claude could look at.</em></p>
 
 `rhino_mcp.py` has **no dependencies**. FastMCP needs Python 3.10+ and Rhino ships 3.9, so a
 framework would mean installing a second Python to forward four JSON messages. Nothing to install
@@ -546,7 +576,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**593 assertions across eleven suites**, none of which need Fusion, Rhino, or an internet connection.
+**597 assertions across eleven suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

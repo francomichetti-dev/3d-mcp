@@ -324,6 +324,30 @@ if "SETUP.md" in readme:
            (REPO / "scripts" / "rhino" / "SETUP.md").exists())
 
 
+# ------------------------------------------------------------- images ------
+# The README is the whole shop window on a public repo, and a broken image is
+# worse there than a broken link: GitHub renders a torn icon in the middle of
+# the page. Both directions are checked, because an image nobody references is
+# just weight in the clone.
+print("Images")
+IMAGE_DIR = REPO / "docs" / "images"
+on_disk = {p.name for p in IMAGE_DIR.glob("*.png")}
+referenced = set(re.findall(r'docs/images/([\w.-]+\.png)', readme))
+
+check("every image the README shows exists", referenced - on_disk, set())
+check("and every image on disk is shown", on_disk - referenced, set())
+truthy("there are images at all", len(on_disk) >= 3)
+
+# Alt text is what a screen reader announces and what shows when the image
+# fails to load, so a bare filename or an empty string is no use.
+thin_alt = []
+for src, attrs in re.findall(r'<img\s+src="(docs/images/[^"]+)"([^>]*)>', readme):
+    alt = re.search(r'alt="([^"]*)"', attrs)
+    if not alt or len(alt.group(1)) < 25:
+        thin_alt.append(src.split("/")[-1])
+check("every image has alt text worth reading", thin_alt, [])
+
+
 # ----------------------------------------------------- knowledge skill -----
 # The README calls this "more important than the bridge code", and it is the
 # one component that fails SILENTLY: a malformed frontmatter means Claude Code
