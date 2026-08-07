@@ -16,6 +16,7 @@ share a port and whichever starts second dies.
 """
 
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -285,6 +286,54 @@ marker = re.search(r"<!--\s*mcp-name:\s*(\S+)\s*-->", server_readme)
 truthy("server/README.md carries the mcp-name marker", marker)
 if marker and manifest:
     check("and it matches the name in server.json", marker.group(1), manifest.get("name"))
+
+
+# -------------------------------------------------------- line endings ------
+# Both directions cost real time on this project.
+#
+# cmd.exe mis-parses a batch file whose lines end in LF alone, which is why
+# RHINO-CHAT.cmd — the thing a non-developer double-clicks — ships CRLF. And
+# bash fails on a CRLF script with "$'\r': command not found", an error that
+# names the carriage return in a way nobody recognises.
+#
+# The bytes in the git blob are what a Windows user receives, so that is what
+# is checked, not the working copy: a contributor on macOS whose editor
+# rewrites the endings would commit LF and break the launcher for someone else
+# entirely, with the file still looking fine on their own machine.
+print("Line endings")
+
+
+def blob_bytes(rel):
+    done = subprocess.run(["git", "show", f"HEAD:{rel}"], cwd=REPO, capture_output=True)
+    return done.stdout if done.returncode == 0 else None
+
+
+tracked_files = subprocess.run(["git", "ls-files"], cwd=REPO,
+                               capture_output=True, text=True).stdout.split()
+
+cmd_files = [f for f in tracked_files if f.endswith(".cmd")]
+truthy("there is a .cmd to check", cmd_files)
+for rel in cmd_files:
+    raw = blob_bytes(rel)
+    if raw is None:
+        continue
+    bare_lf = raw.count(b"\n") - raw.count(b"\r\n")
+    check(f"{Path(rel).name} is CRLF in git, as cmd.exe needs", bare_lf, 0)
+
+sh_files = [f for f in tracked_files if f.endswith(".sh")]
+truthy("there are shell scripts to check", sh_files)
+for rel in sh_files:
+    raw = blob_bytes(rel)
+    if raw is None:
+        continue
+    check(f"{Path(rel).name} has no CR, as bash needs", raw.count(b"\r\n"), 0)
+
+# And the rules are declared, so git enforces them on everyone's checkout
+# rather than relying on whoever edits next having the right settings.
+attributes = read(".gitattributes")
+truthy(".gitattributes exists", attributes)
+truthy("it pins .cmd", re.search(r"^\*\.cmd\s+-text", attributes, re.M))
+truthy("it pins .sh to LF", re.search(r"^\*\.sh\s+text eol=lf", attributes, re.M))
 
 
 # ------------------------------------------------------------ packaging -----

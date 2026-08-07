@@ -1,0 +1,15 @@
+# Line endings are load-bearing here, in both directions.
+
+# cmd.exe mis-parses a batch file whose lines end in LF alone — it was one of
+# the sharp edges found on real hardware, and the fix was to ship CRLF. `-text`
+# rather than `eol=crlf` so git stores and delivers the exact bytes and never
+# converts on anyone's checkout, whatever their core.autocrlf is set to.
+*.cmd   -text
+
+# PowerShell is less fragile about LF, but these run beside the .cmd on the
+# same Windows machines and there is no reason for them to differ.
+*.ps1   -text
+
+# The other direction: bash fails on a CRLF script with errors that name the
+# carriage return in ways nobody recognises ("$'\r': command not found").
+*.sh    text eol=lf
