@@ -417,6 +417,32 @@ add-in exceptions silently.
 | `agent.log` says `uv not found` | Fusion launched from Finder inherits a minimal `PATH`. The panel probes absolute locations; if `uv` is elsewhere, start the service from a terminal with `scripts/fusion-chat.sh`. |
 | `agent.log` shows `ModuleNotFoundError: No module named 'encodings'` | Fusion's `PYTHONHOME`/`PYTHONPATH` leaked into the child. The spawn strips every `PYTHON*` variable — if you see this, the add-in is running stale code, so Stop/Run it. |
 
+### Two FusionBridge entries in the add-in list
+
+If you install *and* also work on a checkout, Fusion can end up with the add-in
+registered twice — once at the checkout and once under `API/AddIns`. Both load,
+and which one wins is a load-order race.
+
+It does not usually break: the loader compares `realpath`, so the second
+registration finds the module already loaded and reuses it rather than raising
+`ImportError`. But the winner decides whether you are running the checkout or
+the installed copy, and a Fusion update can flip it silently.
+
+To see which one is actually live:
+
+```python
+# through fusion_execute
+import sys
+result = sys.modules["fusion_bridge_impl"].__file__
+```
+
+Fusion's registry is `JSLoadedScriptsinfo`, under
+`~/Library/Application Support/Autodesk/Autodesk Fusion 360/<id>/`. Back it up
+before editing, and remove the registration you do not want along with its
+folder — a registration whose path no longer exists is the ghost entry that
+shows up as a dead row in the add-ins panel. Fusion rewrites this file on exit,
+so make the change with Fusion closed, or verify it survived a restart.
+
 ### Reloading after an edit
 
 ```sh
