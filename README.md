@@ -4,9 +4,9 @@
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 [![macOS](https://img.shields.io/badge/macOS-Fusion%202704%2B-lightgrey.svg)](#requirements)
 
-**Model in Autodesk Fusion by prompting.** An MCP server that lets Claude write Fusion API
-Python, run it inside a live Fusion session, *look at the result through viewport screenshots*,
-correct itself, and export print-ready files.
+**Model in CAD by prompting.** MCP servers that let Claude write CAD API Python, run it inside
+a live **Autodesk Fusion** or **Rhino 8** session, *look at the result through viewport
+screenshots*, correct itself, and export print-ready files.
 
 <p align="center">
   <img src="docs/images/enclosure-iso.png" alt="A 40x30x15 mm enclosure with 2 mm walls, filleted corners and four M3 screw bosses, modelled in Fusion by Claude" width="720">
@@ -184,6 +184,56 @@ above actually hold.
 
 > Still worth working in a scratch Fusion project while iterating. Generated code can mangle a
 > design in ways no pattern list anticipates.
+
+## Rhino 8
+
+Rhino is supported too, with the same four ideas — arbitrary API access, eyes on the viewport, a
+chat window, and no API key. What differs is *how the code reaches the CAD*, and the reason is
+worth knowing before reading the code.
+
+| | Fusion | Rhino |
+| --- | --- | --- |
+| Reaching the CAD | an add-in **pushes** work onto the main thread | a timer inside Rhino **pulls** work |
+| Mechanism | `registerCustomEvent` / `fireCustomEvent` | `Eto.Forms.UITimer` polling a broker |
+| Interface | MCP server + docked palette | MCP server + a separate window |
+| Engine | Claude Agent SDK | the `claude` CLI |
+
+**Why Rhino pulls.** Fusion lets an add-in hand work to its main thread. Rhino's equivalent,
+`InvokeOnUiThread`, is *synchronous* — and a `rhinocode` script already runs on the UI thread, so
+calling it deadlocks against itself. Running a listener on a background thread instead crashes
+Rhino outright: a thread outliving the script context aborts the embedded CPython
+(`ucrtbase.dll`, `0xc0000409`).
+
+So Rhino pulls. A timer inside Rhino asks a loopback broker for jobs, runs them, and posts the
+results back. Because that timer is already on the UI thread, whatever it runs is on the correct
+thread by construction — the marshaling problem disappears rather than being solved.
+
+```
+claude ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker (127.0.0.1:7656) ──▶ poller inside Rhino
+```
+
+`rhino_mcp.py` has **no dependencies**. FastMCP needs Python 3.10+ and Rhino ships 3.9, so a
+framework would mean installing a second Python to forward four JSON messages. Nothing to install
+also means setup is one line.
+
+### Setting it up
+
+The Rhino side runs on the Claude subscription you already have — there is no API key. After
+installing Claude Code, ask it to do the rest:
+
+```
+Set up the Rhino bridge in "<path>/scripts/rhino" — read SETUP.md there and do what it says.
+```
+
+`SETUP.md` is written for the agent, not for you: it finds Rhino's Python, registers the MCP
+server, starts the broker so it survives the shell, starts the poller, and then *proves* it by
+calling `rhino_state` rather than assuming success. The manual commands are in the chat window's
+Settings screen if you would rather run them yourself.
+
+> [!WARNING]
+> `rhino_execute` runs arbitrary Python inside your Rhino session, exactly as `fusion_execute`
+> does for Fusion. Same boundary, same caution: loopback only, token required, and work in a
+> scratch document while you get a feel for it.
 
 ## The knowledge layer
 
@@ -402,15 +452,35 @@ restored on switching back, a mid-turn switch stopping the turn, context survivi
 (the model still answers from the resumed session, not just the redrawn transcript), and a closed
 design compressing to core context.
 
-Verified on macOS only. The bridge and MCP server are plain Python and have nothing macOS-specific
-in them, but `scripts/install.sh` knows only where Fusion keeps its add-ins on macOS, so Windows
-needs that path adding and a look at the launcher.
+**Rhino 8 is working and in real use** on Windows — someone who is not the author has modelled
+actual parts with it. Verified end to end on real hardware: `rhino_state` reads the live document,
+`rhino_execute` builds geometry, `rhino_screenshot` returns a real capture, and the whole chain
+carries non-ASCII intact (Spanish comments, accented layer names, an em-dash and a degree sign —
+which cost two real bugs to get right, since Windows pipes default to cp1252, not UTF-8).
+
+The Fusion half is verified on macOS only. Both bridges are plain Python with nothing
+platform-specific in them, but `scripts/install.sh` knows only where Fusion keeps its add-ins on
+macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 
 ## Contributing
 
 ```sh
-tests/run.sh     # offline: no Fusion, no network, no API key
+tests/run.sh     # offline: no CAD, no network, no API key
 ```
+
+**345 assertions across six suites**, none of which need Fusion, Rhino, or an internet connection:
+
+| Suite | Covers |
+| --- | --- |
+| `test_bridge.py` | the Fusion add-in: concurrency, timeouts, hot reload, per-document identity |
+| `test_broker.py` | the job queue: single-flight, expiry when a CAD dies mid-job, long-poll wake-up, HTTP auth |
+| `test_chat_registry.py` | per-design chats: isolation, resume, compression when a design closes |
+| `test_install.py` | the installer: idempotency, token permissions, uninstall |
+| `test_mcp_server.py` | the Fusion MCP tools |
+| `test_rhino_mcp.py` | the Rhino MCP server: protocol conformance, every failure path, stream hygiene |
+
+`tests/e2e/` additionally stands in for Rhino, so the full `claude → MCP → broker → CAD` chain can
+be exercised on a machine with no CAD installed at all.
 
 `fusion_bridge_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to.

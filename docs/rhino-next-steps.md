@@ -5,8 +5,9 @@
 > same fault offset every time. The likely cause is a background daemon thread
 > outliving the `rhinocode` script context — when RhinoCode tears the context
 > down with a thread still running, the embedded CPython aborts and takes Rhino
-> with it. So `rhino-bridge-start.py`, which deliberately leaves a listener
-> thread running after the script returns, is UNSAFE. Any in-Rhino code must
+> with it. The probe that deliberately left a listener thread
+> running after its script returned was therefore unsafe, and has been deleted;
+> it survives in the git history if the code is ever wanted. Any in-Rhino code must
 > therefore run entirely on the UI thread via `RhinoApp.Idle`, with no threads
 > of its own. See "Revised design" at the end.
 
@@ -119,23 +120,11 @@ hooks.
 
 ## Files here
 
-| | |
-| --- | --- |
-| `rhino-bridge-start.py` | starts the listener and returns — the shape that works |
-| `rhino-marshal-diagnose.py` | fires callbacks without waiting; proves what runs |
-| `rhino-car-test.py` | builds geometry and captures the viewport |
-| `rhino-probe2.py` | bounded environment checks |
+The probe scripts this document describes were deleted once they had produced
+their findings — every result they measured is recorded above, and they remain
+in the git history if the raw code is ever wanted. What ships is in
+`scripts/rhino/`.
 
-Run them with:
-
-```
-"C:\Program Files\Rhino 8\System\RhinoCode.exe" script C:\path\to\script.py
-```
-
-Each writes a `*-output.txt` beside itself. Read that, not the console.
-
-
----
 
 ## Revised design: no threads inside Rhino at all
 

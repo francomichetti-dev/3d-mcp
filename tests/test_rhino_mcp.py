@@ -27,7 +27,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent
-SERVER = REPO / "scripts" / "rhino_mcp.py"
+SERVER = REPO / "scripts" / "rhino" / "rhino_mcp.py"
 
 PASS = FAIL = 0
 
