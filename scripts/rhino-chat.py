@@ -261,6 +261,11 @@ class Api:
             "start_steps": START_STEPS,
             # One line, paths already correct, pasteable as-is.
             "mcp_add": 'claude mcp add rhino -- "%s" "%s"' % (sys.executable, MCP_SERVER),
+            # The whole of steps 3-5 as one sentence. Proven: the first user to
+            # set this up pasted something like it and did nothing else.
+            "ask_claude": ('Set up the Rhino bridge in "%s" — read SETUP.md '
+                           'there and do what it says.' % HERE),
+            "folder": HERE,
             "python_path": sys.executable,
             "server_path": MCP_SERVER,
             "attach_dir": ATTACH_DIR,
@@ -591,7 +596,13 @@ small{color:var(--dim);font-size:12px}
             <div class="status" id="s-claude">checking…</div>
           </li>
           <li>
-            <b>Start Rhino's side.</b> <span id="startsteps"></span>
+            <b>Ask Claude to do the rest.</b> Open Rhino, then type
+            <code>claude</code> in that same window and paste this:
+            <div class="cmd"><code id="c-ask"></code>
+              <button class="copy" data-for="c-ask">Copy</button></div>
+            <small>It connects the bridge, starts what needs starting, and
+            tells you what it found. You should not have to run anything
+            yourself.</small>
             <div class="status" id="s-rhino">checking…</div>
           </li>
         </ol>
@@ -599,12 +610,15 @@ small{color:var(--dim);font-size:12px}
       </div>
 
       <div class="card">
-        <h3>Optional — use Rhino from a terminal too</h3>
-        <p>The chat window already works without this. Run it if you also want
-           <code>claude</code> in a terminal to be able to drive Rhino. Paths
-           are already filled in for this machine.</p>
+        <h3>If you would rather do it by hand</h3>
+        <p>Step 3 covers this — you only need what follows if Claude could not
+           finish, or if you want <code>claude</code> in a terminal to drive
+           Rhino as well. Paths are already correct for this machine.</p>
         <div class="cmd"><code id="c-mcp"></code>
           <button class="copy" data-for="c-mcp">Copy</button></div>
+        <p style="margin-top:10px">Then start the broker and, with Rhino open
+           and <code>ScriptEditor</code> run once, the poller:
+           <span id="startsteps"></span></p>
       </div>
 
       <div class="card">
@@ -707,6 +721,7 @@ async function loadSetup(){
   $("term").textContent = s.terminal;
   $("startsteps").innerHTML = s.start_steps;
   $("c-mcp").textContent = s.mcp_add;
+  $("c-ask").textContent = s.ask_claude;
   const el = $("s-claude");
   if (s.claude_found){
     el.className = "status ok";
