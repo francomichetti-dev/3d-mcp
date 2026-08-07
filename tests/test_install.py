@@ -2,7 +2,7 @@
 
 Covers the two pieces a new user hits first and which have no other safety net:
 the add-in loader's provenance check (which refused to load itself through its
-own symlink), and `fusion-3d-mcp install`.
+own symlink), and `arges-mcp install`.
 
     cd agent && uv run --frozen --no-sync python ../tests/test_install.py
 """
@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-ADDIN = REPO / "server/src/fusion_mcp/addin/FusionBridge"
+ADDIN = REPO / "server/src/arges_mcp/addin/FusionBridge"
 
 sys.path.insert(0, str(HERE / "stubs"))
 sys.path.insert(0, str(REPO / "server/src"))
@@ -117,8 +117,8 @@ with tempfile.TemporaryDirectory() as tmp:
 # ---------------------------------------------------------- bootstrap ----
 print("Installer")
 
-from fusion_mcp import bootstrap  # noqa: E402
-from fusion_mcp import cli  # noqa: E402
+from arges_mcp import bootstrap  # noqa: E402
+from arges_mcp import cli  # noqa: E402
 
 truthy("ships the add-in inside the package", bootstrap.bundled_addin().is_dir())
 for required in ("FusionBridge.py", "FusionBridge.manifest", "fusion_bridge_impl.py"):

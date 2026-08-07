@@ -1,5 +1,5 @@
 [project]
-name = "fusion-3d-mcp"
+name = "arges-mcp"
 version = "0.1.0"
 description = "Model in Autodesk Fusion by prompting — an MCP server that writes Fusion API Python, runs it in a live session, and looks at the result"
 readme = "README.md"
@@ -32,20 +32,20 @@ Security = "https://github.com/francomichetti-dev/3d-mcp/blob/main/SECURITY.md"
 
 [project.scripts]
 # Bare invocation serves stdio, so this is what an MCP client runs directly.
-fusion-3d-mcp = "fusion_mcp.cli:main"
+arges = "arges_mcp.cli:main"
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
-# The add-in lives inside the package (src/fusion_mcp/addin/FusionBridge) rather
+# The add-in lives inside the package (src/arges_mcp/addin/FusionBridge) rather
 # than at the repo root. It has to: uv builds the wheel from the sdist, and a
 # force-include cannot reach outside the sdist root, so anything above this
 # directory simply would not ship. One canonical copy also means the symlink
-# scripts/install.sh creates and the copy `fusion-3d-mcp install` makes are
+# scripts/install.sh creates and the copy `arges-mcp install` makes are
 # always the same code.
 [tool.hatch.build.targets.wheel]
-packages = ["src/fusion_mcp"]
+packages = ["src/arges_mcp"]
 
 [tool.hatch.build.targets.sdist]
 include = ["src/", "README.md"]

@@ -49,7 +49,7 @@ def truthy(label, got):
     check(label, bool(got), True)
 
 
-from fusion_mcp import broker as bk  # noqa: E402
+from arges_mcp import broker as bk  # noqa: E402
 
 TMP = Path(tempfile.mkdtemp(prefix="e2e-chain-"))
 TOKEN = "e" * 64

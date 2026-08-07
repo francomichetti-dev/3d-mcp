@@ -1,6 +1,6 @@
 <!-- mcp-name: io.github.francomichetti-dev/3d-mcp -->
 
-# fusion-3d-mcp
+# arges-mcp
 
 **Model in Autodesk Fusion by prompting.** An MCP server that lets a model write Fusion API Python,
 run it inside a live Fusion session, *look at the result through viewport screenshots*, correct
@@ -23,7 +23,7 @@ Two halves have to agree: this server, and a small add-in that runs *inside* Fus
 package cannot reach into another application, so installing the add-in is an explicit step:
 
 ```sh
-uvx fusion-3d-mcp install
+uvx arges-mcp install
 ```
 
 That copies the add-in into Fusion's add-ins folder and creates a bridge token at `~/.fusion-mcp/`
@@ -37,7 +37,7 @@ on later launches.
 Check it:
 
 ```sh
-uvx fusion-3d-mcp status
+uvx arges-mcp status
 ```
 
 ## Point your MCP client at it
@@ -47,7 +47,7 @@ uvx fusion-3d-mcp status
   "mcpServers": {
     "fusion": {
       "command": "uvx",
-      "args": ["fusion-3d-mcp"]
+      "args": ["arges-mcp"]
     }
   }
 }
@@ -56,7 +56,7 @@ uvx fusion-3d-mcp status
 Or with Claude Code:
 
 ```sh
-claude mcp add fusion -- uvx fusion-3d-mcp
+claude mcp add fusion -- uvx arges-mcp
 ```
 
 ## Tools
@@ -74,7 +74,7 @@ model can read it and fix its own code.
 ## Upgrading
 
 Upgrading the package does not upgrade the add-in, because the add-in was copied into Fusion. Re-run
-`uvx fusion-3d-mcp install` after an upgrade. If you forget, the version check between server and
+`uvx arges-mcp install` after an upgrade. If you forget, the version check between server and
 bridge will say so rather than misbehaving quietly.
 
 ## Requirements

@@ -28,7 +28,7 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-ADDIN_SOURCE="${REPO_DIR}/server/src/fusion_mcp/addin/FusionBridge"
+ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/FusionBridge"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
 ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
 
@@ -85,8 +85,8 @@ HAVE_CLAUDE=1
 command -v claude >/dev/null 2>&1 || HAVE_CLAUDE=0
 
 [ -d "${ADDIN_SOURCE}" ] || die "add-in source missing: ${ADDIN_SOURCE}"
-[ -f "${REPO_DIR}/server/src/fusion_mcp/server.py" ] \
-    || die "MCP server missing: ${REPO_DIR}/server/src/fusion_mcp/server.py"
+[ -f "${REPO_DIR}/server/src/arges_mcp/server.py" ] \
+    || die "MCP server missing: ${REPO_DIR}/server/src/arges_mcp/server.py"
 
 if [ ! -d "${ADDINS_DIR}" ]; then
     die "Fusion AddIns directory not found:
@@ -309,7 +309,7 @@ if [ "${HAVE_CLAUDE}" -eq 0 ]; then
     printf '      "%s": {\n' "${MCP_NAME}"
     printf '        "command": "uv",\n'
     printf '        "args": ["run", "--frozen", "--no-sync",\n'
-    printf '                 "--directory", "%s/server", "fusion-3d-mcp"]\n' "${REPO_DIR}"
+    printf '                 "--directory", "%s/server", "arges-mcp"]\n' "${REPO_DIR}"
     printf '      }\n'
     printf '    }\n\n'
     info "Claude Desktop: ~/Library/Application Support/Claude/claude_desktop_config.json"
@@ -325,7 +325,7 @@ fi
 # re-checking the lockfile, so a routine session start contacts no package index.
 if [ "${HAVE_CLAUDE}" -eq 1 ]; then
     claude mcp add "${MCP_NAME}" -s user -- \
-        uv run --frozen --no-sync --directory "${REPO_DIR}/server" fusion-3d-mcp
+        uv run --frozen --no-sync --directory "${REPO_DIR}/server" arges-mcp
     info "registered as '${MCP_NAME}' (absolute path baked in, offline start)"
 fi
 

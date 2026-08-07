@@ -17,7 +17,7 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO / "server/src"))
 
-from fusion_mcp import broker as bk  # noqa: E402
+from arges_mcp import broker as bk  # noqa: E402
 
 PASS = FAIL = 0
 

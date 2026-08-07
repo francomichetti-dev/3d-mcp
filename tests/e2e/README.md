@@ -27,7 +27,7 @@ screenshot, and no amount of protocol testing substitutes for it.
 # 1. broker on a test port
 cd server && FUSION_BROKER_PORT=7699 uv run --frozen --no-sync python -c "
 import sys, time, pathlib; sys.path.insert(0, 'src')
-from fusion_mcp import broker
+from arges_mcp import broker
 broker.TOKEN_PATH = pathlib.Path('<token file>')
 broker.ALLOWED_HOSTS = frozenset(('127.0.0.1:7699','localhost:7699'))
 broker.serve(port=7699); time.sleep(600)"

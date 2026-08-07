@@ -7,7 +7,7 @@ cache directory that is disposable and may be garbage-collected, so a symlink
 into it would rot. Here the add-in is **copied**.
 
 The consequence is worth stating plainly: upgrading the package does not upgrade
-the add-in. Re-run `fusion-3d-mcp install` after an upgrade, and the version
+the add-in. Re-run `arges-mcp install` after an upgrade, and the version
 check between server and bridge will tell you if you forget.
 """
 
@@ -153,7 +153,7 @@ def run_install(rotate_token: bool = False) -> int:
         print(f"  could not create {EXPORT_DIR}: {exc}")
 
     print(MANUAL_STEP)
-    print("Then point your MCP client at:  fusion-3d-mcp")
+    print("Then point your MCP client at:  arges-mcp")
     return 0
 
 
@@ -210,7 +210,7 @@ def run_status() -> int:
             token = TOKEN_PATH.read_text(encoding="utf-8").strip()
         except OSError:
             pass
-    print(f"  token:  {'present' if token else 'MISSING — run: fusion-3d-mcp install'}")
+    print(f"  token:  {'present' if token else 'MISSING — run: arges-mcp install'}")
 
     if not token:
         return 1

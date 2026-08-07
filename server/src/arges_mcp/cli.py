@@ -1,7 +1,7 @@
-"""Entry point for the `fusion-3d-mcp` command.
+"""Entry point for the `arges-mcp` command.
 
 Bare invocation serves MCP over stdio, because that is how an MCP client starts
-it — `uvx fusion-3d-mcp` with no arguments has to be the server and nothing
+it — `uvx arges-mcp` with no arguments has to be the server and nothing
 else. Anything printed to stdout by the other subcommands would corrupt the
 JSON-RPC stream, so they exist only when named explicitly.
 """
@@ -16,7 +16,7 @@ from . import __version__
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="fusion-3d-mcp",
+        prog="arges-mcp",
         description="Model in Autodesk Fusion by prompting. "
                     "Run with no arguments to serve MCP over stdio.",
     )

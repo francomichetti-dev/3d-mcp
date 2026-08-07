@@ -20,7 +20,7 @@ jobs:
           pkg=$(grep -m1 '^version = ' server/pyproject.toml | cut -d'"' -f2)
           srv=$(python3 -c 'import json;print(json.load(open("server.json"))["version"])')
           pkgver=$(python3 -c 'import json;print(json.load(open("server.json"))["packages"][0]["version"])')
-          init=$(grep -m1 '__version__' server/src/fusion_mcp/__init__.py | cut -d'"' -f2)
+          init=$(grep -m1 '__version__' server/src/arges_mcp/__init__.py | cut -d'"' -f2)
           printf 'tag=%s pyproject=%s server.json=%s package=%s __init__=%s\n' \
             "$tag" "$pkg" "$srv" "$pkgver" "$init"
           [ "$tag" = "$pkg" ] && [ "$tag" = "$srv" ] && [ "$tag" = "$pkgver" ] && [ "$tag" = "$init" ] || {
@@ -58,9 +58,9 @@ jobs:
           import glob, sys, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
           needed = [
-              "fusion_mcp/addin/FusionBridge/FusionBridge.py",
-              "fusion_mcp/addin/FusionBridge/FusionBridge.manifest",
-              "fusion_mcp/addin/FusionBridge/fusion_bridge_impl.py",
+              "arges_mcp/addin/FusionBridge/FusionBridge.py",
+              "arges_mcp/addin/FusionBridge/FusionBridge.manifest",
+              "arges_mcp/addin/FusionBridge/fusion_bridge_impl.py",
           ]
           missing = [n for n in needed if n not in names]
           if missing:
@@ -88,12 +88,12 @@ jobs:
           # entry, and PyPI's API is not instantly consistent after an upload.
           version="${GITHUB_REF_NAME#v}"
           for i in $(seq 1 30); do
-            if curl -fsS "https://pypi.org/pypi/fusion-3d-mcp/$version/json" >/dev/null 2>&1; then
-              echo "fusion-3d-mcp $version is live on PyPI"; exit 0
+            if curl -fsS "https://pypi.org/pypi/arges-mcp/$version/json" >/dev/null 2>&1; then
+              echo "arges-mcp $version is live on PyPI"; exit 0
             fi
             sleep 10
           done
-          echo "::error::fusion-3d-mcp $version did not appear on PyPI in 5 minutes"
+          echo "::error::arges-mcp $version did not appear on PyPI in 5 minutes"
           exit 1
 
       - name: Install mcp-publisher

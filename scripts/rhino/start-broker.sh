@@ -29,7 +29,7 @@ MSG
 }
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-BROKER_PY="$HERE/../server/src/fusion_mcp/broker.py"
+BROKER_PY="$HERE/../server/src/arges_mcp/broker.py"
 [ -f "$BROKER_PY" ] || BROKER_PY="$HERE/broker.py"
 [ -f "$BROKER_PY" ] || { echo "cannot find broker.py next to this script" >&2; exit 1; }
 

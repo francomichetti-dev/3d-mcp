@@ -44,9 +44,9 @@ def read(rel):
 
 
 # Everything that speaks the bridge protocol, on both sides.
-FUSION_SERVER = "server/src/fusion_mcp/server.py"
-FUSION_ADDIN = "server/src/fusion_mcp/addin/FusionBridge/fusion_bridge_impl.py"
-BROKER = "server/src/fusion_mcp/broker.py"
+FUSION_SERVER = "server/src/arges_mcp/server.py"
+FUSION_ADDIN = "server/src/arges_mcp/addin/FusionBridge/fusion_bridge_impl.py"
+BROKER = "server/src/arges_mcp/broker.py"
 RHINO_MCP = "scripts/rhino/rhino_mcp.py"
 RHINO_POLLER = "scripts/rhino/rhino-poller.py"
 RHINO_CHAT = "scripts/rhino/rhino-chat.py"
@@ -263,7 +263,7 @@ versions = {}
 found = re.search(r'^version\s*=\s*"([^"]+)"', read("server/pyproject.toml"), re.M)
 if found:
     versions["server/pyproject.toml"] = found.group(1)
-found = re.search(r'__version__\s*=\s*"([^"]+)"', read("server/src/fusion_mcp/__init__.py"))
+found = re.search(r'__version__\s*=\s*"([^"]+)"', read("server/src/arges_mcp/__init__.py"))
 if found:
     versions["__init__.py"] = found.group(1)
 try:
@@ -348,15 +348,15 @@ truthy("it pins .sh to LF", re.search(r"^\*\.sh\s+text eol=lf", attributes, re.M
 # the repo root would silently not ship. Move it and the wheel guard fails on
 # release day; this fails immediately.
 print("Packaging")
-PACKAGED_ROOT = REPO / "server" / "src" / "fusion_mcp"
+PACKAGED_ROOT = REPO / "server" / "src" / "arges_mcp"
 ADDIN_FILES = ["FusionBridge.py", "FusionBridge.manifest", "fusion_bridge_impl.py"]
 for name in ADDIN_FILES:
     truthy(f"{name} is inside the packaged tree",
            (PACKAGED_ROOT / "addin" / "FusionBridge" / name).is_file())
 
 pyproject = read("server/pyproject.toml")
-truthy("the wheel packages src/fusion_mcp",
-       re.search(r'packages\s*=\s*\[\s*"src/fusion_mcp"', pyproject))
+truthy("the wheel packages src/arges_mcp",
+       re.search(r'packages\s*=\s*\[\s*"src/arges_mcp"', pyproject))
 
 # The manifest is the file Fusion reads to find the add-in at all, and it is
 # the one a broad exclude would take first, being the only non-.py file.
@@ -390,7 +390,7 @@ truthy("the chat service pins Host as middleware",
 # Now that the service refuses a mismatched Host, the URL the palette is
 # pointed at is load-bearing: the browser derives the Host header from it. Move
 # it to a hostname the service does not list and the panel 403s itself.
-CHAT_PANEL = "server/src/fusion_mcp/addin/FusionBridge/chat_panel.py"
+CHAT_PANEL = "server/src/arges_mcp/addin/FusionBridge/chat_panel.py"
 service_url = re.search(r'SERVICE_URL\s*=\s*"(http://[^"%]+)', read(CHAT_PANEL))
 truthy("the palette declares its service URL", service_url)
 if service_url:

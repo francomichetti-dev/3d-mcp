@@ -552,7 +552,7 @@ class Session:
                     "args": [
                         "run", "--frozen", "--no-sync",
                         "--directory", str(SERVER_DIR),
-                        "fusion-3d-mcp",
+                        "arges-mcp",
                     ],
                 }
             },

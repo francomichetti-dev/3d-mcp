@@ -89,7 +89,7 @@ MSG_TIMEOUT = (
     "do not resend; check fusion_state/screenshot."
 )
 MSG_NO_TOKEN = (
-    f"Bridge token not found or empty at {TOKEN_PATH} — run 'fusion-3d-mcp install' "
+    f"Bridge token not found or empty at {TOKEN_PATH} — run 'arges-mcp install' "
     "(or scripts/install.sh from a checkout) to create it, then restart the "
     "FusionBridge add-in."
 )
@@ -97,7 +97,7 @@ MSG_BAD_TOKEN = (
     f"Bridge rejected the token (401). The add-in re-reads {TOKEN_PATH} on every "
     "request, so restarting it changes nothing: either that file is unreadable "
     "from Fusion's process, or this server is holding an older cached value. "
-    "Check ~/.fusion-mcp/addin.log, then re-run 'fusion-3d-mcp install "
+    "Check ~/.fusion-mcp/addin.log, then re-run 'arges-mcp install "
     "--rotate-token' (or scripts/install.sh --rotate-token) and retry."
 )
 MSG_TOO_LARGE = (

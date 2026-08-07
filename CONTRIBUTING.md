@@ -88,9 +88,9 @@ exactly like one that did nothing. The poller writes `rhino-poller.log` **next t
 ## Layout
 
 ```
-server/src/fusion_mcp/          the published package (PyPI: fusion-3d-mcp)
+server/src/arges_mcp/          the published package (PyPI: arges-mcp)
     server.py                   the Fusion MCP server itself
-    cli.py                      `fusion-3d-mcp` — bare invocation serves stdio
+    cli.py                      `arges-mcp` — bare invocation serves stdio
     bootstrap.py                `install` / `uninstall` / `status`
     broker.py                   the job queue the Rhino half polls
     addin/FusionBridge/         the Fusion add-in, shipped inside the package
@@ -111,7 +111,7 @@ them drifting, since every one of those mismatches fails silently.
 The add-in lives inside the package rather than at the repo root for a build reason: `uv build`
 builds the wheel from the sdist, and a `force-include` cannot reach outside the sdist root — an
 add-in above `server/` simply would not ship. One canonical copy also means the symlink a checkout
-creates and the copy `fusion-3d-mcp install` makes are always the same code.
+creates and the copy `arges-mcp install` makes are always the same code.
 
 ## Releasing
 
@@ -124,7 +124,7 @@ git tag v0.2.0 && git push --tags
 
 - `server/pyproject.toml` → `version`
 - `server.json` → `version` **and** `packages[0].version`
-- `server/src/fusion_mcp/__init__.py` → `__version__`
+- `server/src/arges_mcp/__init__.py` → `__version__`
 
 CI refuses the release if the tag and those disagree, or if `server/README.md` has lost its
 `mcp-name:` marker — the registry uses that marker to verify the PyPI package is yours, so a release

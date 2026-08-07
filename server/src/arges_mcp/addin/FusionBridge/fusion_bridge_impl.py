@@ -1620,7 +1620,7 @@ def _find_repo():
 
     Not a fixed number of dirname() calls: the add-in is nested differently
     depending on how it got here — symlinked out of a checkout by install.sh, or
-    copied out of an installed wheel by `fusion-3d-mcp install`, where there is
+    copied out of an installed wheel by `arges-mcp install`, where there is
     no checkout above it at all.  Identified by the agent/ directory because that
     is the thing the panel actually needs.
     """

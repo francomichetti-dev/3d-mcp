@@ -23,8 +23,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-IMPL = REPO / "server/src/fusion_mcp/addin/FusionBridge/fusion_bridge_impl.py"
-LOADER = REPO / "server/src/fusion_mcp/addin/FusionBridge/FusionBridge.py"
+IMPL = REPO / "server/src/arges_mcp/addin/FusionBridge/fusion_bridge_impl.py"
+LOADER = REPO / "server/src/arges_mcp/addin/FusionBridge/FusionBridge.py"
 
 sys.path.insert(0, str(HERE / "stubs"))
 

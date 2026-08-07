@@ -18,7 +18,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-ADDIN_SOURCE="${REPO_DIR}/server/src/fusion_mcp/addin/FusionBridge"
+ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/FusionBridge"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
 ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
 

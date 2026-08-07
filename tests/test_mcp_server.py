@@ -44,7 +44,7 @@ def refuses(label, fn):
     print(f"  FAIL {label}: allowed, resolved to {result}")
 
 
-from fusion_mcp import server as srv  # noqa: E402
+from arges_mcp import server as srv  # noqa: E402
 
 # Confine everything to a temp dir; never touch the real exports folder.
 SANDBOX = Path(tempfile.mkdtemp(prefix="fusion-export-test-"))

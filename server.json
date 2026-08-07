@@ -13,7 +13,7 @@
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
-      "identifier": "fusion-3d-mcp",
+      "identifier": "arges-mcp",
       "version": "0.1.0",
       "runtimeHint": "uvx",
       "transport": {
