@@ -46,7 +46,7 @@ jobs:
           python-version: '3.11'
 
       - name: Compile every Python file
-        run: python -m compileall -q server agent tests
+        run: python -m compileall -q server agent tests scripts
 
       - name: Check every shell script parses
         run: find scripts tests -name "*.sh" -print0 | xargs -0 -n1 bash -n
