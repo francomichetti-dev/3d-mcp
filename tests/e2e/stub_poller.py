@@ -7,8 +7,8 @@ RhinoCommon itself; everything between Claude and Rhino's front door it can.
 import json, os, sys, threading, time, urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "../../../../../../server/src"))
-BROKER = "http://127.0.0.1:7699"
-TOKEN = open(os.path.join(os.path.dirname(__file__), "token")).read().strip()
+BROKER = os.environ.get("FUSION_BROKER_URL", "http://127.0.0.1:7699")
+TOKEN = os.environ["FUSION_BRIDGE_TOKEN"]   # no relative path to break
 
 # a 1x1 transparent png, so screenshot returns a real decodable image
 PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"

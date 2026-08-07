@@ -1,108 +1,128 @@
 """Chat with Claude about the model open in Rhino.
 
-Two screens, deliberately: the conversation, and settings. Nothing else. The
-CAD is Rhino's job and the viewport is already on screen — this window is for
-saying what you want and watching it happen.
+Two screens: the conversation, and settings. Nothing else.
 
-    you ──▶ Claude ──▶ tools ──▶ broker ──▶ poller (a UI timer in Rhino)
+It drives the `claude` CLI, so it runs on the Claude subscription the person
+already pays for. There is no API key to obtain, paste, protect, or bill
+separately — that was the first version's mistake.
 
-Claude gets three tools: run Python in the live session, read the document, and
-look at the viewport. The screenshot comes back as an image, so it can see what
-it built and correct itself rather than working blind.
+    this window ──▶ claude ──MCP──▶ rhino_mcp.py ──▶ broker ──▶ Rhino
 
-Runs on Rhino's own Python. Nothing to install but the SDK:
+The MCP config is passed inline with --mcp-config, so the app works as soon as
+Claude Code is installed; `claude mcp add` is only needed to drive Rhino from a
+terminal as well.
 
-    %USERPROFILE%\\.rhinocode\\py39-rh8\\python.exe -m pip install anthropic pywebview
-    %USERPROFILE%\\.rhinocode\\py39-rh8\\python.exe rhino-chat.py
+Runs on Rhino's own Python (3.9). The only dependency is pywebview.
 """
 
 import json
 import os
-import stat
+import shutil
 import subprocess
 import sys
 import threading
 import traceback
 import urllib.error
 import urllib.request
-
-# --------------------------------------------------------------------------
-# Config — the API key lives beside the bridge token, with the same 0600.
-# --------------------------------------------------------------------------
+import uuid
 
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".fusion-mcp")
 CONFIG_PATH = os.path.join(CONFIG_DIR, "chat.json")
 TOKEN_PATH = os.path.join(CONFIG_DIR, "token")
+ATTACH_DIR = os.path.join(CONFIG_DIR, "attachments")
+MCP_CONFIG_PATH = os.path.join(CONFIG_DIR, "rhino-mcp.json")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+MCP_SERVER = os.path.join(HERE, "rhino_mcp.py")
 
 BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
 AUTH_HEADER = "X-Fusion-Bridge-Token"
 
-DEFAULT_MODEL = "claude-opus-5"
-MODELS = [
-    ("claude-opus-5", "Opus 5 — most capable, best for hard modelling"),
-    ("claude-sonnet-5", "Sonnet 5 — faster and cheaper, very capable"),
-    ("claude-haiku-4-5", "Haiku 4.5 — fastest, for simple edits"),
-]
+RHINO_TOOLS = ["mcp__rhino__rhino_execute", "mcp__rhino__rhino_state",
+               "mcp__rhino__rhino_screenshot"]
+
+MAX_ATTACH_BYTES = 20 * 1024 * 1024
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+
+NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
+
+# --------------------------------------------------------------------------
+# Finding Claude Code
+# --------------------------------------------------------------------------
+
+
+def find_claude():
+    """Locate the claude executable.
+
+    PATH first, then the native installer's own location. On Windows that
+    installer writes to %USERPROFILE%\\.local\\bin without updating PATH for an
+    already-running process, so a fresh install is invisible to shutil.which
+    until a new terminal is opened. Checking the path directly means the person
+    does not have to know that.
+    """
+    found = shutil.which("claude")
+    if found:
+        return found
+    candidates = [
+        os.path.join(HOME, ".local", "bin", "claude.exe"),
+        os.path.join(HOME, ".local", "bin", "claude"),
+        os.path.join(os.environ.get("LOCALAPPDATA", ""), "Programs", "claude", "claude.exe"),
+        os.path.join(os.environ.get("APPDATA", ""), "npm", "claude.cmd"),
+    ]
+    for path in candidates:
+        if path and os.path.isfile(path):
+            return path
+    return ""
+
+
+def _server_env():
+    env = {"FUSION_BROKER_URL": BROKER}
+    token = os.environ.get("FUSION_BRIDGE_TOKEN")
+    if token:
+        env["FUSION_BRIDGE_TOKEN"] = token
+    return env
+
+
+def write_mcp_config():
+    """Write the MCP config the CLI is pointed at, with this machine's paths."""
+    os.makedirs(CONFIG_DIR, exist_ok=True)
+    config = {"mcpServers": {"rhino": {
+        "command": sys.executable,          # the Python running this window
+        "args": [MCP_SERVER],
+        # The MCP server is a separate process and does not inherit this
+        # one's environment, so anything non-default has to be passed on.
+        "env": _server_env(),
+    }}}
+    with open(MCP_CONFIG_PATH, "w", encoding="utf-8") as handle:
+        json.dump(config, handle, indent=2)
+    return MCP_CONFIG_PATH
+
+
+# --------------------------------------------------------------------------
+# Config and status
+# --------------------------------------------------------------------------
 
 
 def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as handle:
-            data = json.load(handle)
+            return json.load(handle)
     except (OSError, ValueError):
-        data = {}
-    data.setdefault("model", DEFAULT_MODEL)
-    data.setdefault("api_key", "")
-    return data
-
-
-def _restrict(path):
-    """Make the file readable only by this account.
-
-    os.chmod(0600) does NOT do this on Windows - measured: after chmod the ACL
-    still read `NT AUTHORITY\\SYSTEM:(I)(F)`, `BUILTIN\\Administrators:(I)(F)`,
-    `<user>:(I)(F)`, all inherited. chmod there only toggles the read-only
-    attribute, so an API key written this way stays readable by every other
-    account on the machine. icacls is what actually restricts it: drop
-    inherited ACEs, then grant this user alone.
-
-    An administrator can still take ownership and read it. That is true of
-    root on POSIX too, so the honest claim is "other users cannot read it",
-    not "nobody can".
-    """
-    if os.name == "nt":
-        user = os.environ.get("USERNAME") or ""
-        if not user:
-            return False
-        try:
-            done = subprocess.run(
-                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:F"],
-                capture_output=True, text=True, timeout=15,
-                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0))
-            return done.returncode == 0
-        except (OSError, subprocess.SubprocessError):
-            return False
-    try:
-        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
-        return True
-    except OSError:
-        return False
+        return {}
 
 
 def save_config(config):
     os.makedirs(CONFIG_DIR, exist_ok=True)
     with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
-    return _restrict(CONFIG_PATH)
-
-
-# --------------------------------------------------------------------------
-# The broker — the only way into Rhino.
-# --------------------------------------------------------------------------
 
 
 def _token():
+    from_env = os.environ.get("FUSION_BRIDGE_TOKEN")
+    if from_env:
+        return from_env.strip()
     try:
         with open(TOKEN_PATH, encoding="utf-8") as handle:
             return handle.read().strip()
@@ -110,136 +130,41 @@ def _token():
         return ""
 
 
-def broker(method, path, body=None, timeout=120):
-    data = json.dumps(body).encode() if body is not None else None
-    request = urllib.request.Request(BROKER + path, data=data, method=method)
+def broker_health(timeout=5):
+    request = urllib.request.Request(BROKER + "/health")
     request.add_header(AUTH_HEADER, _token())
-    if data is not None:
-        request.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(request, timeout=timeout) as response:
-        raw = response.read()
-    return json.loads(raw) if raw else None
+        return json.loads(response.read())
 
 
-def submit(kind, payload, timeout=120):
-    """Send a job to Rhino. Returns a dict; never raises."""
-    try:
-        return broker("POST", "/submit", {"kind": kind, "payload": payload},
-                      timeout=timeout)
-    except urllib.error.URLError as exc:
-        return {"ok": False, "error": (
-            "Rhino is not reachable — the broker is not running. "
-            f"Start it, then try again. ({exc.reason})")}
-    except OSError as exc:
-        return {"ok": False, "error": f"connection failed: {exc}"}
-    except ValueError:
-        return {"ok": False, "error": "the broker replied with something that was not JSON"}
+SYSTEM = """You are modelling in Rhino 8 with the person you are talking to. \
+They can see the Rhino viewport; you cannot, unless you call rhino_screenshot.
+
+Work by doing. When they ask for something, build it with rhino_execute rather \
+than describing how they could. Check what is open with rhino_state before \
+assuming, and look at the result with rhino_screenshot before saying it is done.
+
+Keep replies short — they are watching the model change in front of them, so a \
+sentence about what you did is usually enough. No code dumps, and no lists of \
+what you might do next unless they ask.
+
+Check units and tolerance before building to scale. If something fails, read \
+the traceback and fix it yourself rather than handing the error back."""
 
 
-# --------------------------------------------------------------------------
-# The tools Claude gets. Schemas are generated from these signatures and
-# docstrings, so the docstring IS the tool description Claude reads - it says
-# when to reach for the tool, not just what it does.
-# --------------------------------------------------------------------------
+def _describe(tool):
+    """What to show in the conversation for a tool call, or None to stay quiet.
 
-# Set by the window so tools can report activity as they run.
-_notify = None
-
-
-def _say(kind, text):
-    if _notify:
-        _notify(kind, text)
-
-
-def make_tools():
-    from anthropic import beta_tool
-
-    @beta_tool
-    def rhino_execute(code: str) -> str:
-        """Run Python inside the live Rhino session and return the result.
-
-        This is how you build and modify geometry. Call it whenever the person
-        asks for something to be created, changed, measured, or deleted.
-
-        `Rhino` (RhinoCommon), `rs` (rhinoscriptsyntax), `doc` (the active
-        document) and `scriptcontext` are already in scope. Assign to `result`
-        to send a value back. Variables persist between calls, so you can build
-        something up across several steps.
-
-        After changing geometry, call rhino_screenshot to check the result
-        looks right before telling the person it is done.
-
-        Args:
-            code: Python to execute in Rhino.
-        """
-        _say("tool", "running code in Rhino")
-        out = submit("execute", {"code": code})
-        if not out.get("ok"):
-            return "FAILED\n" + (out.get("traceback") or out.get("error") or "unknown error")
-        parts = []
-        if out.get("stdout"):
-            parts.append(out["stdout"].rstrip())
-        if out.get("result") is not None:
-            parts.append("result = " + json.dumps(out["result"], default=str))
-        return "\n".join(parts) if parts else "done (no output)"
-
-    @beta_tool
-    def rhino_state() -> str:
-        """Read the current Rhino document: units, tolerance, object count, layers.
-
-        Call this before making assumptions about what is open — especially at
-        the start of a conversation, or when the person refers to something
-        that already exists.
-        """
-        _say("tool", "reading the document")
-        out = submit("state", {}, timeout=30)
-        if not out.get("ok"):
-            return "FAILED: " + (out.get("error") or "unknown error")
-        return json.dumps(out, indent=2, default=str)
-
-    @beta_tool
-    def rhino_screenshot(view: str = "perspective") -> list:
-        """Look at the Rhino viewport. Returns the image so you can see the model.
-
-        Use this to check your own work after building something, and to
-        understand what the person is referring to when they describe what they
-        can see. Prefer looking over guessing.
-
-        Args:
-            view: perspective, top, front, right, or fit.
-        """
-        _say("tool", f"looking at the {view} view")
-        out = submit("screenshot", {"view": view, "width": 1200, "height": 800},
-                     timeout=90)
-        if not out.get("ok"):
-            return [{"type": "text",
-                     "text": "FAILED: " + (out.get("error") or "unknown error")}]
-        # Show it in the conversation too - the person should see what Claude saw.
-        _say("image", "data:image/png;base64," + out["png_base64"])
-        return [{
-            "type": "image",
-            "source": {"type": "base64", "media_type": "image/png",
-                       "data": out["png_base64"]},
-        }]
-
-    return [rhino_execute, rhino_state, rhino_screenshot]
-
-
-SYSTEM = """You are modelling in Rhino 8 alongside the person you are talking \
-to. They can see the Rhino viewport; you cannot, unless you take a screenshot.
-
-Work by doing, not by explaining. When they ask for something, build it with \
-rhino_execute rather than describing how they could. Check the document with \
-rhino_state when you need to know what is already there, and look at the result \
-with rhino_screenshot before you say something is finished.
-
-Keep replies short. They are watching the model change in front of them, so a \
-sentence on what you did is usually enough — no summaries of code you just ran, \
-no lists of what you might do next unless they ask.
-
-Rhino units and tolerance matter: check them before building to scale. If \
-something fails, read the traceback and fix it yourself rather than handing the \
-error back."""
+    Claude Code has internal tools of its own (ToolSearch and friends) which it
+    uses to find ours. Narrating those to someone modelling a chair is noise
+    about our plumbing, so only the tools that touch their work are announced.
+    """
+    return {
+        "mcp__rhino__rhino_execute": "running code in Rhino",
+        "mcp__rhino__rhino_state": "reading the document",
+        "mcp__rhino__rhino_screenshot": "looking at the viewport",
+        "Read": "reading your attachment",
+    }.get(tool)
 
 
 # --------------------------------------------------------------------------
@@ -253,13 +178,14 @@ class Api:
     def __init__(self):
         self._lock = threading.Lock()
         self._config = load_config()
-        self._history = []          # the conversation, in API shape
         self._window = None
+        self._session = self._config.get("session") or str(uuid.uuid4())
+        self._started = bool(self._config.get("session_started"))
+        self._pending = []          # attachments queued for the next message
+        self._proc = None
 
     def bind(self, window):
         self._window = window
-
-    # -- notifications to the page ------------------------------------- #
 
     def _push(self, kind, text):
         if not self._window:
@@ -270,85 +196,120 @@ class Api:
         except Exception:                                    # noqa: BLE001
             pass
 
-    # -- settings ------------------------------------------------------- #
-
-    def get_settings(self):
-        key = self._config.get("api_key") or ""
-        return {
-            "has_key": bool(key),
-            "key_hint": (key[:7] + "…" + key[-4:]) if len(key) > 15 else "",
-            "model": self._config.get("model", DEFAULT_MODEL),
-            "models": [{"id": m, "label": label} for m, label in MODELS],
-            "config_path": CONFIG_PATH,
-        }
-
-    def save_settings(self, api_key, model):
-        if api_key and not api_key.startswith("sk-"):
-            return {"ok": False,
-                    "error": "that does not look like an API key — they start with 'sk-'"}
-        if api_key:
-            self._config["api_key"] = api_key.strip()
-        if model:
-            self._config["model"] = model
-        try:
-            restricted = save_config(self._config)
-        except OSError as exc:
-            return {"ok": False, "error": f"could not save: {exc}"}
-        # Say so if the key landed on disk without its permissions locked down,
-        # rather than letting the UI keep claiming it is protected.
-        return {"ok": True, "restricted": restricted}
-
-    def test_key(self):
-        """Prove the key works with the smallest possible real call."""
-        key = self._config.get("api_key")
-        if not key:
-            return {"ok": False, "error": "no API key saved yet"}
-        try:
-            import anthropic
-        except ImportError:
-            return {"ok": False, "error": (
-                "the anthropic package is not installed — see the setup steps below")}
-        try:
-            client = anthropic.Anthropic(api_key=key)
-            client.messages.create(
-                model=self._config.get("model", DEFAULT_MODEL),
-                max_tokens=16,
-                messages=[{"role": "user", "content": "Reply with: ok"}],
-            )
-            return {"ok": True, "detail": "key works"}
-        except anthropic.AuthenticationError:
-            return {"ok": False, "error": "the API key was rejected — check it and re-paste"}
-        except anthropic.NotFoundError:
-            return {"ok": False, "error": (
-                f"this key cannot use {self._config.get('model')} — pick another model")}
-        except anthropic.RateLimitError:
-            return {"ok": False, "error": "rate limited — the key is valid, try again shortly"}
-        except anthropic.APIConnectionError:
-            return {"ok": False, "error": "no internet connection to the API"}
-        except Exception as exc:                             # noqa: BLE001
-            return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
-
     # -- status --------------------------------------------------------- #
 
     def status(self):
-        if not self._config.get("api_key"):
-            return {"state": "no-key"}
+        if not find_claude():
+            return {"state": "no-claude"}
         try:
-            health = broker("GET", "/health", timeout=5)
+            health = broker_health()
         except (urllib.error.URLError, OSError, ValueError):
             return {"state": "no-broker"}
         if not health.get("poller_connected"):
             return {"state": "no-rhino"}
         return {"state": "ready"}
 
+    def setup_info(self):
+        """Everything Settings needs, with this machine's real paths filled in."""
+        claude = find_claude()
+        version = ""
+        if claude:
+            try:
+                out = subprocess.run([claude, "--version"], capture_output=True,
+                                     text=True, timeout=20, creationflags=NO_WINDOW)
+                lines = (out.stdout or "").strip().splitlines()
+                version = lines[0] if lines else ""
+            except (OSError, subprocess.SubprocessError):
+                version = ""
+        return {
+            "claude_found": bool(claude),
+            "claude_path": claude,
+            "claude_version": version,
+            "install_ps": "irm https://claude.ai/install.ps1 | iex",
+            # One line, paths already correct, pasteable as-is.
+            "mcp_add": 'claude mcp add rhino -- "%s" "%s"' % (sys.executable, MCP_SERVER),
+            "python_path": sys.executable,
+            "server_path": MCP_SERVER,
+            "attach_dir": ATTACH_DIR,
+        }
+
+    def recheck(self):
+        """Settings' "I've done that" button — re-detect without a restart."""
+        return {"setup": self.setup_info(), "status": self.status()}
+
+    # -- attachments ---------------------------------------------------- #
+
+    def attach(self):
+        """Native file picker. Copies what is chosen somewhere Claude may read."""
+        if not self._window:
+            return {"ok": False, "error": "no window"}
+        try:
+            import webview
+
+            chosen = self._window.create_file_dialog(
+                webview.OPEN_DIALOG, allow_multiple=True,
+                file_types=("Images and documents (*.png;*.jpg;*.jpeg;*.gif;"
+                            "*.webp;*.pdf;*.txt;*.md;*.csv;*.json)",
+                            "All files (*.*)"))
+        except Exception as exc:                             # noqa: BLE001
+            return {"ok": False, "error": f"could not open the file picker: {exc}"}
+        if not chosen:
+            return {"ok": True, "added": []}
+
+        os.makedirs(ATTACH_DIR, exist_ok=True)
+        added = []
+        for source in chosen:
+            try:
+                size = os.path.getsize(source)
+            except OSError:
+                continue
+            if size > MAX_ATTACH_BYTES:
+                return {"ok": False,
+                        "error": f"{os.path.basename(source)} is larger than 20 MB"}
+            # Copied rather than referenced in place: the original may sit on a
+            # removable drive or be moved, and Claude is only permitted to read
+            # inside the attachments directory.
+            target = os.path.join(
+                ATTACH_DIR, "%s-%s" % (uuid.uuid4().hex[:8], os.path.basename(source)))
+            try:
+                shutil.copy2(source, target)
+            except OSError as exc:
+                return {"ok": False, "error": f"could not attach: {exc}"}
+            added.append({"name": os.path.basename(source), "path": target,
+                          "is_image": target.lower().endswith(IMAGE_SUFFIXES)})
+        self._pending.extend(added)
+        return {"ok": True, "added": added}
+
+    def clear_attachments(self):
+        self._pending = []
+        return {"ok": True}
+
     # -- chat ----------------------------------------------------------- #
 
     def reset(self):
-        self._history = []
+        self._session = str(uuid.uuid4())
+        self._started = False
+        self._pending = []
+        self._config.update({"session": self._session, "session_started": False})
+        try:
+            save_config(self._config)
+        except OSError:
+            pass
         return {"ok": True}
 
+    def stop(self):
+        """Interrupt a running turn."""
+        proc = self._proc
+        if proc and proc.poll() is None:
+            try:
+                proc.kill()
+                return {"ok": True}
+            except OSError:
+                pass
+        return {"ok": False, "error": "nothing running"}
+
     def chat(self, message):
-        if not (message or "").strip():
+        if not (message or "").strip() and not self._pending:
             return {"ok": False, "error": "nothing to send"}
         if not self._lock.acquire(blocking=False):
             return {"ok": False, "error": "still working on the previous message"}
@@ -357,72 +318,109 @@ class Api:
         except Exception as exc:                             # noqa: BLE001
             return {"ok": False, "error": f"{type(exc).__name__}: {exc}"}
         finally:
+            self._proc = None
             self._lock.release()
 
+    def _build_prompt(self, message):
+        if not self._pending:
+            return message
+        lines = [message.strip(), "", "The person attached these files:"]
+        for item in self._pending:
+            lines.append("  %s  ->  %s" % (item["name"], item["path"]))
+        lines.append("")
+        lines.append("Read them before answering.")
+        return "\n".join(lines)
+
     def _chat(self, message):
-        key = self._config.get("api_key")
-        if not key:
-            return {"ok": False, "error": "add your API key in Settings first"}
-        try:
-            import anthropic
-        except ImportError:
+        claude = find_claude()
+        if not claude:
             return {"ok": False, "error": (
-                "the anthropic package is not installed — see Settings for the command")}
+                "Claude Code is not installed — Settings has the one-line "
+                "install command")}
 
-        global _notify
-        _notify = self._push
+        config_path = write_mcp_config()
+        prompt = self._build_prompt(message)
+        self._pending = []
 
-        client = anthropic.Anthropic(api_key=key)
-        self._history.append({"role": "user", "content": message})
+        args = [
+            claude, "-p", prompt,
+            # stream-json in print mode REQUIRES --verbose: without it the CLI
+            # exits with "requires --verbose" and nothing runs at all.
+            "--output-format", "stream-json", "--verbose",
+            "--strict-mcp-config", "--mcp-config", config_path,
+            "--append-system-prompt", SYSTEM,
+            "--allowedTools", *RHINO_TOOLS,
+            # Scoped rather than a blanket Read: the app should see what was
+            # attached and nothing else on the disk.
+            "Read(%s%s**)" % (ATTACH_DIR, os.sep),
+        ]
+        # A session id makes the conversation continuous. Resuming an id that
+        # was never created is an error, so the first turn creates it instead.
+        args += (["--resume", self._session] if self._started
+                 else ["--session-id", self._session])
 
         try:
-            runner = client.beta.messages.tool_runner(
-                model=self._config.get("model", DEFAULT_MODEL),
-                max_tokens=16000,
-                system=SYSTEM,
-                tools=make_tools(),
-                messages=self._history,
-            )
-            final = None
-            for reply in runner:
-                final = reply
-                # Surface Claude's words as they arrive, not just at the end -
-                # a modelling turn can run through several tool calls.
-                for block in reply.content:
-                    if block.type == "text" and block.text.strip():
-                        self._push("text", block.text)
+            self._proc = subprocess.Popen(
+                args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                bufsize=1, cwd=CONFIG_DIR, creationflags=NO_WINDOW)
+        except OSError as exc:
+            return {"ok": False, "error": f"could not start Claude Code: {exc}"}
 
-                # Mirror the history as we go. The runner keeps its own copy and
-                # does NOT expose it (no .messages attribute - checked on
-                # anthropic 0.120.2), so this is the only way to carry the tool
-                # calls into the next turn. Keeping just the final text instead
-                # would silently drop them and Claude would redo work it had
-                # already done. generate_tool_call_response() is cached, so the
-                # tools still execute exactly once.
-                self._history.append({"role": "assistant", "content": reply.content})
-                tool_reply = runner.generate_tool_call_response()
-                if tool_reply is not None:
-                    self._history.append(tool_reply)
-        except anthropic.AuthenticationError:
-            return {"ok": False, "error": "the API key was rejected — check it in Settings"}
-        except anthropic.RateLimitError:
-            return {"ok": False, "error": "rate limited — wait a moment and try again"}
-        except anthropic.APIConnectionError:
-            return {"ok": False, "error": "lost the connection to the API"}
-        except anthropic.APIStatusError as exc:
-            return {"ok": False, "error": f"API error {exc.status_code}: {exc.message}"}
-        finally:
-            _notify = None
+        final, saw_text = None, False
+        for line in self._proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                event = json.loads(line)
+            except ValueError:
+                continue
+            kind = event.get("type")
+            if kind == "assistant":
+                for block in (event.get("message") or {}).get("content") or []:
+                    if block.get("type") == "text" and block.get("text", "").strip():
+                        saw_text = True
+                        self._push("text", block["text"])
+                    elif block.get("type") == "tool_use":
+                        told = _describe(block.get("name", ""))
+                        if told:
+                            self._push("tool", told)
+            elif kind == "result":
+                final = event
 
-        if final is not None and final.stop_reason == "refusal":
-            return {"ok": False, "error": "Claude declined that request"}
-        if final is not None and final.stop_reason == "max_tokens":
-            # Silently truncating reads as a mysteriously short answer, so name
-            # it and say what to do about it.
-            return {"ok": False, "error": (
-                "the reply hit the length limit and was cut off — ask for it in "
-                "smaller steps")}
-        return {"ok": True, "turns": len(self._history)}
+        self._proc.wait()
+        stderr = ""
+        if self._proc.stderr:
+            stderr = (self._proc.stderr.read() or "").strip()
+
+        if final is None:
+            # No result event means the CLI itself failed - a bad flag, no
+            # login, a crashed MCP server. Its stderr is the only useful thing
+            # to show, and the login case is worth naming since it is the one
+            # a new user actually hits.
+            lowered = stderr.lower()
+            if "log in" in lowered or "login" in lowered or "authenticate" in lowered:
+                detail = "not signed in — run `claude` once in a terminal and sign in"
+            else:
+                detail = stderr.splitlines()[-1] if stderr else "no output"
+            return {"ok": False, "error": f"Claude Code did not answer: {detail}"}
+
+        self._started = True
+        self._config.update({"session": self._session, "session_started": True})
+        try:
+            save_config(self._config)
+        except OSError:
+            pass
+
+        if final.get("is_error"):
+            return {"ok": False,
+                    "error": final.get("result") or "Claude Code reported an error"}
+        # A turn can end with the answer only in the result event; surface it
+        # rather than leaving the window blank.
+        if not saw_text and final.get("result"):
+            self._push("text", final["result"])
+        return {"ok": True, "cost": final.get("total_cost_usd"),
+                "turns": final.get("num_turns")}
 
 
 PAGE = r"""
@@ -444,8 +442,6 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;
 main{flex:1;min-height:0;display:flex;flex-direction:column}
 .view{flex:1;min-height:0;display:none;flex-direction:column}
 .view.on{display:flex}
-
-/* chat */
 #log{flex:1;overflow-y:auto;padding:18px 16px;display:flex;flex-direction:column;gap:14px}
 .msg{max-width:min(760px,92%);white-space:pre-wrap;word-break:break-word}
 .msg.you{align-self:flex-end;background:var(--accent);color:#0d2233;
@@ -454,39 +450,45 @@ main{flex:1;min-height:0;display:flex;flex-direction:column}
 .msg.tool{align-self:flex-start;color:var(--dim);font-size:12.5px;font-style:italic}
 .msg.err{align-self:flex-start;color:var(--err)}
 .msg img{max-width:100%;border-radius:8px;display:block;margin-top:4px}
-#empty{margin:auto;text-align:center;color:var(--dim);max-width:420px}
+#empty{margin:auto;text-align:center;color:var(--dim);max-width:430px}
 #empty h2{font-size:16px;font-weight:600;color:var(--fg);margin:0 0 8px}
 #empty p{margin:4px 0;font-size:13px}
-form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:none}
+#chips{display:flex;flex-wrap:wrap;gap:6px;padding:0 12px 8px}
+#chips:empty{display:none}
+.chip{background:var(--panel);border:1px solid var(--line);border-radius:14px;
+      padding:3px 10px;font-size:12px;color:var(--dim);display:flex;gap:6px;align-items:center}
+.chip b{color:var(--fg);font-weight:500}
+form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:none;
+     align-items:flex-end}
+#clip{background:transparent;border:1px solid var(--line);color:var(--dim);
+      border-radius:9px;width:40px;height:40px;font-size:17px;cursor:pointer;flex:none}
+#clip:hover:not(:disabled){color:var(--fg)}
 #box{flex:1;background:var(--panel);color:var(--fg);border:1px solid var(--line);
      border-radius:9px;padding:10px 12px;font:inherit;resize:none;max-height:150px}
 #box:focus{outline:none;border-color:var(--dim)}
 #send{background:var(--accent);color:#0d2233;border:0;border-radius:9px;
-      padding:0 20px;font:600 14px inherit;cursor:pointer}
+      height:40px;padding:0 20px;font:600 14px inherit;cursor:pointer;flex:none}
 #send:disabled{opacity:.45;cursor:default}
-
-/* settings */
-#settings{overflow-y:auto;padding:22px;gap:22px}
+#settings{overflow-y:auto;padding:22px;gap:20px;display:flex;flex-direction:column}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-      padding:16px 18px;max-width:640px}
+      padding:16px 18px;max-width:660px}
 .card h3{margin:0 0 4px;font-size:14px}
-.card p{margin:0 0 12px;color:var(--dim);font-size:12.5px}
-label{display:block;font-size:12.5px;color:var(--dim);margin:10px 0 5px}
-input,select{width:100%;background:var(--bg);color:var(--fg);border:1px solid var(--line);
-             border-radius:7px;padding:9px 11px;font:inherit}
-input:focus,select:focus{outline:none;border-color:var(--accent)}
-.btn{background:var(--accent);color:#0d2233;border:0;border-radius:7px;
-     padding:8px 16px;font:600 13px inherit;cursor:pointer;margin-top:12px}
-.btn.ghost{background:transparent;border:1px solid var(--line);color:var(--dim);
-           font-weight:400;margin-left:6px}
-.note{margin-top:10px;font-size:12.5px}
-.note.ok{color:var(--ok)}.note.err{color:var(--err)}
+.card p{margin:0 0 10px;color:var(--dim);font-size:12.5px}
 ol{margin:0;padding-left:20px;font-size:13px}
-ol li{margin-bottom:12px}
-code{background:var(--bg);border:1px solid var(--line);border-radius:5px;
-     padding:2px 6px;font:12px ui-monospace,Consolas,monospace;
-     word-break:break-all;display:inline-block}
+ol li{margin-bottom:16px}
+.cmd{display:flex;gap:6px;align-items:stretch;margin:7px 0}
+.cmd code{flex:1;background:var(--bg);border:1px solid var(--line);border-radius:6px;
+          padding:8px 10px;font:12px ui-monospace,Consolas,monospace;
+          word-break:break-all;white-space:pre-wrap}
+.copy{background:transparent;border:1px solid var(--line);color:var(--dim);
+      border-radius:6px;padding:0 12px;font-size:12px;cursor:pointer;flex:none}
+.copy:hover{color:var(--fg)}.copy.done{color:var(--ok);border-color:var(--ok)}
+.status{font-size:12.5px;margin-top:6px}
+.status.ok{color:var(--ok)}.status.err{color:var(--warn)}
+.btn{background:var(--accent);color:#0d2233;border:0;border-radius:7px;
+     padding:8px 16px;font:600 13px inherit;cursor:pointer;margin-top:6px}
 a{color:var(--accent)}
+small{color:var(--dim);font-size:12px}
 </style></head><body>
 <header>
   <span class="dot" id="dot"></span><span id="state">…</span>
@@ -499,9 +501,11 @@ a{color:var(--accent)}
       <h2>Model by asking</h2>
       <p>“Make a 20&nbsp;cm cube on a new layer called Blocks”</p>
       <p>“What's in this document?”</p>
-      <p>“The chair legs look too thin — thicken them”</p>
+      <p>Attach a photo or sketch and say “build this”</p>
     </div></div>
+    <div id="chips"></div>
     <form id="form">
+      <button type="button" id="clip" title="Attach files or photos">📎</button>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
       <button id="send">Send</button>
     </form>
@@ -510,55 +514,52 @@ a{color:var(--accent)}
   <div class="view" id="v-set">
     <div id="settings">
       <div class="card">
-        <h3>Anthropic API key</h3>
-        <p>Stored on this computer only, at <span id="cfgpath"></span>, locked
-           so other accounts on this machine cannot read it. It is never sent
-           anywhere except Anthropic.</p>
-        <label for="key">API key</label>
-        <input id="key" type="password" placeholder="sk-ant-…" autocomplete="off">
-        <label for="model">Model</label>
-        <select id="model"></select>
-        <button class="btn" id="save">Save</button>
-        <button class="btn ghost" id="test">Test connection</button>
-        <div class="note" id="note"></div>
+        <h3>Setup — three steps, in order</h3>
+        <p>This runs on your Claude subscription. There is no API key and
+           nothing to pay for separately.</p>
+        <ol>
+          <li>
+            <b>Install Claude Code.</b> Open <b>PowerShell</b> and paste:
+            <div class="cmd"><code id="c-install"></code>
+              <button class="copy" data-for="c-install">Copy</button></div>
+            <small>Needs a Claude Pro, Max, or Team plan — the free plan does
+            not include Claude Code.</small>
+          </li>
+          <li>
+            <b>Sign in.</b> In the same window run <code>claude</code>, and
+            follow the browser prompt. Close it once it says you are logged in.
+            <div class="status" id="s-claude">checking…</div>
+          </li>
+          <li>
+            <b>Start Rhino's side.</b> Double-click
+            <code>START-BROKER.cmd</code>, open Rhino and type
+            <code>ScriptEditor</code> once, then double-click
+            <code>START-POLLER.cmd</code>.
+            <div class="status" id="s-rhino">checking…</div>
+          </li>
+        </ol>
+        <button class="btn" id="recheck">Check again</button>
       </div>
 
       <div class="card">
-        <h3>Setup — in this order</h3>
-        <p>Each step is one you can check before moving on.</p>
-        <ol>
-          <li><b>Install the two packages.</b> Open PowerShell and run:<br>
-            <code id="pipcmd"></code><br>
-            <span style="color:var(--dim)">Uses Rhino's own Python, so there is
-            nothing else to install.</span></li>
-          <li><b>Get an API key.</b> Sign in at
-            <a href="https://console.anthropic.com/settings/keys">console.anthropic.com</a>,
-            create a key, and paste it above. This is an Anthropic API account
-            and is billed per use — a Claude.ai or Claude Code subscription is
-            a different thing and its login will not work here.</li>
-          <li><b>Press Test connection.</b> It makes one tiny real request. If
-            it fails it says why, so fix that before going on.</li>
-          <li><b>Start the broker</b> — double-click <code>START-BROKER.cmd</code>.
-            The dot above turns amber: the broker is up, Rhino is not connected
-            yet.</li>
-          <li><b>Open Rhino</b> and type <code>ScriptEditor</code> once. This
-            loads Rhino's Python. The very first time it takes about a minute —
-            it is not frozen.</li>
-          <li><b>Start the poller</b> — double-click
-            <code>START-POLLER.cmd</code>. The dot turns green. You can chat.</li>
-        </ol>
+        <h3>Optional — use Rhino from a terminal too</h3>
+        <p>The chat window already works without this. Run it if you also want
+           <code>claude</code> in a terminal to be able to drive Rhino. Paths
+           are already filled in for this machine.</p>
+        <div class="cmd"><code id="c-mcp"></code>
+          <button class="copy" data-for="c-mcp">Copy</button></div>
       </div>
 
       <div class="card">
         <h3>If the dot is not green</h3>
         <p style="margin:0">
-          <b>Amber</b> — the broker is running but Rhino is not connected. Rhino
-          must be open, <code>ScriptEditor</code> run once this session, and the
-          poller started (steps 5 and 6).<br><br>
-          <b>Red, “broker not running”</b> — do step 4.<br><br>
-          <b>Red, “no API key”</b> — do steps 1–3.<br><br>
-          Rhino restarting stops the poller. Re-run step 5 and 6 after any
-          Rhino restart; the chat itself keeps its conversation.
+          <b>Red, “Claude Code not installed”</b> — do steps 1 and 2.<br><br>
+          <b>Red, “broker not running”</b> — double-click START-BROKER.cmd.<br><br>
+          <b>Amber, “Rhino not connected”</b> — Rhino must be open, with
+          <code>ScriptEditor</code> run once this session, then
+          START-POLLER.cmd.<br><br>
+          Restarting Rhino stops the poller, so repeat the last part after any
+          Rhino restart. The conversation itself is kept.
         </p>
       </div>
     </div>
@@ -566,9 +567,8 @@ a{color:var(--accent)}
 </main>
 <script>
 const $ = (id) => document.getElementById(id);
-let busy = false;
+let busy = false, attached = [];
 
-/* ---- tabs ---- */
 function show(which){
   $("v-chat").classList.toggle("on", which === "chat");
   $("v-set").classList.toggle("on", which === "set");
@@ -576,54 +576,57 @@ function show(which){
   $("t-set").classList.toggle("on", which === "set");
 }
 $("t-chat").onclick = () => show("chat");
-$("t-set").onclick  = () => { show("set"); loadSettings(); };
+$("t-set").onclick  = () => { show("set"); loadSetup(); };
 
-/* ---- chat ---- */
 function bubble(cls, text){
-  const empty = $("empty"); if (empty) empty.remove();
+  const e = $("empty"); if (e) e.remove();
   const el = document.createElement("div");
-  el.className = "msg " + cls;
-  el.textContent = text;
-  $("log").appendChild(el);
-  $("log").scrollTop = $("log").scrollHeight;
-  return el;
+  el.className = "msg " + cls; el.textContent = text;
+  $("log").appendChild(el); $("log").scrollTop = $("log").scrollHeight;
 }
-function image(uri){
-  const empty = $("empty"); if (empty) empty.remove();
-  const el = document.createElement("div");
-  el.className = "msg claude";
-  const img = document.createElement("img");
-  img.src = uri;
-  el.appendChild(img);
-  $("log").appendChild(el);
-  $("log").scrollTop = $("log").scrollHeight;
-}
-
-// Called from Python while a turn is running, so tool use and Claude's words
-// appear as they happen rather than all at the end.
 window.onAgent = (kind, text) => {
-  if (kind === "image") image(text);
-  else if (kind === "tool") bubble("tool", text + "…");
+  if (kind === "tool") bubble("tool", text + "…");
   else bubble("claude", text);
 };
 
+/* ---- attachments ---- */
+function drawChips(){
+  $("chips").innerHTML = "";
+  attached.forEach((a, i) => {
+    const c = document.createElement("span");
+    c.className = "chip";
+    c.innerHTML = (a.is_image ? "🖼 " : "📄 ") + "<b></b> ✕";
+    c.querySelector("b").textContent = a.name;
+    c.onclick = () => { attached.splice(i,1); drawChips(); syncAttachments(); };
+    $("chips").appendChild(c);
+  });
+}
+async function syncAttachments(){
+  if (attached.length === 0) await window.pywebview.api.clear_attachments();
+}
+$("clip").onclick = async () => {
+  if (busy) return;
+  const r = await window.pywebview.api.attach();
+  if (!r.ok) { bubble("err", r.error); return; }
+  attached = attached.concat(r.added || []); drawChips();
+};
+
+/* ---- send ---- */
 $("form").onsubmit = async (e) => {
   e.preventDefault();
   const text = $("box").value.trim();
-  if (!text || busy) return;
+  if ((!text && attached.length === 0) || busy) return;
   $("box").value = ""; $("box").style.height = "auto";
-  bubble("you", text);
-  busy = true; $("send").disabled = true;
+  bubble("you", text + (attached.length ? "\n\n📎 " + attached.map(a=>a.name).join(", ") : ""));
+  attached = []; drawChips();
+  busy = true; $("send").disabled = true; $("clip").disabled = true;
   try {
     const r = await window.pywebview.api.chat(text);
     if (!r.ok) bubble("err", r.error || "something went wrong");
-  } catch (e) {
-    bubble("err", "the window failed: " + e);
-  } finally {
-    busy = false; $("send").disabled = false; $("box").focus(); refresh();
-  }
+  } catch (e) { bubble("err", "the window failed: " + e); }
+  finally { busy = false; $("send").disabled = false; $("clip").disabled = false;
+            $("box").focus(); refresh(); }
 };
-
 $("box").addEventListener("input", (e) => {
   e.target.style.height = "auto";
   e.target.style.height = Math.min(e.target.scrollHeight, 150) + "px";
@@ -633,60 +636,55 @@ $("box").addEventListener("keydown", (e) => {
 });
 
 /* ---- settings ---- */
-async function loadSettings(){
-  const s = await window.pywebview.api.get_settings();
-  $("cfgpath").textContent = s.config_path;
-  $("pipcmd").textContent =
-    '& "$env:USERPROFILE\\.rhinocode\\py39-rh8\\python.exe" -m pip install anthropic pywebview';
-  $("key").placeholder = s.has_key ? s.key_hint + "  (saved)" : "sk-ant-…";
-  const sel = $("model"); sel.innerHTML = "";
-  for (const m of s.models){
-    const o = document.createElement("option");
-    o.value = m.id; o.textContent = m.label; o.selected = m.id === s.model;
-    sel.appendChild(o);
+async function loadSetup(){
+  const s = await window.pywebview.api.setup_info();
+  $("c-install").textContent = s.install_ps;
+  $("c-mcp").textContent = s.mcp_add;
+  const el = $("s-claude");
+  if (s.claude_found){
+    el.className = "status ok";
+    el.textContent = "✓ found" + (s.claude_version ? " — " + s.claude_version : "");
+  } else {
+    el.className = "status err";
+    el.textContent = "not found yet — do step 1, then press Check again";
   }
+  const st = await window.pywebview.api.status();
+  const r = $("s-rhino");
+  if (st.state === "ready"){ r.className = "status ok"; r.textContent = "✓ Rhino connected"; }
+  else if (st.state === "no-rhino"){ r.className = "status err"; r.textContent = "broker up, Rhino not connected yet"; }
+  else if (st.state === "no-broker"){ r.className = "status err"; r.textContent = "broker not running"; }
+  else { r.className = "status err"; r.textContent = "waiting on step 1"; }
 }
-function note(text, cls){
-  $("note").className = "note " + (cls || "");
-  $("note").textContent = text;
-}
-$("save").onclick = async () => {
-  const r = await window.pywebview.api.save_settings($("key").value, $("model").value);
-  if (r.ok){
-    $("key").value = "";
-    note(r.restricted ? "Saved."
-                      : "Saved, but the file permissions could not be locked down — "
-                        + "anyone with an account on this PC could read the key.",
-         r.restricted ? "ok" : "err");
-    loadSettings(); refresh();
+$("recheck").onclick = () => { loadSetup(); refresh(); };
+document.addEventListener("click", async (e) => {
+  const btn = e.target.closest(".copy"); if (!btn) return;
+  const text = $(btn.dataset.for).textContent;
+  try { await navigator.clipboard.writeText(text); }
+  catch (err) {
+    // Clipboard API can be blocked in an embedded webview; select the text so
+    // it can still be copied by hand rather than leaving a dead button.
+    const range = document.createRange(); range.selectNodeContents($(btn.dataset.for));
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(range);
   }
-  else note(r.error, "err");
-};
-$("test").onclick = async () => {
-  note("testing…");
-  const r = await window.pywebview.api.test_key();
-  note(r.ok ? "Connected — your key works." : r.error, r.ok ? "ok" : "err");
-  refresh();
-};
+  btn.textContent = "Copied"; btn.classList.add("done");
+  setTimeout(() => { btn.textContent = "Copy"; btn.classList.remove("done"); }, 1600);
+});
 
 /* ---- status ---- */
 async function refresh(){
   let s; try { s = await window.pywebview.api.status(); }
   catch (e) { s = {state:"no-broker"}; }
   const dot = $("dot"); dot.className = "dot";
-  const msg = {
+  const m = {
     "ready":     ["ok",   "Rhino connected"],
     "no-rhino":  ["warn", "Rhino not connected — open Rhino, run ScriptEditor, start the poller"],
-    "no-broker": ["err",  "broker not running — see Settings, step 4"],
-    "no-key":    ["err",  "no API key — add one in Settings"],
+    "no-broker": ["err",  "broker not running — double-click START-BROKER.cmd"],
+    "no-claude": ["err",  "Claude Code not installed — see Settings"],
   }[s.state] || ["err", "not ready"];
-  dot.classList.add(msg[0]);
-  $("state").textContent = msg[1];
+  dot.classList.add(m[0]); $("state").textContent = m[1];
 }
-refresh();
-setInterval(() => { if (!busy) refresh(); }, 5000);
-loadSettings();
-$("box").focus();
+refresh(); setInterval(() => { if (!busy) refresh(); }, 5000);
+loadSetup(); $("box").focus();
 </script></body></html>
 """
 
@@ -696,7 +694,7 @@ def main():
 
     api = Api()
     window = webview.create_window("Rhino — Claude", html=PAGE, js_api=api,
-                                   width=1080, height=760, min_size=(720, 520))
+                                   width=1080, height=780, min_size=(720, 540))
     api.bind(window)
     webview.start()
 
@@ -705,8 +703,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception:                                        # noqa: BLE001
-        # No console when this is double-clicked, so a failure to open must
-        # leave a note somewhere findable rather than vanishing.
         path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "rhino-chat-error.txt")
         with open(path, "w", encoding="utf-8") as handle:

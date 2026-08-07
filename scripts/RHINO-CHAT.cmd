@@ -19,13 +19,13 @@ if not exist "%PYC%" (
     exit /b 1
 )
 
-"%PYC%" -c "import anthropic, webview" 2>nul
+"%PYC%" -c "import webview" 2>nul
 if errorlevel 1 (
     echo.
-    echo   First run - installing the two packages this needs.
+    echo   First run - installing the one package this needs.
     echo   This happens once and takes about a minute.
     echo.
-    "%PYC%" -m pip install anthropic pywebview
+    "%PYC%" -m pip install pywebview
     if errorlevel 1 (
         echo.
         echo   Install failed. Check your internet connection and try again.

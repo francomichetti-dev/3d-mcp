@@ -38,6 +38,12 @@ SERVER_INFO = {"name": "rhino", "version": "0.1.0"}
 
 
 def _token():
+    # Env first, mirroring FUSION_BROKER_URL. Lets the server be pointed at a
+    # test broker without touching the real token file, and covers installs
+    # where the token does not live under HOME.
+    from_env = os.environ.get("FUSION_BRIDGE_TOKEN")
+    if from_env:
+        return from_env.strip()
     try:
         with open(TOKEN_PATH, encoding="utf-8") as handle:
             return handle.read().strip()
