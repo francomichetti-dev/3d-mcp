@@ -4,7 +4,10 @@ Notes from a live spike against Rhino 8.32.26160.13001 on Windows 11 Pro
 (10.0.26200), driven over SSH from macOS. Recorded because most of it was found
 empirically and none of it would have been guessed.
 
-Status: **the modelling loop is proven, the bridge architecture is not yet.**
+Status: **both are now proven.** This file was written mid-spike, when only the
+modelling loop worked. It has been corrected rather than deleted, because two
+of its conclusions were later inverted and the reason why is the most useful
+thing in it.
 
 ---
 
@@ -25,12 +28,29 @@ units    : Centimeters
   body filleted on 12 edges
 ```
 
-## What is NOT yet proven
+The full bridge is proven too, and someone who did not build it has modelled
+real parts through it.
 
-Whether a **persistent HTTP listener** survives inside Rhino, and whether
-`RhinoApp.InvokeOnUiThread` returns a value to a background thread. Those are
-what a bridge actually needs, and they are still open — see "the probe that
-hangs" below.
+## How the open questions resolved
+
+This section used to ask whether a **persistent HTTP listener** survives inside
+Rhino and whether `RhinoApp.InvokeOnUiThread` returns a value to a background
+thread. Both were answered, and both answers were no:
+
+- **A listener inside Rhino does not survive.** Any thread that outlives the
+  script context aborts the embedded CPython and takes Rhino down with it —
+  `ucrtbase.dll`, `0xc0000409`. This happened repeatedly and is not
+  recoverable.
+- **`InvokeOnUiThread` cannot be used from a `rhinocode` script.** It is
+  synchronous, and such a script *already runs on the UI thread*, so it
+  deadlocks against itself. See "the probe that hangs" below — the hang was the
+  answer, not a faulty probe.
+
+So the bridge does not marshal at all. Rhino **pulls**: an `Eto.Forms.UITimer`
+inside Rhino polls a broker for jobs. Because that timer already runs on the UI
+thread, whatever it executes is on the right thread automatically — the problem
+is removed rather than solved. `RhinoApp.Idle` was tried first and fires **zero**
+times while Rhino is unfocused; the UITimer managed 148 ticks in 74 seconds.
 
 ---
 
@@ -77,18 +97,35 @@ Three things that cost time:
 
 ## Sharp edges found by hitting them
 
-**`ViewCapture.CaptureToBitmap` is not safe off the UI thread.** A `rhinocode`
-script does not run on the UI thread, and calling the display pipeline from
-there killed the run every time, at exactly that line. Use the command
-pipeline, which marshals itself:
+**Viewport capture: the answer depends on where you are calling from, and it
+inverts.** This cost the most time of anything here, because both halves are
+true and each one looks like a general rule.
+
+| Calling from | `Rhino.Display.ViewCapture` | `rs.Command('_-ViewCaptureToFile')` |
+| --- | --- | --- |
+| a bare `rhinocode` script | kills the run at that line | works, marshals itself |
+| the poller's `Eto` UITimer | **correct — this is what ships** | never returns |
+
+The original finding — that `CaptureToBitmap` is unsafe and `rs.Command` is the
+way — was recorded here as a rule. It was a rule about *one context*. Once
+capture moved into the UITimer it reversed completely: the timer runs on the UI
+thread, so the direct API call is fine, while `rs.Command` re-enters Rhino's
+command pipeline from a message dispatch and hangs forever.
+
+`scripts/rhino/rhino-poller.py` therefore uses:
 
 ```python
-rs.Command('_-ViewCaptureToFile "%s" _Width=1200 _Height=800 _Enter' % path, False)
+capture = Rhino.Display.ViewCapture()
+bitmap = capture.CaptureToBitmap(view)
 ```
+
+The transferable lesson is not about either call. It is that on this platform
+"is X safe?" has no answer without "on which thread?" — and a `rhinocode`
+script and a UITimer callback are not the same thread.
 
 **`rs.Command` returns `False` while succeeding.** The capture above returned
 `False` and wrote a perfectly good PNG. Check the artefact, not the return
-value.
+value. (Still true, and still worth knowing wherever `rs.Command` is used.)
 
 **`_Width`/`_Height` are ignored by `_-ViewCaptureToFile`.** Asked for
 1200×800, got 1116×323 — the viewport's aspect. Size the viewport, not the
@@ -100,9 +137,10 @@ geometry accumulates across runs. Switch to Default first.
 
 **The probe that hangs.** Waiting on `InvokeOnUiThread` while pumping
 `RhinoApp.Wait()` in a loop hung at the same point three runs running, and took
-Rhino down with it. If a `rhinocode` script runs *on* the UI thread, that loop
-occupies the very thread the callback needs. Any test of marshaling must use
-bounded waits and must not pump in a loop.
+Rhino down with it. The hypothesis at the time — that a `rhinocode` script runs
+*on* the UI thread, so the loop occupies the very thread the callback needs —
+is now confirmed. The probe was not faulty; the hang was the finding, and it is
+why nothing in the shipped design marshals.
 
 ## Windows, over SSH
 
@@ -129,18 +167,25 @@ stripped, twice. Ship a double-clickable `.cmd` instead of a command to paste �
 and write it with CRLF line endings, since `cmd.exe` mis-parses LF-only batch
 files.
 
-## If the architecture does port
+## How the architecture actually ported
 
-Roughly 80% of `fusion_bridge_impl.py` is CAD-agnostic — the HTTP listener,
-token auth, Host pinning, single-flight guard, size caps, logging, reload. Only
-the marshaling primitive and the injected namespace differ:
+The expectation here was that most of `fusion_bridge_impl.py` would be reused
+with only the marshaling primitive and the namespace swapped. That was wrong in
+one important place — the row this table originally got backwards is marked:
 
-| Fusion | Rhino 8 |
-| --- | --- |
-| `registerCustomEvent` + `fireCustomEvent` | `RhinoApp.InvokeOnUiThread` |
-| `adsk.core` / `adsk.fusion` | `Rhino` / `rhinoscriptsyntax` |
-| centimetres, always | document units, variable |
-| add-in with `run()`/`stop()` | plugin, or a script run once |
+| | Fusion | Rhino 8 |
+| --- | --- | --- |
+| direction | the add-in is **pushed** into | Rhino **pulls** ⟵ *not as predicted* |
+| marshaling | `registerCustomEvent` + `fireCustomEvent` | none — the timer is already on the UI thread |
+| lives inside the CAD | HTTP listener | `Eto.Forms.UITimer` only |
+| namespace | `adsk.core` / `adsk.fusion` | `Rhino` / `rhinoscriptsyntax` |
+| units | centimetres, always | document units, variable |
+| entry point | add-in with `run()`/`stop()` | a script run once per session |
 
-The 69 assertions in `tests/test_bridge.py` cover that shared portion, so they
-protect the extraction.
+The listener, token auth, Host pinning, single-flight guard, size caps and
+logging did all carry over — but into `broker.py`, which runs *outside* Rhino,
+not into anything living inside it. That relocation is the whole port: the
+CAD-agnostic 80% was real, it just could not stay in the same process.
+
+The 69 assertions in `tests/test_bridge.py` cover the Fusion side of that shared
+portion and `tests/test_broker.py` covers the Rhino side, so both are protected.
