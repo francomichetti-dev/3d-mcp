@@ -1143,8 +1143,42 @@ async def on_cleanup(app: web.Application) -> None:
         await registry.close()
 
 
-def build_app() -> web.Application:
-    app = web.Application()
+def allowed_hosts(port: int) -> frozenset[str]:
+    return frozenset((f"127.0.0.1:{port}", f"localhost:{port}"))
+
+
+@web.middleware
+async def pin_host(request: web.Request, handler):
+    """Refuse any request whose Host is not our own loopback address.
+
+    This service is a confused deputy without it. It holds the bridge token and
+    forwards to the bridge, so an unauthenticated caller reaching *here* gets
+    authenticated arbitrary code execution inside Fusion for free.
+
+    Loopback binding alone does not stop a browser. A page on some site can
+    have its DNS rebound to 127.0.0.1 and then POST here, and two measured
+    details make that a real request rather than a theoretical one:
+
+      * aiohttp's request.json() ignores Content-Type entirely — a body sent as
+        text/plain parses exactly the same as application/json. Verified
+        against this version of aiohttp, all three content types parsed.
+      * text/plain and form-encoding are CORS "simple request" types, so the
+        browser sends no preflight. The attacker cannot read the reply, but by
+        then the geometry has already been changed.
+
+    The Fusion listener and the Rhino broker have pinned Host since they were
+    written; this service is the one that did not, and it is the one that can
+    drive Fusion without a token.
+    """
+    if request.headers.get("Host", "") not in request.app["allowed_hosts"]:
+        return web.json_response(
+            {"ok": False, "error": "invalid Host header"}, status=403)
+    return await handler(request)
+
+
+def build_app(port: int = BIND_PORT) -> web.Application:
+    app = web.Application(middlewares=[pin_host])
+    app["allowed_hosts"] = allowed_hosts(port)
     app.router.add_get("/", handle_index)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/events", handle_events)
@@ -1177,7 +1211,7 @@ def main() -> None:
     if read_token() is None:
         log.warning("no bridge token at %s — run scripts/install.sh", TOKEN_PATH)
 
-    web.run_app(build_app(), host=BIND_HOST, port=args.port, print=None)
+    web.run_app(build_app(args.port), host=BIND_HOST, port=args.port, print=None)
     # Loopback only, deliberately: this service can run arbitrary Fusion code.
 
 

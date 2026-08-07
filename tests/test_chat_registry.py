@@ -4,6 +4,7 @@
 """
 
 import asyncio
+import socket as _socket
 import json
 import os
 import stat
@@ -249,6 +250,73 @@ check("permission is not persisted", "permission" in svc.PERSISTED_EVENTS, False
 truthy("compress prompt mentions core context", "CORE CONTEXT" in svc.COMPRESS_PROMPT)
 truthy("system prompt warns about other designs",
        "other tabs" in svc.SYSTEM_APPEND or "other designs" in svc.SYSTEM_APPEND)
+
+# ------------------------------------------------------ DNS rebinding -------
+# This service holds the bridge token and forwards to the bridge, so anything
+# that reaches it gets authenticated arbitrary code execution inside Fusion.
+# Binding to loopback does not stop a browser: a page can have its DNS rebound
+# to 127.0.0.1 and POST here.
+#
+# Two measured facts make that a real request rather than a theoretical one:
+# aiohttp's request.json() ignores Content-Type, so a text/plain body parses
+# identically to application/json; and text/plain is a CORS "simple request"
+# type, so no preflight is sent. The attacker cannot read the reply, but the
+# geometry has already changed by then.
+print("Host is pinned against DNS rebinding")
+
+
+async def rebinding_checks():
+    from aiohttp import web, ClientSession
+
+    app = svc.build_app(7655)
+    # These reach for Fusion; the middleware runs before any of it.
+    app.on_startup.clear()
+    app.on_cleanup.clear()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    with _socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    await web.TCPSite(runner, "127.0.0.1", port).start()
+
+    async def post(host, content_type):
+        async with ClientSession() as session:
+            async with session.post(
+                    f"http://127.0.0.1:{port}/send", data='{"prompt":"x"}',
+                    headers={"Content-Type": content_type, "Host": host}) as reply:
+                return reply.status
+
+    try:
+        # The attack, in the shape that needs no preflight.
+        check("a rebound host is refused, text/plain",
+              await post("evil.example.com", "text/plain"), 403)
+        check("a rebound host is refused, application/json",
+              await post("evil.example.com", "application/json"), 403)
+        check("a bare hostname is refused",
+              await post("evil.example.com:7655", "text/plain"), 403)
+        # Right host, wrong port: a second service on the same machine must not
+        # be able to borrow this one's origin.
+        check("the right host on the wrong port is refused",
+              await post("127.0.0.1:9999", "application/json"), 403)
+        check("an absent Host is refused", await post("", "application/json"), 403)
+
+        # And the panel itself still gets through. It is served from this
+        # origin, so its Host is one of these two. Anything but 403 means the
+        # middleware passed it on - the handler then fails on its own for want
+        # of a registry, which is this harness's doing, not the guard's.
+        for host in ("127.0.0.1:7655", "localhost:7655"):
+            status = await post(host, "application/json")
+            check(f"the panel's own Host ({host}) is not blocked", status != 403, True)
+    finally:
+        await runner.cleanup()
+
+
+asyncio.run(rebinding_checks())
+
+# Every route is behind the middleware, not just /send. A guard applied per
+# handler is one new route away from being incomplete.
+check("the guard is middleware, so it covers every route",
+      svc.pin_host in svc.build_app(7655).middlewares, True)
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

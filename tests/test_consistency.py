@@ -248,6 +248,26 @@ for url in ALLOWED_URLS:
             check(f"{url} is never fetched", opener in chat, False)
 
 
+# -------------------------------------------------------- host pinning ------
+# Three listeners, three chances to forget. The chat service went without this
+# until it was audited: it binds loopback, which stops another machine but not
+# a browser whose DNS has been rebound to 127.0.0.1 — and it forwards to the
+# bridge with the token, so reaching it is as good as having the token.
+print("Host pinning")
+AGENT_SERVICE = "agent/agent_service.py"
+for rel in [FUSION_ADDIN, BROKER, AGENT_SERVICE]:
+    text = read(rel)
+    truthy(f"{Path(rel).name} checks the Host header",
+           "ALLOWED_HOSTS" in text or "allowed_hosts" in text)
+    truthy(f"{Path(rel).name} accepts only loopback names",
+           '127.0.0.1:' in text and 'localhost:' in text)
+
+# The chat service applies it as middleware rather than per handler, because a
+# per-handler check is one new route away from being incomplete.
+truthy("the chat service pins Host as middleware",
+       "middlewares=[pin_host]" in read(AGENT_SERVICE))
+
+
 # ---------------------------------------------------------------- loopback --
 # The one security property that must never regress: nothing binds to anything
 # but loopback, on either side.
