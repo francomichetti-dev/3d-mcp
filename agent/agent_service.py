@@ -52,6 +52,8 @@ from claude_agent_sdk import (
     TextBlock,
     ThinkingBlock,
     ToolUseBlock,
+    create_sdk_mcp_server,
+    tool,
 )
 
 REPO = Path(__file__).resolve().parent.parent
@@ -91,10 +93,41 @@ MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
 # Consecutive transport failures before the service stops rebuilding the
 # client and asks for a restart instead of retrying silently forever.
 MAX_TRANSPORT_RETRIES = 3
-# Sent by the service, not the person, after it rebuilds a dropped
-# connection mid-turn. It asks for the state to be re-read first because
-# the geometry is in whatever half-finished shape the interruption left
-# it, and the resumed conversation only knows what was intended.
+PLAN_STATUSES = ("todo", "doing", "done")
+# Enough to see the shape of a build at a glance; beyond this the list stops
+# being a plan and becomes a transcript.
+MAX_PLAN_STEPS = 20
+
+
+def _clean_plan(raw: Any) -> list[dict[str, str]]:
+    """Normalise whatever the model sent into steps the panel can render.
+
+    The model is asked for a specific shape but is not trusted to produce it:
+    a malformed plan must degrade to a shorter plan, never to a broken panel
+    or a crashed turn.
+    """
+    if not isinstance(raw, list):
+        return []
+    steps: list[dict[str, str]] = []
+    for item in raw[:MAX_PLAN_STEPS]:
+        if isinstance(item, str):
+            item = {"title": item}
+        if not isinstance(item, dict):
+            continue
+        title = str(item.get("title") or item.get("step") or "").strip()
+        if not title:
+            continue
+        status = str(item.get("status") or "todo").strip().lower()
+        if status not in PLAN_STATUSES:
+            status = "todo"
+        steps.append({"title": title[:120], "status": status})
+    return steps
+
+
+# Sent by the service, not the person, after it rebuilds a dropped connection
+# mid-turn. It asks for the state to be re-read first because the geometry is
+# in whatever half-finished shape the interruption left it, and the resumed
+# conversation only knows what was intended.
 RESUME_PROMPT = (
     "The connection dropped while you were working; it is back now. "
     "Check the current state of the design first, then carry on from "
@@ -315,6 +348,17 @@ Non-negotiables (these cost real work when broken):
 
 Keep replies short. The person is watching geometry appear, not reading prose.
 
+Use the `plan` tool for anything that takes more than two or three steps. Call
+it once before you start building, with the whole plan as short concrete steps
+in the person's own words, then call it again the moment a step's status
+changes — mark the one you are on as "doing" and tick it "done" before moving
+to the next. Send the entire list every time.
+
+The plan is not paperwork. It is pinned in the panel and survives closing the
+design, so it is how the person sees what is coming, what is finished, and
+exactly where you stopped if something interrupts you. A plan that is never
+updated is worse than none, because it says the wrong thing with confidence.
+
 This conversation belongs to ONE design. Everything you built here is in that
 design, and the person may have other designs open in other tabs with their own
 separate chats — never assume work you did elsewhere exists here.
@@ -353,9 +397,57 @@ class Session:
         # the model at all, so an isolated blip never counts toward the
         # give-up threshold.
         self.transport_failures = 0
+        # The build plan shown in the panel. Restored from disk so a design
+        # reopened tomorrow still shows where its build got to.
+        self.plan: list[dict[str, str]] = list(
+            registry.store.get(key).get("plan") or [])
         # Captured from the SDK's own messages so the conversation can be
         # resumed after a restart.
         self.sdk_session_id: str | None = None
+
+    def _plan_server(self) -> Any:
+        """An MCP server hosted in this process, bound to THIS design.
+
+        In-process rather than another stdio server because the plan is
+        per-design state that lives here: the handler writes straight into this
+        session and the panel, with nothing to serialise across a pipe and no
+        way for two designs to collide.
+        """
+
+        @tool(
+            "plan",
+            "Record or update the build plan for the design you are working on. "
+            "Send the WHOLE list every time, in order, with each step's current "
+            "status — the panel shows exactly what you send. Call this once when "
+            "you start a multi-step build, then again each time a step's status "
+            "changes. Keep step titles short and concrete, in the language the "
+            "person is using ('6x6 studded baseplate', not 'create geometry').",
+            {
+                "steps": list,
+            },
+        )
+        async def plan_tool(args: dict[str, Any]) -> dict[str, Any]:
+            return {"content": [{"type": "text",
+                                 "text": await self.apply_plan(args.get("steps"))}]}
+
+        return create_sdk_mcp_server(name="plan", tools=[plan_tool])
+
+    async def apply_plan(self, raw: Any) -> str:
+        """Store a plan, persist it, and show it. Returns what to tell the model.
+
+        Split out from the tool handler so it can be exercised directly: the
+        handler is a thin wrapper the SDK owns, this is the behaviour.
+        """
+        steps = _clean_plan(raw)
+        if not steps:
+            return ("No usable steps — nothing was changed. Send a list of "
+                    "objects, each with a 'title' and a 'status' of todo, "
+                    "doing or done.")
+        self.plan = steps
+        self.registry.store.update(self.key, plan=steps)
+        await self.emit({"type": "plan", "steps": steps})
+        done = sum(1 for s in steps if s["status"] == "done")
+        return f"Plan shown to the person: {done}/{len(steps)} done."
 
     async def emit(self, event: dict[str, Any]) -> None:
         """Tag an event with this design and record it for later replay."""
@@ -451,6 +543,9 @@ class Session:
                 "append": append,
             },
             mcp_servers={
+                # Hosted in this process and bound to this design; see
+                # _plan_server.
+                "plan": self._plan_server(),
                 "fusion": {
                     "type": "stdio",
                     "command": "uv",
@@ -468,6 +563,9 @@ class Session:
             # warns about exactly this). Leaving them out makes every call fall
             # through to the callback, which auto-allows the additive ones.
             allowed_tools=[
+                # Writing the plan changes nothing in the design — it only
+                # updates what the panel shows — so it never needs approval.
+                "mcp__plan__plan",
                 "mcp__fusion__fusion_screenshot",
                 "mcp__fusion__fusion_state",
                 "mcp__fusion__fusion_execute",
@@ -729,10 +827,58 @@ def _render(message: Any) -> list[dict[str, Any]]:
                     "type": "tool",
                     "name": block.name.rsplit("__", 1)[-1],
                     "summary": _summarize_tool(block.name, block.input or {}),
+                    # Drives the banner. Carried on the tool event rather than
+                    # emitted separately, so a replayed transcript and a live
+                    # turn stay identical.
+                    "verb": _activity_verb(block.name, block.input or {}),
                 })
     elif isinstance(message, ResultMessage):
         events.append({"type": "result", "text": getattr(message, "result", "") or ""})
     return events
+
+
+# What the banner says while a turn runs. The tool log already shows the code;
+# this is the one-glance version for somebody watching the viewport rather than
+# reading Python — "Filleting" tells them what is happening to their model.
+# Ordered, because real code does several of these at once and the first match
+# is the one worth naming: a sketch that ends in an extrude is an extrude.
+_ACTIVITY_VERBS: list[tuple[str, str]] = [
+    (r"\bfillet", "Filleting"),
+    (r"\bchamfer", "Chamfering"),
+    (r"\bshell", "Shelling"),
+    (r"\bhole|\bdrill", "Cutting holes"),
+    (r"\bthread", "Threading"),
+    (r"\brevolve", "Revolving"),
+    (r"\bsweep", "Sweeping"),
+    (r"\bloft", "Lofting"),
+    (r"\bextrude", "Extruding"),
+    (r"\bcombine|\bboolean", "Combining bodies"),
+    (r"\bpattern", "Patterning"),
+    (r"\bmirror", "Mirroring"),
+    (r"\bappearance|\bmaterial", "Applying materials"),
+    (r"\bcamera|viewport|viewOrientation", "Setting the view"),
+    (r"\bsketch", "Sketching"),
+]
+
+
+def _activity_verb(name: str, args: dict[str, Any]) -> str:
+    """A short present-tense phrase for the banner, or "" for none."""
+    short = name.rsplit("__", 1)[-1]
+    if short == "fusion_screenshot":
+        return "Looking at the result"
+    if short == "fusion_state":
+        return "Checking the design"
+    if short == "fusion_export":
+        return "Exporting"
+    if short == "plan":
+        return "Planning"
+    if short != "fusion_execute":
+        return "Working"
+    code = str(args.get("code") or "")
+    for pattern, verb in _ACTIVITY_VERBS:
+        if re.search(pattern, code, re.I):
+            return verb
+    return "Building"
 
 
 def _summarize_tool(name: str, args: dict[str, Any]) -> str:
@@ -864,6 +1010,7 @@ class Registry:
         return {
             "transcript": entry.get("transcript", []),
             "core_context": entry.get("core_context"),
+            "plan": entry.get("plan") or [],
             "busy": bool(session and session.busy),
         }
 

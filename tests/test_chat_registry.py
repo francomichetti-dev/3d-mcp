@@ -102,7 +102,7 @@ with tempfile.TemporaryDirectory() as d:
     check("snapshot core_context absent", snap["core_context"], None)
     check("snapshot not busy", snap["busy"], False)
     check("snapshot of None key", r.snapshot(None),
-          {"transcript": [], "core_context": None, "busy": False})
+          {"transcript": [], "core_context": None, "plan": [], "busy": False})
 
     # -- _changed: the switch detector
     r.current = None
@@ -691,6 +691,129 @@ truthy("with real headroom over a handful of screenshots",
 truthy("and passes it to the SDK rather than just defining it",
        "max_buffer_size=MAX_SDK_MESSAGE_BYTES" in
        (REPO_ROOT / "agent" / "agent_service.py").read_text(encoding="utf-8"))
+
+# ------------------------------------------------------------- the plan -----
+# The plan is what the person reads to answer "what is coming, what is done,
+# and where did it stop?" — so it has to survive a closed design, and it must
+# never be able to break the panel however malformed the model's version is.
+print("The build plan")
+
+# Whatever arrives is normalised into something renderable. The model is asked
+# for a shape but not trusted to produce it.
+check("a plain list of strings still works",
+      svc._clean_plan(["baseplate", "tower"]),
+      [{"title": "baseplate", "status": "todo"},
+       {"title": "tower", "status": "todo"}])
+check("status case does not matter",
+      svc._clean_plan([{"title": "a", "status": "DOING"}])[0]["status"], "doing")
+check("an unknown status falls back to todo",
+      svc._clean_plan([{"title": "a", "status": "halfway"}])[0]["status"], "todo")
+check("blank titles are dropped", svc._clean_plan([{"title": "   "}]), [])
+check("junk entries are skipped", svc._clean_plan([42, None, {"title": "ok"}]),
+      [{"title": "ok", "status": "todo"}])
+check("not a list at all -> nothing", svc._clean_plan("do the thing"), [])
+check("the list is capped", len(svc._clean_plan(
+    [{"title": f"s{i}"} for i in range(svc.MAX_PLAN_STEPS + 10)])), svc.MAX_PLAN_STEPS)
+truthy("a long title is trimmed rather than dropped",
+       len(svc._clean_plan([{"title": "x" * 500}])[0]["title"]) <= 120)
+
+
+async def plan_checks():
+    with tempfile.TemporaryDirectory() as d:
+        registry = svc.Registry.__new__(svc.Registry)
+        registry.store = svc.Store(Path(d) / "chats.json")
+        registry.sessions = {}
+        registry.subscribers = set()
+        registry.current = None
+        registry.bridge_ok = None
+        registry._dirty = False
+        registry._compressing = set()
+
+        s = svc.Session.__new__(svc.Session)
+        s.key, s.name, s.registry = "design-1", "tower", registry
+        s.plan = []
+        s.events = []
+
+        async def emit(event):
+            s.events.append(event)
+
+        s.emit = emit
+
+        told = await s.apply_plan([
+            {"title": "6x6 studded baseplate", "status": "done"},
+            {"title": "round tower body", "status": "doing"},
+            {"title": "battlements", "status": "todo"},
+        ])
+        check("the plan is held on the session", len(s.plan), 3)
+        truthy("the model is told how it landed", "1/3 done" in told)
+        shown = [e for e in s.events if e.get("type") == "plan"]
+        check("and the panel is sent it", len(shown), 1)
+        check("with the steps in order",
+              [x["title"] for x in shown[0]["steps"]][1], "round tower body")
+
+        # The point of persisting: reopening a design tomorrow still shows
+        # where its build got to.
+        check("it is written to disk",
+              len(svc.Store(Path(d) / "chats.json").get("design-1")["plan"]), 3)
+        check("and comes back in the snapshot the panel redraws from",
+              [x["status"] for x in registry.snapshot("design-1")["plan"]],
+              ["done", "doing", "todo"])
+
+        # A design that never had one must not show an empty box.
+        check("a design with no plan reports none", registry.snapshot("other")["plan"], [])
+
+        # Updating replaces rather than appends — the model sends the whole
+        # list every time, so anything else would double it.
+        await s.apply_plan([{"title": "6x6 studded baseplate", "status": "done"},
+                            {"title": "round tower body", "status": "done"}])
+        check("an update replaces the previous plan", len(s.plan), 2)
+        check("and persists the replacement",
+              len(svc.Store(Path(d) / "chats.json").get("design-1")["plan"]), 2)
+
+        # A malformed update must not wipe a good plan.
+        before = list(s.plan)
+        told = await s.apply_plan("not a list")
+        check("junk leaves the plan alone", s.plan, before)
+        truthy("and says so rather than failing silently", "No usable steps" in told)
+
+
+asyncio.run(plan_checks())
+
+
+# ------------------------------------------------------- the working banner --
+# What the banner says while a turn runs. The tool log already carries the
+# code; this is for somebody watching the viewport rather than reading Python.
+print("What the banner says it is doing")
+for code, expected in [
+    ("fillets.add(inp)", "Filleting"),
+    ("chamferFeats.add(c)", "Chamfering"),
+    ("shellFeats.add(shellInput)", "Shelling"),
+    ("holes.addSimple(...)", "Cutting holes"),
+    ("revolves.add(rev)", "Revolving"),
+    ("ext = extrudes.addSimple(prof, dist, op)", "Extruding"),
+    ("root.features.combineFeatures.add(inp)", "Combining bodies"),
+    ("mirrorFeats.add(m)", "Mirroring"),
+    ("sk = root.sketches.add(root.xYConstructionPlane)", "Sketching"),
+    ("cam = app.activeViewport.camera", "Setting the view"),
+    ("x = 1 + 1", "Building"),
+]:
+    check(f"{code[:34]:36} -> {expected}",
+          svc._activity_verb("mcp__fusion__fusion_execute", {"code": code}), expected)
+
+check("a screenshot says it is looking",
+      svc._activity_verb("mcp__fusion__fusion_screenshot", {}), "Looking at the result")
+check("state says it is checking",
+      svc._activity_verb("mcp__fusion__fusion_state", {}), "Checking the design")
+check("the plan tool says planning",
+      svc._activity_verb("mcp__plan__plan", {}), "Planning")
+
+# A fillet inside a longer script still reads as filleting: the first match
+# wins, and it is ordered so the interesting operation beats the sketch that
+# set it up.
+truthy("the operation beats the sketch that set it up",
+       svc._activity_verb("mcp__fusion__fusion_execute",
+                          {"code": "sk = sketches.add(p)\nfillets.add(inp)"}) == "Filleting")
+
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

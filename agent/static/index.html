@@ -48,6 +48,57 @@
   }
   .tool b { color: var(--accent); font-weight: 500; }
 
+  /* --- the build plan -------------------------------------------------- */
+  /* Pinned, and capped in height: a twenty-step plan must not push the
+     conversation off screen. It scrolls on its own instead. */
+  #plan {
+    flex: 0 0 auto; max-height: 34vh; overflow-y: auto;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    padding: 7px 10px 8px;
+  }
+  #plan-head {
+    display: flex; align-items: baseline; gap: 8px;
+    font-size: 10px; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--dim); margin-bottom: 5px;
+  }
+  #plan-count { margin-left: auto; font-variant-numeric: tabular-nums; }
+  #plan-steps { list-style: none; margin: 0; padding: 0; }
+  #plan-steps li {
+    display: flex; gap: 7px; align-items: flex-start;
+    font-size: 12px; line-height: 1.45; padding: 1px 0; color: var(--dim);
+  }
+  #plan-steps li .mark { flex: 0 0 auto; width: 12px; text-align: center; }
+  /* Done steps recede, the current one is the only thing highlighted — the
+     point of the list is answering "what now?" at a glance. */
+  #plan-steps li.done { color: var(--dim); }
+  #plan-steps li.done .label { text-decoration: line-through; opacity: .65; }
+  #plan-steps li.done .mark { color: var(--ok); }
+  #plan-steps li.doing { color: var(--fg); }
+  #plan-steps li.doing .mark { color: var(--accent); }
+  #plan-steps li.doing .label { font-weight: 500; }
+  #plan-steps li.todo .mark { color: var(--line); }
+
+  /* --- the working banner ---------------------------------------------- */
+  #banner {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; font-size: 12px;
+    background: var(--panel); border-bottom: 1px solid var(--line);
+    color: var(--dim);
+  }
+  #banner.done { color: var(--ok); }
+  #banner.done .spin { display: none; }
+  .spin {
+    width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%;
+    border: 2px solid var(--line); border-top-color: var(--accent);
+    animation: spin .7s linear infinite;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Respect a reduced-motion preference: pulse instead of spin. */
+  @media (prefers-reduced-motion: reduce) {
+    .spin { animation: pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 50% { opacity: .35; } }
+  }
+
   .shot { margin: 8px 0; }
   .shot img { width: 100%; border: 1px solid var(--line); border-radius: 5px; display: block; }
 
@@ -125,6 +176,22 @@
     <button id="shot">Screenshot</button>
   </header>
 
+  <!-- Pinned above the log rather than inside it: the plan is the state of the
+       build, not a message in the conversation, and it has to stay put while
+       the log scrolls underneath. -->
+  <div id="plan" hidden>
+    <div id="plan-head">
+      <span id="plan-title">Plan</span>
+      <span id="plan-count"></span>
+    </div>
+    <ol id="plan-steps"></ol>
+  </div>
+
+  <div id="banner" hidden>
+    <span class="spin" aria-hidden="true"></span>
+    <span id="banner-text"></span>
+  </div>
+
   <div id="log">
     <div class="status">Connecting…</div>
   </div>
@@ -156,6 +223,62 @@ function block(cls, who) {
   const b = document.createElement('div'); b.className = 'body'; d.appendChild(b);
   log.appendChild(d); return b;
 }
+const planBox = document.getElementById('plan');
+const planSteps = document.getElementById('plan-steps');
+const planCount = document.getElementById('plan-count');
+const banner = document.getElementById('banner');
+const bannerText = document.getElementById('banner-text');
+
+const MARKS = { done: '✓', doing: '›', todo: '◦' };
+
+// Redraw the whole list every time. The model sends the entire plan on every
+// update, so there is no diff to apply and no way for the panel to drift out
+// of step with what the model believes the plan to be.
+function renderPlan(steps) {
+  if (!steps || !steps.length) {
+    planBox.hidden = true;
+    planSteps.textContent = '';
+    return;
+  }
+  planSteps.textContent = '';
+  let done = 0;
+  steps.forEach((s) => {
+    const state = (s && s.status) || 'todo';
+    if (state === 'done') done++;
+    const li = document.createElement('li');
+    li.className = state;
+    const mark = document.createElement('span');
+    mark.className = 'mark';
+    mark.textContent = MARKS[state] || MARKS.todo;
+    const label = document.createElement('span');
+    label.className = 'label';
+    // textContent, not innerHTML: step titles come from the model.
+    label.textContent = (s && s.title) || '';
+    li.append(mark, label);
+    planSteps.appendChild(li);
+  });
+  planCount.textContent = done + '/' + steps.length;
+  planBox.hidden = false;
+}
+
+// The banner answers "is it still going, and on what?" without reading the log.
+function working(label) {
+  banner.classList.remove('done');
+  bannerText.textContent = label || 'Working';
+  banner.hidden = false;
+}
+
+function finished() {
+  banner.classList.add('done');
+  bannerText.textContent = 'Done';
+  banner.hidden = false;
+}
+
+function clearBanner() {
+  banner.hidden = true;
+  banner.classList.remove('done');
+}
+
 function status(text, cls) {
   const d = document.createElement('div');
   d.className = 'status ' + (cls || ''); d.textContent = text;
@@ -202,7 +325,11 @@ function permission(ev) {
 // conversation looks identical whether you just watched it happen or came back
 // to the design an hour later. `live` gates the side effects that only make
 // sense in the moment.
-function render(ev) {
+// `live` gates the side effects that only make sense in the moment — the
+// working banner above all. It is passed explicitly rather than relying on
+// forEach's index argument, which is 0 for the first item and truthy for
+// every other one.
+function render(ev, live) {
   if (ev.type === 'user') {
     current = null;
     const body = block('you', 'You');
@@ -229,10 +356,15 @@ function render(ev) {
     const b = document.createElement('b'); b.textContent = ev.name;
     d.append(b, ' ' + (ev.summary || ''));
     log.appendChild(d);
+    // Only while it is actually running. Replaying a transcript must not leave
+    // a spinner insisting that a build finished an hour ago is still going.
+    if (live && ev.verb) working(ev.verb);
     // The agent still screenshots after every geometry change — that is how it
     // catches a wrong extrude — but the panel does not mirror the image back.
     // It sits beside the viewport; the tool line above is enough to say it
     // looked.
+  } else if (ev.type === 'plan') {
+    renderPlan(ev.steps);
   } else if (ev.type === 'notice') {
     status(ev.text, 'notice');
   } else if (ev.type === 'error') {
@@ -264,11 +396,15 @@ function applyDocument(d) {
     status('Open a design in Fusion to start a chat.');
   } else {
     if (d.core_context) coreContext(d.core_context);
-    (d.transcript || []).forEach(render);
+    (d.transcript || []).forEach((e) => render(e, false));
     if (!(d.transcript || []).length && !d.core_context) {
       status('New chat for this design.');
     }
   }
+  // The plan belongs to the design, so it is redrawn from the snapshot on
+  // every switch — including back to one whose build finished days ago.
+  renderPlan(d.design ? d.plan : null);
+  if (d.busy) working('Working'); else clearBanner();
   busy = !!d.busy;
   send.disabled = busy || !d.design;
   document.getElementById('attach').disabled = busy || !d.design;
@@ -297,8 +433,9 @@ es.onmessage = (e) => {
     // there for when a still is actually wanted.
     busy = false; send.disabled = false; current = null;
     document.getElementById('attach').disabled = false;
+    finished();
   } else {
-    render(ev);
+    render(ev, true);
   }
   if (stick) scroll();
 };
@@ -422,10 +559,15 @@ async function submit() {
   pending = []; drawTray();
   input.value = ''; input.style.height = 'auto';
   busy = true; send.disabled = true; attachBtn.disabled = true; current = null;
+  // Immediately, before the first tool call names what it is doing, so the
+  // panel never looks like it ignored the message.
+  working('Thinking');
 
   const restore = () => {
     busy = false; send.disabled = false; attachBtn.disabled = false;
     input.value = text; pending = sending; drawTray();
+    // A send that never left the browser is not a build in progress.
+    clearBanner();
   };
 
   let r;
