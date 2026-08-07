@@ -366,6 +366,38 @@ try:
 
     check("a non-numeric wait -> 400", call("GET", "/claim?wait=soon")[0], 400)
 
+    # ----------------------------------------------------- fail closed -------
+    # SECURITY.md promises the service fails closed with no token. This had no
+    # coverage at all, and the interesting case is not the missing file: it is
+    # that an EMPTY token file must not authorise an empty presented token.
+    # compare_digest(b"", b"") is True, so without the explicit emptiness guard
+    # a broker whose token file got truncated would authorise every caller that
+    # sent no credentials.
+    print("Fail closed without a token")
+    _real_token_path = bk.TOKEN_PATH
+    try:
+        missing = _tmp / "gone"
+        bk.TOKEN_PATH = missing
+        check("a missing token file -> 503", call("GET", "/health")[0], 503)
+
+        blank = _tmp / "blank"
+        blank.write_text("", encoding="utf-8")
+        bk.TOKEN_PATH = blank
+        check("an empty token file -> 503", call("GET", "/health")[0], 503)
+        check("and an empty presented token is still refused",
+              call("GET", "/health", token="")[0], 503)
+        check("as is no token header at all", call("GET", "/health", token=None)[0], 503)
+
+        spaces = _tmp / "spaces"
+        spaces.write_text("   \n", encoding="utf-8")
+        bk.TOKEN_PATH = spaces
+        check("a whitespace-only token file -> 503", call("GET", "/health")[0], 503)
+        check("and whitespace presented against it is refused",
+              call("GET", "/health", token="   ")[0], 503)
+    finally:
+        bk.TOKEN_PATH = _real_token_path
+    check("the real token works again afterwards", call("GET", "/health")[0], 200)
+
     # ------------------------------------------------- connection cap --------
     # The broker used to be an unbounded ThreadingHTTPServer while SECURITY.md
     # described the cap as covering both sides. The cap is easy to add and easy

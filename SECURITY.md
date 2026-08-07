@@ -35,7 +35,7 @@ There is exactly one, and it is the reason the above is tolerable:
 | Bind address | `127.0.0.1` only, never `0.0.0.0`. Not reachable from your LAN. Both the Fusion listener (`7654`) and the Rhino broker (`7656`). |
 | Host header | Requests must carry a `Host` matching the service's own loopback address and port, so a browser on another site cannot drive it via DNS rebinding. |
 | Token | 64 hex chars generated at install, sent as `X-Fusion-Bridge-Token`, compared with `hmac.compare_digest`. Stored `0600` in `~/.fusion-mcp/`, which is `0700`. |
-| Fail closed | No token file, or an empty one, and the listener refuses to start. |
+| Fail closed | No token file, an empty one, or one that is only whitespace, and nothing is served. The Fusion add-in refuses to start and says so; the broker starts but answers every request `503`. Emptiness is checked explicitly, because `compare_digest(b"", b"")` is true — a truncated token file must not authorise a caller who presents nothing. |
 | Request cap | Body limited to 5 MB and at most 8 concurrent connections — on the Fusion listener and the Rhino broker alike, a connection past the cap is refused with `503` rather than given a thread. One job runs in the CAD at a time on both sides. |
 | Rhino direction | Rhino is never listened to *on*. The poller inside Rhino makes outbound requests to the broker and nothing accepts connections inside the CAD process. |
 | Logs | Never contain the token. |
