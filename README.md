@@ -2,7 +2,8 @@
 
 [![tests](https://github.com/francomichetti-dev/3d-mcp/actions/workflows/tests.yml/badge.svg)](https://github.com/francomichetti-dev/3d-mcp/actions/workflows/tests.yml)
 [![license: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
-[![macOS](https://img.shields.io/badge/macOS-Fusion%202704%2B-lightgrey.svg)](#requirements)
+[![Fusion](https://img.shields.io/badge/Fusion%202704%2B-macOS-lightgrey.svg)](#requirements)
+[![Rhino 8](https://img.shields.io/badge/Rhino%208-Windows%20%7C%20macOS-lightgrey.svg)](#requirements)
 
 **Model in CAD by prompting.** MCP servers that let Claude write CAD API Python, run it inside
 a live **Autodesk Fusion** or **Rhino 8** session, *look at the result through viewport
@@ -22,14 +23,32 @@ wrong direction, a profile that grabbed the wrong region — with no exception r
 
 > [!WARNING]
 > That last sentence is literal. `fusion_execute` runs **arbitrary Python inside your Fusion
-> session** with your privileges — not a sandbox, and not trying to be one. The only boundary is
-> that the listener is bound to `127.0.0.1` and requires a token generated at install. **Never
-> expose it to a network.** Generated code can also mangle an open design, so work in a scratch
-> Fusion project while you get a feel for it. Read [SECURITY.md](SECURITY.md) before installing.
+> session** with your privileges, and `rhino_execute` does the same inside Rhino — not a sandbox,
+> and not trying to be one. The only boundary is that both listeners bind `127.0.0.1` and require a
+> token generated at install. **Never expose either to a network.** Generated code can also mangle
+> an open document, so work in a scratch project while you get a feel for it — on Rhino especially,
+> where nothing stops to ask before a destructive operation. Read [SECURITY.md](SECURITY.md) before
+> installing.
 
 ---
 
-## How it works
+## Which half do you want
+
+Two CADs, two bridges, one idea. They share the security model, the knowledge layer and the
+test suite, but they are independent — installing one does not involve the other, and neither
+needs the other present.
+
+| | Fusion | Rhino 8 |
+| --- | --- | --- |
+| Platform | macOS | Windows, macOS |
+| Chat lives | [docked inside Fusion](#the-fusion-chat-panel) | [in its own window](#rhino-8) |
+| Set-up | [`scripts/install.sh`](#fusion) | [ask Claude Code](#rhino) |
+| Everything about it | the next four sections | [Rhino 8](#rhino-8) |
+
+**If you are here for Rhino, skip to [Rhino 8](#rhino-8).** Everything between here and there is
+Fusion-specific — the architecture differs enough that describing both at once helps nobody.
+
+## How it works: Fusion
 
 ```
 Claude Code ──┐
@@ -48,7 +67,7 @@ The add-in lives at `server/src/fusion_mcp/addin/FusionBridge/` — inside the p
 the repo root, so a PyPI install ships it and `fusion-3d-mcp install` can put it where Fusion looks.
 A checkout symlinks it from there instead, so edits are live.
 
-Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-chat-panel) docked
+Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-fusion-chat-panel) docked
 inside Fusion. Both speak MCP to the same server.
 
 Fusion has no external API — `adsk.*` exists only inside Fusion, and it is **main-thread-only**.
@@ -57,7 +76,7 @@ main thread through a registered custom event, waiting on a per-request event fo
 job occupies the main thread at a time; a second concurrent request is refused immediately rather
 than queued.
 
-## Tools
+## Fusion tools
 
 | Tool | What it does |
 | --- | --- |
@@ -72,7 +91,7 @@ needed on every single session and shouldn't require bespoke code each time.
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so
 Claude can read it and fix its own code.
 
-## The chat panel
+## The Fusion chat panel
 
 The MCP tools assume you are already in a Claude Code session. The panel removes that assumption:
 it docks a chat inside Fusion, so you describe what you want in the window where the model lives.
@@ -523,7 +542,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**464 assertions across ten suites**, none of which need Fusion, Rhino, or an internet connection.
+**465 assertions across ten suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
