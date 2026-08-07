@@ -188,3 +188,37 @@ crash.
 
 If `Idle` does not fire reliably, the answer is a compiled Rhino plugin with a
 real timer, which is where a production version belongs anyway.
+
+---
+
+## Never write a blanket-delete cleanup
+
+Test geometry gets created during development, and the obvious cleanup is:
+
+```python
+for o in list(doc.Objects):
+    doc.Objects.Delete(o.Id, True)      # NEVER DO THIS
+```
+
+That deletes the person's model, not your test cube. It nearly did: a cleanup
+written for what was believed to be an empty scratch document ran after Rhino
+had restarted into a real project file — 56 objects of someone's real
+work. It only failed because the broker happened to be down at that moment.
+
+The document you tested in is not the document you clean up in. Rhino restarts,
+people open their own files, and an unsaved scratch document is indistinguishable
+from a project by object count alone.
+
+Two rules:
+
+1. **Delete by identity, never by enumeration.** Keep the GUID that
+   `AddBrep`/`AddSphere` returned and delete that. If a GUID has been lost, the
+   geometry stays — a stray test cube is a far smaller problem than a deleted
+   model.
+2. **Read the document before writing to it.** `rhino_state` returns the name
+   and object count. A named `.3dm` with objects in it is somebody's work;
+   stop.
+
+This applies to anything generated too. `fusion_execute` and `rhino_execute`
+hand the model arbitrary code, and "clear the scene so I can start fresh" is a
+plausible-sounding instruction that would do the same damage.
