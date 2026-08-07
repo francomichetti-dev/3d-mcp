@@ -368,6 +368,41 @@ if excludes:
           ["**/*.pyc", "**/__pycache__"])
 
 
+# ------------------------------------------------------------- models -------
+# Both chats offer a model dropdown, and the two lists are duplicated because
+# the Rhino window runs on Rhino's own Python and cannot import from the
+# package. A model present on one side and not the other fails at the moment
+# somebody switches — not at review, and not on the machine that changed it.
+print("The model lists")
+
+
+def model_ids(rel):
+    block = re.search(r"MODELS = \[(.*?)\]", read(rel), re.S)
+    return re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', block.group(1)) if block else []
+
+
+fusion_models = model_ids("agent/agent_service.py")
+rhino_models = model_ids(RHINO_CHAT)
+truthy("the Fusion panel offers models", fusion_models)
+truthy("the Rhino window offers models", rhino_models)
+check("and they are the same list, in the same order", fusion_models, rhino_models)
+truthy("every id looks like a real model", all(m.startswith("claude-") for m, _ in fusion_models))
+truthy("every entry has a label short enough for a dropdown",
+       all(0 < len(label) <= 16 for _, label in fusion_models))
+
+# The default is the first entry on both sides, so "best" means the same thing
+# in each window.
+for rel in ["agent/agent_service.py", RHINO_CHAT]:
+    found = re.search(r"DEFAULT_MODEL = MODELS\[0\]\[0\]", read(rel))
+    truthy(f"{Path(rel).name} defaults to the first entry", found)
+
+# Rhino passes it per invocation; Fusion bakes it into the session options.
+truthy("the Rhino window actually passes --model",
+       '"--model", read_model()' in read(RHINO_CHAT))
+truthy("the Fusion session reads the selection rather than a constant",
+       "model=self.registry.model()" in read("agent/agent_service.py"))
+
+
 # -------------------------------------------------------- host pinning ------
 # Three listeners, three chances to forget. The chat service went without this
 # until it was audited: it binds loopback, which stops another machine but not

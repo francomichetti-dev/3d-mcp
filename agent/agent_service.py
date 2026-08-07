@@ -93,6 +93,22 @@ MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
 # Consecutive transport failures before the service stops rebuilding the
 # client and asks for a restart instead of retrying silently forever.
 MAX_TRANSPORT_RETRIES = 3
+# The models offered in the panel, best-first. Kept short deliberately: this
+# is a dropdown beside a text box, not a catalogue, and a CAD turn is long
+# enough that the interesting choice is capability versus speed.
+#
+# scripts/rhino/rhino-chat.py carries the same list — it runs on Rhino's own
+# Python and cannot import from here — and tests/test_consistency.py pins the
+# two together, because a model id that exists on one side and not the other
+# fails at the moment somebody switches, not at review.
+MODELS = [
+    ("claude-opus-5", "Opus 5"),
+    ("claude-sonnet-5", "Sonnet 5"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+]
+DEFAULT_MODEL = MODELS[0][0]
+MODEL_IDS = frozenset(m for m, _ in MODELS)
+
 PLAN_STATUSES = ("todo", "doing", "done")
 # Enough to see the shape of a build at a glance; beyond this the list stops
 # being a plan and becomes a transcript.
@@ -531,7 +547,7 @@ class Session:
         if core:
             append = append + CORE_CONTEXT_PREAMBLE % core
         return ClaudeAgentOptions(
-            model="claude-opus-5",
+            model=self.registry.model(),
             # The SDK reads the CLI's output as NDJSON and refuses any single
             # line longer than this, raising CLIJSONDecodeError. Its default is
             # 1 MiB, which is too small for a CAD session: a screenshot comes
@@ -1023,6 +1039,37 @@ class Registry:
             self._dirty = False
             self.store.save()
 
+    def model(self) -> str:
+        """The chosen model, or the default if the stored one is unknown.
+
+        Validated on read as well as on write: a model that was removed from
+        the list in an upgrade must not leave the panel unable to start a
+        session at all.
+        """
+        chosen = self.store.data.get("model")
+        return chosen if chosen in MODEL_IDS else DEFAULT_MODEL
+
+    async def set_model(self, model: str) -> bool:
+        """Switch models, keeping every conversation.
+
+        A session's model is fixed when its client connects, so switching means
+        rebuilding the clients. _reconnect resumes from the stored session id,
+        so the model changes and the conversation does not.
+        """
+        if model not in MODEL_IDS or model == self.model():
+            return False
+        self.store.data["model"] = model
+        self.store.save()
+        log.info("model switched to %s", model)
+        for session in list(self.sessions.values()):
+            # Only idle sessions: rebuilding underneath a running turn would
+            # kill it, which is the failure this panel has already had twice.
+            if session.busy:
+                continue
+            await session._reconnect()
+        self.publish(self.document_event())
+        return True
+
     def snapshot(self, key: str | None) -> dict[str, Any]:
         entry = self.store.get(key) if key else {}
         session = self.sessions.get(key) if key else None
@@ -1137,6 +1184,10 @@ class Registry:
             "name": (active or {}).get("name"),
             "saved": bool((active or {}).get("saved")),
             "design": bool((active or {}).get("design")),
+            # Sent with every document event so the panel never has to hardcode
+            # the list, and so a reconnecting panel shows the right selection.
+            "model": self.model(),
+            "models": [{"id": m, "label": label} for m, label in MODELS],
             **self.snapshot(key),
         }
 
@@ -1192,7 +1243,10 @@ class Registry:
         whatever document happens to be open now.
         """
         options = ClaudeAgentOptions(
-            model="claude-opus-5",
+            # Deliberately not the chosen model: this is a one-shot background
+            # summariser, not the conversation, and its output is read by the
+            # next session rather than by a person.
+            model=DEFAULT_MODEL,
             cwd=str(REPO),
             resume=session_id,
             fork_session=True,
@@ -1355,6 +1409,19 @@ async def handle_permission(request: web.Request) -> web.Response:
     return web.json_response({"ok": False})
 
 
+async def handle_model(request: web.Request) -> web.Response:
+    """Switch which model the chat uses. Rejects anything not on the list."""
+    body = await request.json()
+    model = str(body.get("model") or "")
+    if model not in MODEL_IDS:
+        return web.json_response(
+            {"ok": False, "error": f"unknown model {model!r}"}, status=400)
+    registry: Registry = request.app["registry"]
+    changed = await registry.set_model(model)
+    return web.json_response({"ok": True, "model": registry.model(),
+                              "changed": changed})
+
+
 async def handle_interrupt(request: web.Request) -> web.Response:
     registry: Registry = request.app["registry"]
     key = (registry.current or {}).get("key")
@@ -1513,6 +1580,7 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app.router.add_post("/send", handle_send)
     app.router.add_post("/permission", handle_permission)
     app.router.add_post("/interrupt", handle_interrupt)
+    app.router.add_post("/model", handle_model)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app

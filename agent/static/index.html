@@ -156,6 +156,15 @@
   }
   #attach:hover { color: var(--fg); border-color: var(--dim); }
   #attach:disabled { opacity: .45; cursor: default; }
+  /* Beside the attach button and styled to match it. Quiet on purpose: it is
+     a setting somebody changes rarely, not a control competing with Send. */
+  #model {
+    align-self: flex-end; background: transparent; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 4px;
+    font: inherit; font-size: 11px; cursor: pointer; max-width: 96px;
+  }
+  #model:hover { color: var(--fg); border-color: var(--dim); }
+  #model:disabled { opacity: .45; cursor: default; }
   /* the whole panel is the drop target, so aim is not a skill requirement */
   body.dragging #log { outline: 2px dashed var(--accent); outline-offset: -8px; }
   textarea {
@@ -202,6 +211,7 @@
     <div id="tray"></div>
     <div id="row">
       <button id="attach" title="Attach images — or drag them in, or paste">＋</button>
+      <select id="model" title="Which model answers in this chat"></select>
       <textarea id="input" rows="1" placeholder="Describe what to model, or how to change it…"></textarea>
       <button id="send">Send</button>
     </div>
@@ -292,6 +302,48 @@ function lost() {
   bannerText.textContent = 'Connection lost — reconnecting…';
   banner.hidden = false;
 }
+
+const modelPicker = document.getElementById('model');
+
+// Populated from the service rather than hardcoded here, so the list cannot
+// drift from what the service will actually accept.
+function renderModels(models, current) {
+  if (!models || !models.length) return;
+  const same = Array.from(modelPicker.options).map((o) => o.value).join(',')
+             === models.map((m) => m.id).join(',');
+  if (!same) {
+    modelPicker.textContent = '';
+    models.forEach((m) => {
+      const o = document.createElement('option');
+      o.value = m.id;
+      o.textContent = m.label;
+      modelPicker.appendChild(o);
+    });
+  }
+  if (current) modelPicker.value = current;
+}
+
+modelPicker.onchange = async () => {
+  const chosen = modelPicker.value;
+  modelPicker.disabled = true;
+  try {
+    const r = await fetch('/model', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model: chosen }),
+    });
+    const out = await r.json();
+    if (!out.ok) { status(out.error || 'Could not switch model.', 'err'); return; }
+    // Switching rebuilds each idle session, resuming it, so the conversation
+    // survives — worth saying, because "switch model" usually means "lose it".
+    status('Now using ' + (modelPicker.selectedOptions[0] || {}).textContent
+           + '. Your conversations are kept.', 'notice');
+  } catch (err) {
+    status('Could not reach the service to switch model.', 'err');
+  } finally {
+    modelPicker.disabled = false;
+  }
+};
 
 function status(text, cls) {
   const d = document.createElement('div');
@@ -417,9 +469,11 @@ function applyDocument(d) {
   }
   // The plan belongs to the design, so it is redrawn from the snapshot on
   // every switch — including back to one whose build finished days ago.
+  renderModels(d.models, d.model);
   renderPlan(d.design ? d.plan : null);
   if (d.busy) working('Working'); else clearBanner();
   busy = !!d.busy;
+  modelPicker.disabled = busy;
   send.disabled = busy || !d.design;
   document.getElementById('attach').disabled = busy || !d.design;
   scroll();
@@ -461,6 +515,7 @@ es.onmessage = (e) => {
     // there for when a still is actually wanted.
     busy = false; send.disabled = false; current = null;
     document.getElementById('attach').disabled = false;
+    modelPicker.disabled = false;
     finished();
   } else {
     render(ev, true);
@@ -620,12 +675,14 @@ async function submit() {
   pending = []; drawTray();
   input.value = ''; input.style.height = 'auto';
   busy = true; send.disabled = true; attachBtn.disabled = true; current = null;
+  modelPicker.disabled = true;
   // Immediately, before the first tool call names what it is doing, so the
   // panel never looks like it ignored the message.
   working('Thinking');
 
   const restore = () => {
     busy = false; send.disabled = false; attachBtn.disabled = false;
+    modelPicker.disabled = false;
     input.value = text; pending = sending; drawTray();
     // A send that never left the browser is not a build in progress.
     clearBanner();

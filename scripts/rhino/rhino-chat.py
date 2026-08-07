@@ -41,6 +41,42 @@ MCP_SERVER = os.path.join(HERE, "rhino_mcp.py")
 BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
 AUTH_HEADER = "X-Fusion-Bridge-Token"
 
+# The same list the Fusion panel offers, duplicated because this file runs on
+# Rhino's own Python and cannot import from the package. tests/test_consistency
+# pins the two together: a model id that exists on one side and not the other
+# fails when somebody switches, not at review.
+MODELS = [
+    ("claude-opus-5", "Opus 5"),
+    ("claude-sonnet-5", "Sonnet 5"),
+    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+]
+DEFAULT_MODEL = MODELS[0][0]
+MODEL_IDS = frozenset(m for m, _ in MODELS)
+# Kept beside the token rather than in the window, so the choice survives
+# closing it.
+SETTINGS_PATH = os.path.join(CONFIG_DIR, "rhino-chat.json")
+
+
+def read_model():
+    """The chosen model, falling back to the default for anything unknown."""
+    try:
+        with open(SETTINGS_PATH, encoding="utf-8") as handle:
+            chosen = json.load(handle).get("model")
+    except (OSError, ValueError):
+        return DEFAULT_MODEL
+    return chosen if chosen in MODEL_IDS else DEFAULT_MODEL
+
+
+def write_model(model):
+    if model not in MODEL_IDS:
+        return False
+    ensure_dirs()
+    with open(SETTINGS_PATH, "w", encoding="utf-8") as handle:
+        json.dump({"model": model}, handle)
+    restrict(SETTINGS_PATH)
+    return True
+
+
 RHINO_TOOLS = ["mcp__rhino__rhino_execute", "mcp__rhino__rhino_state",
                "mcp__rhino__rhino_screenshot"]
 
@@ -405,6 +441,16 @@ class Api:
                 pass
         return {"ok": False, "error": "nothing running"}
 
+    def models(self):
+        """The list the dropdown shows, plus what is selected now."""
+        return {"models": [{"id": m, "label": label} for m, label in MODELS],
+                "current": read_model()}
+
+    def set_model(self, model):
+        """Persist a choice. Rejected values leave the setting untouched."""
+        ok = write_model(model)
+        return {"ok": ok, "current": read_model()}
+
     def chat(self, message):
         if not (message or "").strip() and not self._pending:
             return {"ok": False, "error": "nothing to send"}
@@ -441,6 +487,9 @@ class Api:
 
         args = [
             claude, "-p", prompt,
+            # Explicit rather than inherited: without it the CLI picks its own
+            # default, which is not necessarily what the window is showing.
+            "--model", read_model(),
             # stream-json in print mode REQUIRES --verbose: without it the CLI
             # exits with "requires --verbose" and nothing runs at all.
             "--output-format", "stream-json", "--verbose",
@@ -586,6 +635,11 @@ form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:non
 #box{flex:1;background:var(--panel);color:var(--fg);border:1px solid var(--line);
      border-radius:9px;padding:10px 12px;font:inherit;resize:none;max-height:150px}
 #box:focus{outline:none;border-color:var(--dim)}
+#model{background:transparent;color:#8b8f94;border:1px solid #3a3d42;
+  border-radius:6px;padding:7px 4px;font:inherit;font-size:11px;cursor:pointer;
+  max-width:96px;align-self:flex-end}
+#model:hover{color:#e6e8ea}
+#model:disabled{opacity:.45;cursor:default}
 #send{background:var(--accent);color:#0d2233;border:0;border-radius:9px;
       height:40px;padding:0 20px;font:600 14px inherit;cursor:pointer;flex:none}
 #send:disabled{opacity:.45;cursor:default}
@@ -629,6 +683,7 @@ small{color:var(--dim);font-size:12px}
     <div id="chips"></div>
     <form id="form">
       <button type="button" id="clip" title="Attach files or photos">📎</button>
+      <select id="model" title="Which model answers in this chat"></select>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
       <button id="send">Send</button>
       <button id="halt" style="display:none">Stop</button>
@@ -775,6 +830,24 @@ $("box").addEventListener("keydown", (e) => {
 
 /* ---- settings ---- */
 async function loadSetup(){
+  // Filled from Python so the page never hardcodes a list the CLI would
+  // reject. Switching only affects the NEXT turn — the CLI takes --model per
+  // invocation, so nothing in flight is disturbed.
+  const picker = $('model');
+  const info = await window.pywebview.api.models();
+  info.models.forEach((m) => {
+    const o = document.createElement('option');
+    o.value = m.id; o.textContent = m.label;
+    picker.appendChild(o);
+  });
+  picker.value = info.current;
+  picker.onchange = async () => {
+    const out = await window.pywebview.api.set_model(picker.value);
+    if (!out.ok) { picker.value = out.current; return; }
+    say('notice', 'Now using ' + picker.selectedOptions[0].textContent
+        + ' from the next message.');
+  };
+
   const s = await window.pywebview.api.setup_info();
   $("c-install").textContent = s.install_cmd;
   $("term").textContent = s.terminal;
