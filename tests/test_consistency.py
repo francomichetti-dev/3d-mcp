@@ -267,6 +267,16 @@ for rel in [FUSION_ADDIN, BROKER, AGENT_SERVICE]:
 truthy("the chat service pins Host as middleware",
        "middlewares=[pin_host]" in read(AGENT_SERVICE))
 
+# Now that the service refuses a mismatched Host, the URL the palette is
+# pointed at is load-bearing: the browser derives the Host header from it. Move
+# it to a hostname the service does not list and the panel 403s itself.
+CHAT_PANEL = "server/src/fusion_mcp/addin/FusionBridge/chat_panel.py"
+service_url = re.search(r'SERVICE_URL\s*=\s*"(http://[^"%]+)', read(CHAT_PANEL))
+truthy("the palette declares its service URL", service_url)
+if service_url:
+    truthy("and it uses a host the service allows",
+           service_url.group(1).startswith(("http://127.0.0.1", "http://localhost")))
+
 
 # ---------------------------------------------------------------- loopback --
 # The one security property that must never regress: nothing binds to anything
