@@ -142,6 +142,88 @@ for pattern, what in PRIVATE:
                 hits.append(f"{name}:{num}")
     check(f"no {what} anywhere in the repo", hits, [])
 
+# ------------------------------------------------------- history ----------
+# Everything above scans the files that are checked out. That is not where the
+# leak lives: a string deleted from the tree is still in every blob that ever
+# contained it, and `git log -p` or GitHub's object view will happily show it.
+#
+# This was found the hard way. Two things were sitting in pushed history while
+# the working tree scanned clean: a collaborator's handle in a .cmd file that
+# had since been deleted, and - from this very session - the project filename
+# inside the older versions of the privacy check itself, before it moved to
+# digests.
+#
+# KNOWN_HISTORY_BLOBS is a baseline, not an exemption. Those blobs need a
+# history rewrite to remove; until that runs, this test still catches anything
+# NEW. After the rewrite the set empties and this becomes a plain assertion.
+print("No personal data in git history")
+KNOWN_HISTORY_BLOBS = {
+    # scripts/JOIN-TAILSCALE.cmd - a collaborator's handle in --hostname
+    "95c650305089bc359ad6cbc053a841ed4e77026b",
+    # tests/test_docs.py, before the digests landed in this session
+    "ab755032", "de632b5f", "d6634f8b", "0a01f630", "ae802f2f",
+}
+
+
+def history_blobs():
+    """Every text blob in the object store, read in one batch.
+
+    One `git cat-file` per blob took long enough to be worth avoiding; the
+    batch form streams all of them through a single process.
+    """
+    listing = subprocess.run(["git", "rev-list", "--objects", "--all"], cwd=REPO,
+                             capture_output=True, text=True).stdout.splitlines()
+    names = {}
+    for entry in listing:
+        parts = entry.split(maxsplit=1)
+        if len(parts) == 2:
+            names[parts[0]] = parts[1]
+    if not names:
+        return
+    proc = subprocess.run(["git", "cat-file", "--batch"], cwd=REPO,
+                          input="\n".join(names).encode(), capture_output=True)
+    data, at = proc.stdout, 0
+    while at < len(data):
+        end = data.find(b"\n", at)
+        if end == -1:
+            break
+        header = data[at:end].decode("ascii", "replace").split()
+        at = end + 1
+        if len(header) != 3 or header[1] != "blob":
+            continue
+        size = int(header[2])
+        body, at = data[at:at + size], at + size + 1
+        try:
+            yield header[0], names.get(header[0], "?"), body.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+
+
+history_hits = []
+for sha, name, text in history_blobs():
+    if sha in KNOWN_HISTORY_BLOBS or sha[:8] in KNOWN_HISTORY_BLOBS:
+        continue
+    for num, line in enumerate(text.splitlines(), 1):
+        words = re.findall(r"[a-z0-9]+", line.lower())
+        shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
+        if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
+            history_hits.append(f"{name} ({sha[:8]}):{num}")
+            break
+
+check("no new personal data anywhere in git history", history_hits, [])
+
+# Commit messages are their own store, and the original leak was in one.
+messages = subprocess.run(["git", "log", "--format=%B"], cwd=REPO,
+                          capture_output=True, text=True).stdout
+message_hits = []
+for num, line in enumerate(messages.splitlines(), 1):
+    words = re.findall(r"[a-z0-9]+", line.lower())
+    shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
+    if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
+        message_hits.append(line.strip()[:60])
+check("no personal data in any commit message", message_hits, [])
+
+
 # The repo owner's own username is fine - it is the URL everyone clones from.
 readme = (REPO / "README.md").read_text(encoding="utf-8")
 truthy("the clone URL is present", "github.com/francomichetti-dev/3d-mcp" in readme)
