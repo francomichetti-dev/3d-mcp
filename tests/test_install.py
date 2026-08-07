@@ -9,6 +9,7 @@ own symlink), and `fusion-3d-mcp install`.
 
 import importlib.util
 import os
+import platform
 import shutil
 import stat
 import sys
@@ -149,46 +150,62 @@ with tempfile.TemporaryDirectory() as tmp:
     finally:
         bootstrap.FUSION_DIR, bootstrap.TOKEN_PATH = original_dir, original_token
 
-# the installer must never overwrite a checkout's symlink
-with tempfile.TemporaryDirectory() as tmp:
-    tmp = Path(tmp)
-    addins = tmp / "AddIns"
-    addins.mkdir()
-    os.symlink(ADDIN, addins / "FusionBridge")
-    original = bootstrap.MACOS_ADDINS_DIR
-    bootstrap.MACOS_ADDINS_DIR = addins
-    try:
-        raises("refuses to clobber a checkout symlink",
-               bootstrap.install_addin, RuntimeError, "symlink")
-        truthy("and leaves it in place", (addins / "FusionBridge").is_symlink())
-    finally:
-        bootstrap.MACOS_ADDINS_DIR = original
+# install_addin() refuses to run anywhere but macOS, because it knows only
+# where Fusion keeps add-ins there. That guard fires before anything else, so
+# the behaviour worth asserting differs by platform - and asserting the macOS
+# behaviour on Linux is what had CI red: the call raised, but with the platform
+# message rather than the one the test was looking for.
+if platform.system() == "Darwin":
+    # the installer must never overwrite a checkout's symlink
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        addins = tmp / "AddIns"
+        addins.mkdir()
+        os.symlink(ADDIN, addins / "FusionBridge")
+        original = bootstrap.MACOS_ADDINS_DIR
+        bootstrap.MACOS_ADDINS_DIR = addins
+        try:
+            raises("refuses to clobber a checkout symlink",
+                   bootstrap.install_addin, RuntimeError, "symlink")
+            truthy("and leaves it in place", (addins / "FusionBridge").is_symlink())
+        finally:
+            bootstrap.MACOS_ADDINS_DIR = original
 
-# a clean install copies, and is idempotent
-with tempfile.TemporaryDirectory() as tmp:
-    tmp = Path(tmp)
-    addins = tmp / "AddIns"
-    addins.mkdir()
-    original = bootstrap.MACOS_ADDINS_DIR
-    bootstrap.MACOS_ADDINS_DIR = addins
-    try:
-        target, action = bootstrap.install_addin()
-        check("installs", action, "installed")
-        truthy("copied, not linked", target.is_dir() and not target.is_symlink())
-        truthy("loader present", (target / "FusionBridge.py").is_file())
-        truthy("manifest present", (target / "FusionBridge.manifest").is_file())
-        truthy("no __pycache__ shipped", not (target / "__pycache__").exists())
+    # a clean install copies, and is idempotent
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        addins = tmp / "AddIns"
+        addins.mkdir()
+        original = bootstrap.MACOS_ADDINS_DIR
+        bootstrap.MACOS_ADDINS_DIR = addins
+        try:
+            target, action = bootstrap.install_addin()
+            check("installs", action, "installed")
+            truthy("copied, not linked", target.is_dir() and not target.is_symlink())
+            truthy("loader present", (target / "FusionBridge.py").is_file())
+            truthy("manifest present", (target / "FusionBridge.manifest").is_file())
+            truthy("no __pycache__ shipped", not (target / "__pycache__").exists())
 
-        target, action = bootstrap.install_addin()
-        check("second run is a no-op", action, "unchanged")
+            target, action = bootstrap.install_addin()
+            check("second run is a no-op", action, "unchanged")
 
-        (target / "fusion_bridge_impl.py").write_text("# stale\n", encoding="utf-8")
-        target, action = bootstrap.install_addin()
-        check("a modified copy is refreshed", action, "updated")
-        truthy("and restored to the real thing",
-               (target / "fusion_bridge_impl.py").read_text() != "# stale\n")
-    finally:
-        bootstrap.MACOS_ADDINS_DIR = original
+            (target / "fusion_bridge_impl.py").write_text("# stale\n", encoding="utf-8")
+            target, action = bootstrap.install_addin()
+            check("a modified copy is refreshed", action, "updated")
+            truthy("and restored to the real thing",
+                   (target / "fusion_bridge_impl.py").read_text() != "# stale\n")
+        finally:
+            bootstrap.MACOS_ADDINS_DIR = original
+else:
+    # Not macOS: refusing is the correct behaviour, and it should say why and
+    # where to look rather than failing obscurely on a missing directory.
+    print("Refusing to install off macOS")
+    raises("refuses to install on an unsupported platform",
+           bootstrap.install_addin, RuntimeError, "unsupported platform")
+    raises("and names the platform it is on",
+           bootstrap.install_addin, RuntimeError, platform.system())
+    raises("and points at where the portability notes live",
+           bootstrap.install_addin, RuntimeError, "CONTRIBUTING")
 
 
 # ---------------------------------------------------------------- cli ----
