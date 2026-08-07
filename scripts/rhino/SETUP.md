@@ -16,7 +16,26 @@ you ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker ──▶ poller 
 Three pieces: the MCP server (you talk to this), a broker on 127.0.0.1:7656,
 and a poller running as a timer inside Rhino. All three must be up.
 
+**Ask which they want before you start**, because it changes whether step 1 is
+needed at all:
+
+| They want to model from | Do steps | Notes |
+| --- | --- | --- |
+| a Claude Code session | 1, 2, 3, 4 | what you are in right now |
+| the chat window (`RHINO-CHAT.cmd`) | 2, 3, 4 | **skip step 1** |
+| both | 1, 2, 3, 4 | |
+
+The chat window does not use the registration from step 1. It passes its own
+MCP config inline with `--strict-mcp-config`, pointing at the same Python that
+is running the window — so registering is neither required nor read. Steps 2 to
+4 it does need, because it talks to the same broker and poller.
+
+If they have no preference, the chat window is the one to set up: it needs no
+Claude Code knowledge, and it has a Settings screen with everything in it.
+
 ## 1. Register the MCP server
+
+*(Skip this if they only want the chat window.)*
 
 The MCP server has no dependencies and must run on **Rhino's own Python**,
 because that is the interpreter guaranteed to exist on a machine with Rhino.
@@ -82,12 +101,33 @@ finds it.
 The very first ever run builds Rhino's Python environment and takes about a
 minute. It is not frozen — say so if the person is watching.
 
-## 5. Prove it works
+## 5. Open the chat window
 
-Do not report success from the absence of errors. Call your own `rhino_state`
-tool. A healthy answer names the document and its units. Then say what you
-found — "connected, the open document is X in millimetres" — so they can see it
-is real.
+*(Only if they want it. Skip to step 6 otherwise.)*
+
+Double-click `RHINO-CHAT.cmd` in this folder, or run `rhino-chat.py` with the
+same Python. It needs the `claude` CLI on PATH and an existing Claude
+subscription — no API key, and adding one would be a step backwards.
+
+If `claude` is missing, the window's Settings screen shows the install command
+for the platform it is running on. Note that on Windows the CLI is sometimes
+installed inside Claude Desktop rather than on PATH, so "not found" does not
+mean "not installed" — check
+`%LOCALAPPDATA%\Packages\Claude_*\LocalCache\Roaming\Claude\claude-code\` before
+telling them to install anything.
+
+## 6. Prove it works
+
+Do not report success from the absence of errors.
+
+- If you did step 1, call your own `rhino_state` tool. A healthy answer names
+  the document and its units.
+- If you did not, ask the window for something trivial — "what document is
+  open?" — and watch it answer.
+
+Either way, say what you found: "connected, the open document is X in
+millimetres". A specific answer is the only thing that distinguishes a working
+bridge from one that has not been tried.
 
 If `/health` shows `poller_connected: false`, the broker is up and Rhino is not:
 Rhino open, `ScriptEditor` once, then step 4 again.

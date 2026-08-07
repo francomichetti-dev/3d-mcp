@@ -15,6 +15,7 @@ terminal as well.
 Runs on Rhino's own Python (3.9). The only dependency is pywebview.
 """
 
+import glob
 import json
 import os
 import shutil
@@ -105,6 +106,20 @@ def find_claude():
     for path in candidates:
         if path and os.path.isfile(path):
             return path
+
+    # Claude Code also ships INSIDE Claude Desktop, under a versioned directory
+    # in the packaged app's data. Observed on a real machine as
+    # %LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude-code\
+    # <version>\claude.exe, with nothing on PATH - so the window reported the
+    # CLI missing on a machine that had it. Both the package id and the version
+    # vary, hence the glob; the newest version wins.
+    packages = os.path.join(os.environ.get("LOCALAPPDATA", ""), "Packages")
+    if packages and os.path.isdir(packages):
+        pattern = os.path.join(packages, "Claude_*", "LocalCache", "Roaming",
+                               "Claude", "claude-code", "*", "claude.exe")
+        matches = [p for p in glob.glob(pattern) if os.path.isfile(p)]
+        if matches:
+            return max(matches, key=os.path.getmtime)
     return ""
 
 

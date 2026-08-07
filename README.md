@@ -523,7 +523,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**426 assertions across eight suites**, none of which need Fusion, Rhino, or an internet connection.
+**444 assertions across nine suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -535,6 +535,7 @@ That is a macOS run; on Linux the count is lower because the installer is macOS-
 | `test_install.py` | the installer: idempotency, token permissions, uninstall |
 | `test_mcp_server.py` | the Fusion MCP tools |
 | `test_rhino_mcp.py` | the Rhino MCP server: protocol conformance, every failure path, stream hygiene |
+| `test_rhino_chat.py` | the Rhino chat window: finding the `claude` CLI, the MCP config it writes, file permissions |
 | `test_consistency.py` | constants duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 
