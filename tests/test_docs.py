@@ -147,9 +147,20 @@ for said, name in per_file:
         continue
     if name == Path(__file__).name:          # would recurse
         continue
-    run = subprocess.run([sys.executable, str(suite)], cwd=REPO,
-                         capture_output=True, text=True, timeout=300)
-    got = re.search(r"^(\d+) passed", run.stdout, re.M)
+    # Run it twice at most. One CI run produced no count at all where every
+    # other run on the same commit produced 69, so the nested start is not
+    # perfectly reliable - most likely the suite's listener losing a port race
+    # against its own earlier run. A genuine mismatch fails both attempts, so
+    # the retry costs nothing but removes a flake from a check that is now
+    # deliberately loud.
+    for attempt in (1, 2):
+        run = subprocess.run([sys.executable, str(suite)], cwd=REPO,
+                             capture_output=True, text=True, timeout=300)
+        got = re.search(r"^(\d+) passed", run.stdout, re.M)
+        if got:
+            if attempt == 2:
+                print(f"  (note: {name} produced no count on the first attempt)")
+            break
     # Exactly one assertion whether or not the suite could be run. An earlier
     # version skipped silently when it could not, which made this file's own
     # assertion count vary by environment - CI's macOS run came out one short
