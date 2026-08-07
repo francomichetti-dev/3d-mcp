@@ -240,6 +240,86 @@ truthy("purge is guarded to $HOME",
        "not inside" in (bootstrap.run_uninstall.__doc__ or "")
        or "home" in bootstrap.run_uninstall.__code__.co_names)
 
+
+# ------------------------------------------------------ the only rm -rf ------
+# scripts/uninstall.sh --purge is the single destructive command in this repo.
+# It was covered only by the assertion above, which greps a DOCSTRING on a
+# different function in a different language — that would pass with the shell
+# guard deleted.
+#
+# The whole script cannot be run here: `pkill -f agent_service.py` is not
+# HOME-scoped and would kill a live chat service on the developer's machine.
+# So the real function text is lifted out of the file and driven directly. It
+# is their code, not a copy of it — editing the guard changes what runs here.
+print("The uninstaller's rm -rf")
+
+import re as _re          # noqa: E402
+import shutil as _shutil  # noqa: E402
+import subprocess as _sp  # noqa: E402
+import tempfile as _tf    # noqa: E402
+
+_uninstall = (REPO / "scripts" / "uninstall.sh").read_text(encoding="utf-8")
+_guard = _re.search(r"^purge_config_dir\(\) \{.*?^\}", _uninstall, _re.S | _re.M)
+truthy("the guard function is still where the test expects it", _guard)
+
+
+def purge(config_dir, home):
+    """Run the real guard with these values. Returns (exit_code, still_exists)."""
+    script = f"{_guard.group(0)}\nCONFIG_DIR={config_dir!r}\nHOME={home!r}\npurge_config_dir\n"
+    done = _sp.run(["bash", "-c", script], capture_output=True, text=True)
+    return done.returncode, os.path.isdir(config_dir)
+
+
+if _guard:
+    sandbox = _tf.mkdtemp(prefix="uninstall-guard-")
+    try:
+        # The ordinary case: a real config dir inside HOME goes.
+        target = os.path.join(sandbox, ".fusion-mcp")
+        os.makedirs(target)
+        open(os.path.join(target, "token"), "w").close()
+        check("a config dir inside HOME is deleted", purge(target, sandbox), (0, False))
+
+        # A nested path is still inside HOME and still fine.
+        nested = os.path.join(sandbox, "a", "b", "c")
+        os.makedirs(nested)
+        check("a nested path inside HOME is deleted", purge(nested, sandbox), (0, False))
+
+        # The ones that matter. Each of these would be a catastrophe.
+        keep = os.path.join(sandbox, "keep-me")
+        os.makedirs(keep, exist_ok=True)
+
+        # CONFIG_DIR == HOME itself: `rm -rf $HOME`. The pattern requires at
+        # least one character after the slash precisely to stop this.
+        code, survived = purge(sandbox, sandbox)
+        check("HOME itself is refused", (code, survived), (1, True))
+        truthy("and nothing under it was touched", os.path.isdir(keep))
+
+        # HOME with a trailing slash and nothing else.
+        code, survived = purge(sandbox + "/", sandbox)
+        check("HOME with a trailing slash is refused", code, 1)
+        truthy("still untouched", os.path.isdir(keep))
+
+        # A sibling directory whose name merely STARTS with HOME's — a plain
+        # prefix check rather than a path check would delete this.
+        sibling = sandbox + "-other"
+        os.makedirs(os.path.join(sibling, "data"), exist_ok=True)
+        code, survived = purge(os.path.join(sibling, "data"), sandbox)
+        check("a path merely prefixed by HOME is refused", (code, survived), (1, True))
+
+        # Outside HOME entirely.
+        outside = _tf.mkdtemp(prefix="not-home-")
+        code, survived = purge(outside, sandbox)
+        check("a path outside HOME is refused", (code, survived), (1, True))
+        _shutil.rmtree(outside, ignore_errors=True)
+
+        # The root, which is what an empty HOME would collapse everything to.
+        code, _ = purge("/", sandbox)
+        check("the filesystem root is refused", code, 1)
+        truthy("and the sandbox survived every refusal", os.path.isdir(keep))
+        _shutil.rmtree(sibling, ignore_errors=True)
+    finally:
+        _shutil.rmtree(sandbox, ignore_errors=True)
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
