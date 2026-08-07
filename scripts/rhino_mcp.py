@@ -223,9 +223,21 @@ def _ok(ident, result):
 
 
 def main():
-    # Binary-safe line IO. stdout carries the protocol, so nothing else may
-    # ever be printed there - a stray print corrupts the stream and the client
-    # drops the server with no useful message.
+    # stdout carries the protocol, so nothing else may ever be printed there -
+    # a stray print corrupts the stream and the client drops the server with no
+    # useful message.
+    #
+    # Force UTF-8 on both directions. A piped child on Windows gets the locale
+    # encoding, measured as cp1252 on the target machine, while MCP is UTF-8
+    # JSON throughout. Being a single-byte codec, cp1252 does not fail loudly:
+    # it silently turns an em-dash into three characters, so Spanish code
+    # comments and accented layer names come back as mojibake - and the bytes
+    # 0x81/0x8d/0x8f/0x90/0x9d are undefined in it and raise outright.
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass                                              # already UTF-8
     stdin = sys.stdin
     stdout = sys.stdout
 
@@ -243,8 +255,15 @@ def main():
             response = {"jsonrpc": "2.0", "id": message.get("id"),
                         "error": {"code": -32603, "message": str(exc)}}
         if response is not None:
-            stdout.write(json.dumps(response) + "\n")
-            stdout.flush()
+            try:
+                # ensure_ascii keeps every byte on the wire in the 7-bit range,
+                # so the transport cannot be broken by content even if some
+                # layer between here and the client is not UTF-8 clean.
+                stdout.write(json.dumps(response, ensure_ascii=True) + "\n")
+                stdout.flush()
+            except (BrokenPipeError, ValueError):
+                # The client went away mid-write. Nothing to report it to.
+                break
 
 
 if __name__ == "__main__":
