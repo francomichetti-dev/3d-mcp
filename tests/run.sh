@@ -49,13 +49,26 @@ printf '\n'
 # The README quotes this number, and a quoted number goes stale the moment a
 # test is added. Only this script ever knows the real total, so this is the one
 # place the claim can actually be checked rather than cross-referenced.
+#
+# The count is platform-dependent: the installer is macOS-only, so test_install
+# skips its install assertions elsewhere and a full run is smaller off macOS.
+# The documented number is therefore the macOS one, and only macOS can demand
+# equality. Everywhere else a run that EXCEEDS the claim is still stale, and
+# that is worth catching; one that falls short is just the expected skips.
 if [ "${status}" -eq 0 ]; then
     claimed="$(grep -oE '\*\*[0-9]+ assertions across' "${REPO_DIR}/README.md" \
                | grep -oE '[0-9]+' || true)"
-    if [ -n "${claimed}" ] && [ "${claimed}" != "${total}" ]; then
-        printf 'README says %s assertions; %s actually ran. Update it.\n' \
-            "${claimed}" "${total}" >&2
-        status=1
+    if [ -n "${claimed}" ]; then
+        if [ "$(uname -s)" = "Darwin" ] && [ "${claimed}" != "${total}" ]; then
+            printf 'README says %s assertions; %s actually ran. Update it.\n' \
+                "${claimed}" "${total}" >&2
+            status=1
+        elif [ "${total}" -gt "${claimed}" ]; then
+            printf 'README says %s assertions; %s ran even with the macOS-only\n' \
+                "${claimed}" "${total}" >&2
+            printf 'ones skipped, so the README is out of date.\n' >&2
+            status=1
+        fi
     fi
 fi
 
