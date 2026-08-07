@@ -241,7 +241,10 @@ print("Claims match the code")
 
 # The assertion count is quoted in the README. It goes stale the moment a test
 # is added, and a wrong number undermines every other number on the page.
-suites = sorted(REPO.glob("tests/test_*.py"))
+# The panel suite is JavaScript — it drives the panel's own script — so
+# the count covers both languages rather than only the Python ones.
+suites = sorted(list(REPO.glob("tests/test_*.py"))
+                + list(REPO.glob("tests/test_*.js")))
 quoted = re.search(r"\*\*(\d+) assertions across (\w+) suites\*\*", readme)
 truthy("the README quotes an assertion count", quoted)
 if quoted:
@@ -255,7 +258,7 @@ if quoted:
     check("the suite count matches the files on disk", said, len(suites))
 
 # Every suite the README lists in its table must exist, and vice versa.
-listed = set(re.findall(r"\| `(test_\w+\.py)` \|", readme))
+listed = set(re.findall(r"\| `(test_\w+\.(?:py|js))` \|", readme))
 actual = {p.name for p in suites}
 check("the README lists every suite", listed, actual)
 

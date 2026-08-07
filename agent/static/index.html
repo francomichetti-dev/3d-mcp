@@ -87,6 +87,8 @@
   }
   #banner.done { color: var(--ok); }
   #banner.done .spin { display: none; }
+  #banner.lost { color: var(--warn); }
+  #banner.lost .spin { display: none; }
   .spin {
     width: 11px; height: 11px; flex: 0 0 auto; border-radius: 50%;
     border: 2px solid var(--line); border-top-color: var(--accent);
@@ -264,11 +266,13 @@ function renderPlan(steps) {
 // The banner answers "is it still going, and on what?" without reading the log.
 function working(label) {
   banner.classList.remove('done');
+  banner.classList.remove('lost');
   bannerText.textContent = label || 'Working';
   banner.hidden = false;
 }
 
 function finished() {
+  banner.classList.remove('lost');
   banner.classList.add('done');
   bannerText.textContent = 'Done';
   banner.hidden = false;
@@ -277,6 +281,16 @@ function finished() {
 function clearBanner() {
   banner.hidden = true;
   banner.classList.remove('done');
+  banner.classList.remove('lost');
+}
+
+// Connection gone. Not "done" — the build may well still be running in Fusion;
+// what stopped is the panel's ability to hear about it.
+function lost() {
+  banner.classList.remove('done');
+  banner.classList.add('lost');
+  bannerText.textContent = 'Connection lost — reconnecting…';
+  banner.hidden = false;
 }
 
 function status(text, cls) {
@@ -412,8 +426,22 @@ function applyDocument(d) {
 }
 
 const es = new EventSource('/events');
-es.onopen = () => { dot.classList.add('live'); };
-es.onerror = () => { dot.classList.remove('live'); };
+es.onopen = () => {
+  dot.classList.add('live');
+  // The service sends the current design and its state as the first message on
+  // every connection, so a reconnect re-syncs on its own from here.
+};
+es.onerror = () => {
+  dot.classList.remove('live');
+  // A dropped stream is the one case where the panel cannot know when the turn
+  // ends, because turn_end arrives on the stream that just died. Leaving the
+  // spinner running there is what makes a finished build look like it is still
+  // going — say what actually happened instead.
+  // Keyed off what the banner is actually showing, not a separate `busy` flag.
+  // The bug this fixes was a displayed state outliving the thing that set it,
+  // so the condition asks the display, which cannot drift from itself.
+  if (!banner.hidden && !banner.classList.contains('done')) lost();
+};
 es.onmessage = (e) => {
   const ev = JSON.parse(e.data);
   const stick = atBottom();

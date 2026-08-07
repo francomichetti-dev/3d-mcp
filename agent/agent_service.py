@@ -1099,15 +1099,27 @@ class Registry:
             })
             self.publish({"type": "turn_end", "doc": previous_key})
 
+        self.publish(self.document_event())
+
+    def document_event(self) -> dict[str, Any]:
+        """The panel's whole world in one message: which design, and its state.
+
+        Shared with a newly-connected viewer, which is the point. A panel that
+        reconnects mid-turn — the service restarted, the palette reloaded —
+        used to receive nothing until the next thing happened, so it sat
+        showing whatever it had when the stream died, including a spinner for a
+        build that had already finished.
+        """
+        active = self.current
         key = (active or {}).get("key")
-        self.publish({
+        return {
             "type": "document",
             "key": key,
             "name": (active or {}).get("name"),
             "saved": bool((active or {}).get("saved")),
             "design": bool((active or {}).get("design")),
             **self.snapshot(key),
-        })
+        }
 
     # -- compression on close ---------------------------------------------- #
 
@@ -1346,6 +1358,11 @@ async def handle_events(request: web.Request) -> web.StreamResponse:
     registry: Registry = request.app["registry"]
     queue = registry.subscribe()
     try:
+        # Before anything else: a panel that has just connected knows nothing,
+        # and a panel that has just RE-connected knows something stale. Either
+        # way the current state is what it needs, not the next event.
+        first = json.dumps(registry.document_event()).encode("utf-8")
+        await response.write(b"data: " + first + b"\n\n")
         while True:
             try:
                 event = await asyncio.wait_for(queue.get(), timeout=20)

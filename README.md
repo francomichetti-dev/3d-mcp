@@ -576,7 +576,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**676 assertions across eleven suites**, none of which need Fusion, Rhino, or an internet connection.
+**708 assertions across twelve suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -593,6 +593,7 @@ That is a macOS run; on Linux the count is lower because the installer is macOS-
 | `test_consistency.py` | constants duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
+| `test_panel.js` | the chat panel's own JavaScript, run against a stub DOM: the plan, the working banner, a dropped stream |
 
 `tests/e2e/` additionally stands in for Rhino, so the full `claude → MCP → broker → CAD` chain can
 be exercised on a machine with no CAD installed at all.

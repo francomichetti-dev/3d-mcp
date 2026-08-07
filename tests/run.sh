@@ -44,6 +44,20 @@ for test_file in "${SCRIPT_DIR}"/test_*.py; do
     total=$(( total + ${passed:-0} ))
 done
 
+# The chat panel is JavaScript, so it runs under node rather than a venv. It is
+# the product's face and had no coverage at all until a spinner that would not
+# stop had to be diagnosed by reading the source.
+if command -v node >/dev/null 2>&1; then
+    printf '\n=== %s  [node] ===\n' "test_panel.js"
+    node "${SCRIPT_DIR}/test_panel.js" 2>&1 | tee "${captured}" || status=1
+    passed="$(grep -oE '^[0-9]+ passed' "${captured}" | grep -oE '^[0-9]+' || true)"
+    total=$(( total + ${passed:-0} ))
+else
+    printf '\nERROR: node is required for the panel tests — install it or the\n' >&2
+    printf 'panel ships unverified.\n' >&2
+    status=1
+fi
+
 printf '\n'
 
 # The README quotes this number, and a quoted number goes stale the moment a
