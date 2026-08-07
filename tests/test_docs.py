@@ -13,6 +13,7 @@ test instead.
     python3 tests/test_docs.py
 """
 
+import hashlib
 import re
 import subprocess
 import sys
@@ -74,9 +75,55 @@ truthy("there are links to check at all", len(MARKDOWN) >= 5)
 # A collaborator's name and their project filename were committed once. The
 # cost was a history rewrite; the cost of catching it here is nothing.
 print("No personal data")
+
+# The names themselves are stored as digests, not as strings.
+#
+# The first version of this check spelled them out, which put a collaborator's
+# name and the filename of their CAD project back into the repository - inside
+# the very test written to keep them out, and after a history rewrite had been
+# run to remove them. A guard that has to contain what it forbids is the wrong
+# shape. Hashing costs nothing here because these are exact terms, not classes
+# of string; the structural patterns below stay as regexes because a Tailscale
+# address or an API key has no fixed value to hash.
+FORBIDDEN_DIGESTS = {
+    "e2f88324a7596528d94d3ab28eb3aaa8",
+    "501b8c3f7cc1c285b8f9bb688d65c0f8",
+    "e3a041c293621f940a636fbb2be503ee",
+    "82838435bd539778a3e16d3224e89bbc",
+}
+
+
+def digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+# Every tracked file, not only the docs. The leak that actually happened was in
+# commit messages and markdown, so this check was written for markdown - but
+# nothing stops the next one landing in a test fixture or a comment, and the
+# scan costs milliseconds either way.
+TRACKED = []
+for name in subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True,
+                           text=True).stdout.split():
+    path = REPO / name
+    try:
+        TRACKED.append((name, path.read_text(encoding="utf-8")))
+    except (OSError, UnicodeDecodeError):
+        continue          # images and anything else not text
+truthy("there are tracked files to scan", len(TRACKED) >= 20)
+
+named = []
+for name, text in TRACKED:
+    for num, line in enumerate(text.splitlines(), 1):
+        # Split on anything that is not a letter or digit. An earlier version
+        # kept apostrophes, so a possessive ("<name>'s machine") hashed to a
+        # different token and slipped straight through - found by planting it.
+        words = re.findall(r"[a-z0-9]+", line.lower())
+        shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
+        if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
+            named.append(f"{name}:{num}")
+check("no collaborator name or private filename anywhere in the repo", named, [])
+
 PRIVATE = [
-    (r"\bocta[vw]io\b", "a collaborator's name"),
-    (r"<a project file>", "a collaborator's project file"),
     # Any *.ts.net host is a Tailscale machine. An earlier version of this
     # pattern required six hex characters and missed the real hostname, which
     # has five - found by planting the leak rather than by reading it.
@@ -88,11 +135,11 @@ PRIVATE = [
 ]
 for pattern, what in PRIVATE:
     hits = []
-    for path in MARKDOWN:
-        for num, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+    for name, text in TRACKED:
+        for num, line in enumerate(text.splitlines(), 1):
             if re.search(pattern, line, re.I):
-                hits.append(f"{path.relative_to(REPO)}:{num}")
-    check(f"no {what} in the docs", hits, [])
+                hits.append(f"{name}:{num}")
+    check(f"no {what} anywhere in the repo", hits, [])
 
 # The repo owner's own username is fine - it is the URL everyone clones from.
 readme = (REPO / "README.md").read_text(encoding="utf-8")
