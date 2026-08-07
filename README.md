@@ -468,7 +468,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**345 assertions across six suites**, none of which need Fusion, Rhino, or an internet connection:
+**375 assertions across seven suites**, none of which need Fusion, Rhino, or an internet connection:
 
 | Suite | Covers |
 | --- | --- |
@@ -478,6 +478,7 @@ tests/run.sh     # offline: no CAD, no network, no API key
 | `test_install.py` | the installer: idempotency, token permissions, uninstall |
 | `test_mcp_server.py` | the Fusion MCP tools |
 | `test_rhino_mcp.py` | the Rhino MCP server: protocol conformance, every failure path, stream hygiene |
+| `test_consistency.py` | constants duplicated across the two halves, where a mismatch would fail silently |
 
 `tests/e2e/` additionally stands in for Rhino, so the full `claude → MCP → broker → CAD` chain can
 be exercised on a machine with no CAD installed at all.
