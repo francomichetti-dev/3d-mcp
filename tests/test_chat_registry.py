@@ -12,7 +12,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "agent"))
+REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT / "agent"))
 
 import agent_service as svc  # noqa: E402
 
@@ -323,6 +324,128 @@ asyncio.run(rebinding_checks())
 # handler is one new route away from being incomplete.
 check("the guard is middleware, so it covers every route",
       svc.pin_host in svc.build_app(7655).middlewares, True)
+
+# ------------------------------------------------ transport recovery --------
+# A screenshot-heavy turn produced an NDJSON line over the SDK's 1 MiB default
+# and the transport raised CLIJSONDecodeError mid-build. The turn was caught
+# and `busy` cleared, so the panel went on accepting messages — into a client
+# whose read stream had already ended. Every one of them vanished, which looked
+# exactly like the chat had died.
+#
+# Two behaviours matter and they differ: a TRANSPORT failure means this client
+# is finished and must be replaced; an ordinary turn failure does not, and
+# reconnecting there would throw away a working conversation for nothing.
+print("A dead transport is replaced, an ordinary failure is not")
+
+
+class _DeadClient:
+    """A client whose response stream fails the way a real one does."""
+
+    def __init__(self, error):
+        self.error = error
+        self.disconnected = False
+
+    async def receive_response(self):
+        raise self.error
+        yield  # pragma: no cover - makes this an async generator
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+async def recovery_checks():
+    from claude_agent_sdk import CLIJSONDecodeError
+
+    def build(error):
+        registry = svc.Registry.__new__(svc.Registry)
+        registry.subscribers = set()
+        registry.store = svc.Store(Path(tempfile.mkdtemp()) / "chats.json")
+        registry._dirty = False
+
+        async def pin(_key):
+            return None
+
+        registry.pin = pin
+        registry.publish = lambda event: None
+        registry.append_transcript = lambda *a, **k: None
+
+        session = svc.Session.__new__(svc.Session)
+        session.key = "k"
+        session.name = "design"
+        session.registry = registry
+        session.client = _DeadClient(error)
+        session.pending = {}
+        session.lock = asyncio.Lock()
+        session.ready = asyncio.Event()
+        session.ready.set()
+        session.start_error = None
+        session.busy = False
+        session.sdk_session_id = None
+
+        session.events = []
+
+        async def emit(event):
+            session.events.append(event)
+
+        session.emit = emit
+
+        async def send(_prompt, _images):
+            return None
+
+        session._send = send
+
+        session.restarts = 0
+
+        async def start():
+            session.restarts += 1
+            session.client = _DeadClient(error)   # a fresh one
+            session.ready.set()
+
+        session.start = start
+        return session
+
+    # The real thing: the exact error the SDK raises past its buffer limit.
+    boom = CLIJSONDecodeError("JSON message exceeded maximum buffer size of 1048576 bytes",
+                              ValueError("Buffer size 1200000 exceeds limit 1048576"))
+    session = build(boom)
+    old_client = session.client
+    await session.run_turn("build a tower")
+
+    check("a transport failure rebuilds the client", session.restarts, 1)
+    truthy("and the dead one is disconnected", old_client.disconnected)
+    truthy("the new client is a different object", session.client is not old_client)
+    check("and the turn is not left marked busy", session.busy, False)
+    kinds = [e.get("type") for e in session.events]
+    truthy("the failure is reported", "error" in kinds)
+    truthy("and so is the recovery", "notice" in kinds)
+    recovery = [e for e in session.events if e.get("type") == "notice"]
+    truthy("the notice says the conversation survived",
+           recovery and "intact" in recovery[0]["message"])
+
+    # An ordinary failure must NOT throw the conversation away.
+    session = build(RuntimeError("a tool blew up"))
+    old_client = session.client
+    await session.run_turn("build a tower")
+
+    check("an ordinary turn failure does not reconnect", session.restarts, 0)
+    check("and keeps the same client", session.client is old_client, True)
+    check("still not busy", session.busy, False)
+    truthy("and still reports the error",
+           any(e.get("type") == "error" for e in session.events))
+
+
+asyncio.run(recovery_checks())
+
+# The SDK's 1 MiB default is what broke; the service must raise it. A 1920x1440
+# viewport measured 631 KB of base64 on its own, so a turn that looks at the
+# model from several angles crosses the default without doing anything odd.
+truthy("the service raises the SDK's message-size ceiling",
+       svc.MAX_SDK_MESSAGE_BYTES > 1024 * 1024)
+truthy("with real headroom over a handful of screenshots",
+       svc.MAX_SDK_MESSAGE_BYTES >= 8 * 1024 * 1024)
+truthy("and passes it to the SDK rather than just defining it",
+       "max_buffer_size=MAX_SDK_MESSAGE_BYTES" in
+       (REPO_ROOT / "agent" / "agent_service.py").read_text(encoding="utf-8"))
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

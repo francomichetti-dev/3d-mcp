@@ -46,6 +46,7 @@ from claude_agent_sdk import (
     AssistantMessage,
     ClaudeAgentOptions,
     ClaudeSDKClient,
+    ClaudeSDKError,
     HookMatcher,
     ResultMessage,
     TextBlock,
@@ -82,6 +83,11 @@ ALLOWED_IMAGE_TYPES = {
 # Anthropic rejects images over 5 MB. The panel downscales before uploading, so
 # reaching this means something genuinely oversized arrived.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+
+# Ceiling on one NDJSON line from the CLI. The SDK's own default is 1 MiB
+# and a screenshot-heavy turn goes past it; the add-in already refuses a
+# body over 5 MB, so nothing legitimate approaches this.
+MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
 MAX_IMAGES_PER_MESSAGE = 8
 # id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
 # serving, so a crafted id cannot walk out of the attachments directory.
@@ -408,6 +414,15 @@ class Session:
             append = append + CORE_CONTEXT_PREAMBLE % core
         return ClaudeAgentOptions(
             model="claude-opus-5",
+            # The SDK reads the CLI's output as NDJSON and refuses any single
+            # line longer than this, raising CLIJSONDecodeError. Its default is
+            # 1 MiB, which is too small for a CAD session: a screenshot comes
+            # back as base64 inside one message, and a 1920x1440 viewport
+            # measured at 631 KB on its own. A turn that captures the model from
+            # a few angles crosses 1 MiB and dies mid-build, which is exactly
+            # what happened — "JSON message exceeded maximum buffer size of
+            # 1048576 bytes" with the tower half-finished.
+            max_buffer_size=MAX_SDK_MESSAGE_BYTES,
             # Pinned rather than inherited: the SDK keys its session store by
             # working directory, so a resume only finds the conversation again
             # if this is the same every time the service starts.
@@ -563,13 +578,44 @@ class Session:
                     self._capture_session_id(message)
                     for event in _render(message):
                         await self.emit(event)
+            except ClaudeSDKError as exc:
+                # The transport itself failed, not the model. Whatever the
+                # cause — an oversized NDJSON line, the CLI dying, a broken
+                # pipe — the read stream is finished and this client will never
+                # answer again. Clearing `busy` alone left the panel accepting
+                # messages that vanished into a dead subprocess, which is what
+                # made a single oversized screenshot look like the chat had
+                # stopped working entirely.
+                log.exception("transport failed for %s", self.key)
+                await self.emit({"type": "error", "message": str(exc)})
+                await self._reconnect()
             except Exception as exc:                      # noqa: BLE001
+                # An ordinary turn failure. The client is still good, so the
+                # next message goes to the same conversation.
                 log.exception("turn failed for %s", self.key)
                 await self.emit({"type": "error", "message": str(exc)})
             finally:
                 self.busy = False
                 await self.registry.pin(None)
                 self.registry.publish({"type": "turn_end", "doc": self.key})
+
+    async def _reconnect(self) -> None:
+        """Rebuild a client whose transport has died, keeping the conversation.
+
+        start() resumes from the stored session id, so what the model knows
+        survives; only the subprocess is replaced. If even that fails, start()
+        has already reported why and left start_error set.
+        """
+        self.ready.clear()
+        old, self.client = self.client, None
+        if old is not None:
+            with contextlib.suppress(Exception):
+                await old.disconnect()
+        await self.start()
+        if self.client is not None:
+            await self.emit({"type": "notice",
+                             "message": "Reconnected — the conversation is intact. "
+                                        "Say 'continue' to pick up where it stopped."})
 
     def _capture_session_id(self, message: Any) -> None:
         session_id = getattr(message, "session_id", None)
