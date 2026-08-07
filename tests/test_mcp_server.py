@@ -147,6 +147,68 @@ truthy("no message could contain a token value",
            "rejected" in m.lower() or "re-run" in m.lower()
            for m in [srv.MSG_NO_TOKEN, srv.MSG_BAD_TOKEN]))
 
+# ------------------------------------------------- screenshot budget --------
+# An image reaches the model as base64 inside one protocol message, and every
+# transport in between bounds how long a single message may be. A dense
+# viewport is what pushes it: measured live, 1200x800 is around 310 KB of
+# base64 and 1920x1440 reaches 631 KB, and several captures in one turn is
+# ordinary because the whole method is look-then-correct. Going over used to
+# kill the turn with the geometry half-built.
+print("Screenshot size is bounded")
+
+captures = []
+
+
+def fake_capture(size_for):
+    """Stand in for the bridge, returning whatever size the test dictates."""
+    def capture(view, width, height):
+        captures.append((view, width, height))
+        return b"\x89PNG" + b"x" * (size_for(width, height) - 4)
+    return capture
+
+
+real_capture = srv._capture
+try:
+    # In budget: returned as-is, and captured exactly once. A resize that fires
+    # when it is not needed costs a second per screenshot for nothing.
+    captures.clear()
+    srv._capture = fake_capture(lambda w, h: 100 * 1024)
+    image = srv.fusion_screenshot(view="iso", width=1200, height=800)
+    check("an image inside the budget is captured once", len(captures), 1)
+    check("at the size asked for", captures[0], ("iso", 1200, 800))
+    check("and comes back whole", len(image.data), 100 * 1024)
+
+    # Over budget: recaptured smaller rather than sent.
+    captures.clear()
+    sizes = iter([2 * 1024 * 1024, 200 * 1024])
+    srv._capture = fake_capture(lambda w, h: next(sizes))
+    image = srv.fusion_screenshot(view="iso", width=1920, height=1440)
+    check("an oversized image is recaptured", len(captures), 2)
+    truthy("at a smaller size", captures[1][1] < captures[0][1]
+           and captures[1][2] < captures[0][2])
+    truthy("and what is returned is within budget",
+           len(image.data) <= srv.MAX_SCREENSHOT_BYTES)
+
+    # Bytes scale with area, so one square-root step should land near the
+    # budget rather than creeping toward it over many captures.
+    captures.clear()
+    srv._capture = fake_capture(lambda w, h: max(1024, (w * h) // 2))
+    srv.fusion_screenshot(view="iso", width=1920, height=1440)
+    truthy("shrinking converges in one step, not several", len(captures) <= 2)
+
+    # A viewport that stays oversized however small it gets must not loop.
+    captures.clear()
+    srv._capture = fake_capture(lambda w, h: 5 * 1024 * 1024)
+    image = srv.fusion_screenshot(view="iso", width=1920, height=1440)
+    check("retries are bounded", len(captures), srv.SCREENSHOT_SHRINK_ATTEMPTS + 1)
+    truthy("and it still returns a picture rather than failing", image.data)
+    truthy("never shrinking below the documented minimum",
+           all(w >= srv.SCREENSHOT_MIN_SIDE and h >= srv.SCREENSHOT_MIN_SIDE
+               for _, w, h in captures))
+finally:
+    srv._capture = real_capture
+
+
 import shutil  # noqa: E402
 shutil.rmtree(SANDBOX, ignore_errors=True)
 shutil.rmtree(escape_target, ignore_errors=True)

@@ -57,6 +57,11 @@ EXPORT_DIR = Path("~/Documents/fusion-mcp-exports").expanduser()
 
 SCREENSHOT_MAX_WIDTH = 1920
 SCREENSHOT_MAX_HEIGHT = 1440
+# Ceiling on one capture's PNG bytes. Base64 inflates this by 4/3, so 512 KB
+# here is about 683 KB on the wire — dozens of captures fit in one message
+# with room to spare. Anything larger is recaptured smaller rather than sent.
+MAX_SCREENSHOT_BYTES = 512 * 1024
+SCREENSHOT_SHRINK_ATTEMPTS = 2
 SCREENSHOT_MIN_SIDE = 64
 STATE_ENTRY_CAP = 50
 LOG_MAX_BYTES = 5 * 1024 * 1024
@@ -649,6 +654,39 @@ def fusion_screenshot(
             f"height must be between {SCREENSHOT_MIN_SIDE} and {SCREENSHOT_MAX_HEIGHT}."
         )
 
+    data = _capture(view, width, height)
+
+    # An image travels to the model as base64 inside a single protocol message,
+    # and every transport between here and there bounds how long one message
+    # may be. A dense viewport is what pushes it: measured against a live
+    # Fusion, an empty scene is around 200 KB at 1200x800 while a detailed
+    # model at 1920x1440 reaches 631 KB of base64 — and several captures in one
+    # turn is ordinary, since the whole method is look-then-correct.
+    #
+    # So the size is bounded here rather than hoped about. Shrinking and
+    # recapturing costs a second and keeps the picture; the alternative is a
+    # turn that dies with the geometry half-built, which is what used to happen.
+    for _ in range(SCREENSHOT_SHRINK_ATTEMPTS):
+        if len(data) <= MAX_SCREENSHOT_BYTES:
+            break
+        # Bytes scale roughly with area, so take the square root to land near
+        # the budget in one step instead of creeping toward it.
+        scale = (MAX_SCREENSHOT_BYTES / len(data)) ** 0.5
+        smaller_w = max(SCREENSHOT_MIN_SIDE, int(width * scale))
+        smaller_h = max(SCREENSHOT_MIN_SIDE, int(height * scale))
+        if (smaller_w, smaller_h) == (width, height):
+            break                      # already as small as it is allowed to go
+        log.info("fusion_screenshot: %d bytes over budget, retrying at %dx%d",
+                 len(data), smaller_w, smaller_h)
+        width, height = smaller_w, smaller_h
+        data = _capture(view, width, height)
+
+    log.info("fusion_screenshot: view=%s %dx%d -> %d bytes", view, width, height, len(data))
+    return Image(data=data, format="png")
+
+
+def _capture(view: str, width: int, height: int) -> bytes:
+    """One capture through the bridge, returned as raw PNG bytes."""
     payload = _bridge_request(
         "POST", "/screenshot", {"view": view, "width": width, "height": height}
     )
@@ -662,12 +700,9 @@ def fusion_screenshot(
     if not isinstance(encoded, str) or not encoded:
         raise ToolError("Bridge returned no image data for the screenshot.")
     try:
-        data = base64.b64decode(encoded, validate=True)
+        return base64.b64decode(encoded, validate=True)
     except (ValueError, TypeError) as exc:
         raise ToolError(f"Bridge returned undecodable image data: {exc}") from None
-
-    log.info("fusion_screenshot: view=%s %dx%d -> %d bytes", view, width, height, len(data))
-    return Image(data=data, format="png")
 
 
 @mcp.tool

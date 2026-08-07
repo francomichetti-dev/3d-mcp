@@ -338,6 +338,16 @@ check("the guard is middleware, so it covers every route",
 print("A dead transport is replaced, an ordinary failure is not")
 
 
+class _WorkingClient:
+    """A replacement client that answers normally."""
+
+    async def receive_response(self):
+        yield {"ok": True}
+
+    async def disconnect(self):
+        pass
+
+
 class _DeadClient:
     """A client whose response stream fails the way a real one does."""
 
@@ -399,7 +409,10 @@ async def recovery_checks():
 
         async def start():
             session.restarts += 1
-            session.client = _DeadClient(error)   # a fresh one
+            # A working replacement: this block is about the rebuild itself,
+            # not about what happens when the replacement is broken too (the
+            # retry bound below covers that).
+            session.client = _WorkingClient()
             session.ready.set()
 
         session.start = start
@@ -419,9 +432,12 @@ async def recovery_checks():
     kinds = [e.get("type") for e in session.events]
     truthy("the failure is reported", "error" in kinds)
     truthy("and so is the recovery", "notice" in kinds)
+    # This client fails before yielding anything, so nothing ever reached the
+    # model and the correct recovery is to resend rather than to resume. The
+    # resume path is covered separately below.
     recovery = [e for e in session.events if e.get("type") == "notice"]
-    truthy("the notice says the conversation survived",
-           recovery and "intact" in recovery[0]["message"])
+    truthy("the notice says what it is doing about it",
+           recovery and "resending" in recovery[0]["message"])
 
     # An ordinary failure must NOT throw the conversation away.
     session = build(RuntimeError("a tool blew up"))
@@ -552,6 +568,118 @@ async def hardening_checks():
 
 
 asyncio.run(hardening_checks())
+
+
+# After a drop the service resumes the work itself rather than waiting to be
+# told. Typing "continue" by hand was the workaround, not the design.
+print("A dropped turn is resumed automatically")
+
+
+class _FlakyClient:
+    """Fails once part-way through, then behaves."""
+
+    def __init__(self, error, fail_after: int):
+        self.error = error
+        self.fail_after = fail_after
+        self.disconnected = False
+
+    async def receive_response(self):
+        for i in range(self.fail_after):
+            yield {"n": i}
+        raise self.error
+
+    async def disconnect(self):
+        self.disconnected = True
+
+
+class _GoodClient:
+    async def receive_response(self):
+        yield {"n": "done"}
+
+    async def disconnect(self):
+        pass
+
+
+async def auto_resume_checks():
+    from claude_agent_sdk import CLIJSONDecodeError
+
+    def session_with(first_client):
+        registry = svc.Registry.__new__(svc.Registry)
+        registry.subscribers = set()
+        registry.store = svc.Store(Path(tempfile.mkdtemp()) / "chats.json")
+        registry._dirty = False
+
+        async def pin(_key):
+            return None
+
+        registry.pin = pin
+        registry.publish = lambda event: None
+        registry.append_transcript = lambda *a, **k: None
+
+        s = svc.Session.__new__(svc.Session)
+        s.key, s.name, s.registry = "k", "d", registry
+        s.client = first_client
+        s.pending, s.lock = {}, asyncio.Lock()
+        s.ready = asyncio.Event(); s.ready.set()
+        s.start_error, s.busy = None, False
+        s.transport_failures = 0
+        s.sdk_session_id = None
+        s.events, s.sent = [], []
+
+        async def emit(event):
+            s.events.append(event)
+
+        s.emit = emit
+
+        async def send(prompt, images):
+            s.sent.append((prompt, list(images)))
+
+        s._send = send
+
+        async def start():
+            s.client = _GoodClient()
+            s.ready.set()
+
+        s.start = start
+        return s
+
+    boom = CLIJSONDecodeError("oversized", ValueError("oversized"))
+
+    # The reported case: the model was mid-build when the transport died.
+    s = session_with(_FlakyClient(boom, fail_after=3))
+    await asyncio.wait_for(s.run_turn("build a lego tower"), timeout=5)
+
+    check("the turn is retried without being asked", len(s.sent), 2)
+    check("the first send is what was actually typed", s.sent[0][0], "build a lego tower")
+    check("and the second resumes rather than restarts", s.sent[1][0], svc.RESUME_PROMPT)
+    truthy("the resume tells it to re-read the design first",
+           "current state" in svc.RESUME_PROMPT)
+    truthy("and not to build anything twice",
+           "not start over" in svc.RESUME_PROMPT and "repeat" in svc.RESUME_PROMPT)
+    truthy("the person is told it carried on",
+           any("carrying on" in (e.get("message") or "") for e in s.events))
+    check("and the turn ends clean", s.busy, False)
+
+    # The other half: the transport died before the model saw anything. There
+    # is nothing to resume, so resuming would silently drop what was asked for.
+    s = session_with(_FlakyClient(boom, fail_after=0))
+    await asyncio.wait_for(s.run_turn("build a lego tower",
+                                      [{"name": "ref.png", "media_type": "image/png",
+                                        "b64": "AA=="}]), timeout=5)
+
+    check("the original message is sent again", len(s.sent), 2)
+    check("verbatim, not as a resume", s.sent[1][0], "build a lego tower")
+    check("with its attachments intact", len(s.sent[1][1]), 1)
+    truthy("and says it is resending",
+           any("resending" in (e.get("message") or "") for e in s.events))
+
+    # A turn that never fails must not be sent twice.
+    s = session_with(_GoodClient())
+    await asyncio.wait_for(s.run_turn("hello"), timeout=5)
+    check("an ordinary turn is sent exactly once", len(s.sent), 1)
+
+
+asyncio.run(auto_resume_checks())
 
 # The SDK's 1 MiB default is what broke; the service must raise it. A 1920x1440
 # viewport measured 631 KB of base64 on its own, so a turn that looks at the

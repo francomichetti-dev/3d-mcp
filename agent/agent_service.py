@@ -91,6 +91,16 @@ MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
 # Consecutive transport failures before the service stops rebuilding the
 # client and asks for a restart instead of retrying silently forever.
 MAX_TRANSPORT_RETRIES = 3
+# Sent by the service, not the person, after it rebuilds a dropped
+# connection mid-turn. It asks for the state to be re-read first because
+# the geometry is in whatever half-finished shape the interruption left
+# it, and the resumed conversation only knows what was intended.
+RESUME_PROMPT = (
+    "The connection dropped while you were working; it is back now. "
+    "Check the current state of the design first, then carry on from "
+    "exactly where you left off. Do not start over and do not repeat "
+    "anything that is already built."
+)
 MAX_IMAGES_PER_MESSAGE = 8
 # id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
 # serving, so a crafted id cannot walk out of the attachments directory.
@@ -603,38 +613,63 @@ class Session:
             # second; this refuses a tool call that is already in flight.
             await self.registry.pin(self.key)
             try:
-                await self._send(prompt, images or [])
-                async for message in self.client.receive_response():
-                    self._capture_session_id(message)
-                    for event in _render(message):
-                        await self.emit(event)
-            except ClaudeSDKError as exc:
-                # The transport itself failed, not the model. Whatever the
-                # cause — an oversized NDJSON line, the CLI dying, a broken
-                # pipe — the read stream is finished and this client will never
-                # answer again. Clearing `busy` alone left the panel accepting
-                # messages that vanished into a dead subprocess, which is what
-                # made a single oversized screenshot look like the chat had
-                # stopped working entirely.
-                log.exception("transport failed for %s", self.key)
-                await self.emit({"type": "error", "message": str(exc)})
-                await self._reconnect()
-            except Exception as exc:                      # noqa: BLE001
-                # An ordinary turn failure. The client is still good, so the
-                # next message goes to the same conversation.
-                log.exception("turn failed for %s", self.key)
-                await self.emit({"type": "error", "message": str(exc)})
-                # A turn that got as far as a normal failure proves the
-                # transport is alive, so earlier trouble is not a streak.
-                self.transport_failures = 0
-            else:
-                self.transport_failures = 0
+                send_prompt, send_images = prompt, images or []
+                while True:
+                    heard_from_model = False
+                    try:
+                        await self._send(send_prompt, send_images)
+                        async for message in self.client.receive_response():
+                            heard_from_model = True
+                            self._capture_session_id(message)
+                            for event in _render(message):
+                                await self.emit(event)
+                    except ClaudeSDKError as exc:
+                        # The transport itself failed, not the model. Whatever
+                        # the cause — an oversized NDJSON line, the CLI dying, a
+                        # broken pipe — the read stream is finished and this
+                        # client will never answer again.
+                        log.exception("transport failed for %s", self.key)
+                        await self.emit({"type": "error", "message": str(exc)})
+                        if not await self._reconnect():
+                            break
+                        if heard_from_model:
+                            # The model was already working, so the prompt is in
+                            # the resumed conversation. Asking it to start again
+                            # would build the same geometry twice; asking it to
+                            # carry on is what a person would type here anyway.
+                            send_prompt, send_images = RESUME_PROMPT, []
+                            await self.emit({
+                                "type": "notice",
+                                "message": "Reconnected — carrying on from where it stopped.",
+                            })
+                        else:
+                            # Nothing ever reached the model, so there is
+                            # nothing to resume. Re-send what was actually
+                            # asked for, attachments included, or the request
+                            # is silently dropped.
+                            await self.emit({
+                                "type": "notice",
+                                "message": "Reconnected — resending that message.",
+                            })
+                        continue
+                    except Exception as exc:              # noqa: BLE001
+                        # An ordinary turn failure. The client is still good, so
+                        # the next message goes to the same conversation.
+                        log.exception("turn failed for %s", self.key)
+                        await self.emit({"type": "error", "message": str(exc)})
+                        # Reaching a normal failure proves the transport is
+                        # alive, so earlier trouble is not a streak.
+                        self.transport_failures = 0
+                        break
+                    else:
+                        self.transport_failures = 0
+                        break
             finally:
                 self.busy = False
                 await self.registry.pin(None)
                 self.registry.publish({"type": "turn_end", "doc": self.key})
 
-    async def _reconnect(self) -> None:
+    async def _reconnect(self) -> bool:
         """Rebuild a client whose transport has died, keeping the conversation.
 
         start() resumes from the stored session id, so what the model knows
@@ -661,7 +696,7 @@ class Session:
             log.error("giving up reconnecting %s after %d failures",
                       self.key, self.transport_failures)
             await self.emit({"type": "error", "message": self.start_error})
-            return
+            return False
 
         self.ready.clear()
         old, self.client = self.client, None
@@ -669,10 +704,7 @@ class Session:
             with contextlib.suppress(Exception):
                 await old.disconnect()
         await self.start()
-        if self.client is not None:
-            await self.emit({"type": "notice",
-                             "message": "Reconnected — the conversation is intact. "
-                                        "Say 'continue' to pick up where it stopped."})
+        return self.client is not None
 
     def _capture_session_id(self, message: Any) -> None:
         session_id = getattr(message, "session_id", None)
