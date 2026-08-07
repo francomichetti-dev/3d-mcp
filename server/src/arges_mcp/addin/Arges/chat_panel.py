@@ -33,12 +33,12 @@ _service = None         # subprocess.Popen for the agent service, if we spawned 
 
 def _log(message, level="INFO"):
     try:
-        from . import fusion_bridge_impl          # noqa: F401  (never a package)
+        from . import arges_impl          # noqa: F401  (never a package)
     except Exception:
         pass
     try:
         import sys
-        impl = sys.modules.get("fusion_bridge_impl")
+        impl = sys.modules.get("arges_impl")
         if impl is not None:
             impl._log("panel: " + message, level)
     except Exception:

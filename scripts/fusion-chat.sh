@@ -114,7 +114,7 @@ esac
 
 if ! curl -fsS --max-time 3 -H "X-Fusion-Bridge-Token: $(cat "${TOKEN_FILE}")" "${BRIDGE}/health" >/dev/null 2>&1; then
     die "Fusion's bridge is not answering on ${BRIDGE}.
-  Open Fusion, then Utilities → Add-Ins → FusionBridge → Run.
+  Open Fusion, then Utilities → Add-Ins → Arges → Run.
   If it was already running, check ${HOME}/.fusion-mcp/addin.log."
 fi
 

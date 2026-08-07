@@ -27,7 +27,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     install = sub.add_parser(
         "install",
-        help="copy the FusionBridge add-in into Fusion and create the bridge token",
+        help="copy the Arges add-in into Fusion and create the bridge token",
     )
     install.add_argument(
         "--rotate-token", action="store_true",

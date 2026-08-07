@@ -1,4 +1,4 @@
-"""fusion-mcp — MCP server (stdio) bridging Claude Code to the FusionBridge add-in.
+"""fusion-mcp — MCP server (stdio) bridging Claude Code to the Arges add-in.
 
 Transport: MCP over stdio. Everything this process talks to is on loopback:
 POST/GET against http://127.0.0.1:7654 with a shared token, nothing else.
@@ -80,8 +80,8 @@ FORMATS = ("stl", "step", "3mf", "usd")
 # --------------------------------------------------------------------------
 
 MSG_BRIDGE_DOWN = (
-    "Fusion not running or FusionBridge add-in not enabled — check "
-    "Utilities → Add-Ins (select FusionBridge → Run). The bridge listens on "
+    "Fusion not running or Arges add-in not enabled — check "
+    "Utilities → Add-Ins (select Arges → Run). The bridge listens on "
     f"{BRIDGE_BASE_URL}."
 )
 MSG_TIMEOUT = (
@@ -91,7 +91,7 @@ MSG_TIMEOUT = (
 MSG_NO_TOKEN = (
     f"Bridge token not found or empty at {TOKEN_PATH} — run 'arges-mcp install' "
     "(or scripts/install.sh from a checkout) to create it, then restart the "
-    "FusionBridge add-in."
+    "Arges add-in."
 )
 MSG_BAD_TOKEN = (
     f"Bridge rejected the token (401). The add-in re-reads {TOKEN_PATH} on every "
@@ -105,7 +105,7 @@ MSG_TOO_LARGE = (
     "Split the work across several calls."
 )
 MSG_NOT_BRIDGE = (
-    f"Something is listening on {BRIDGE_BASE_URL} but it is not FusionBridge "
+    f"Something is listening on {BRIDGE_BASE_URL} but it is not Arges "
     f"(no {VERSION_HEADER} header) — another process is holding port "
     f"{BRIDGE_PORT}. Free the port and restart the add-in."
 )
@@ -189,7 +189,7 @@ def _check_version(response: httpx.Response) -> None:
         raise ToolError(MSG_NOT_BRIDGE)
     if seen != BRIDGE_PROTOCOL_VERSION:
         raise ToolError(
-            f"FusionBridge add-in is v{seen}, server expects "
+            f"Arges add-in is v{seen}, server expects "
             f"v{BRIDGE_PROTOCOL_VERSION} — restart the add-in "
             "(Utilities → Add-Ins → stop/run)."
         )
@@ -244,9 +244,9 @@ def _raise_for_status(response: httpx.Response, path: str) -> None:
         # as the fallback rather than sending the user to a dialog they may not
         # need.
         raise ToolError(
-            f"FusionBridge is stopping or reloading (503): {_detail(response)} "
+            f"Arges is stopping or reloading (503): {_detail(response)} "
             "Retry in a moment; if it persists, run the add-in from Utilities → "
-            "Add-Ins (select FusionBridge → Run)."
+            "Add-Ins (select Arges → Run)."
         )
     raise ToolError(f"Bridge returned HTTP {status}: {_detail(response)}")
 
@@ -762,7 +762,7 @@ def fusion_state() -> dict[str, Any]:
     seen = health.get("bridge_version")
     if seen != BRIDGE_PROTOCOL_VERSION:
         raise ToolError(
-            f"FusionBridge add-in reports bridge_version {seen!r}, server expects "
+            f"Arges add-in reports bridge_version {seen!r}, server expects "
             f"{BRIDGE_PROTOCOL_VERSION!r} — restart the add-in "
             "(Utilities → Add-Ins → stop/run)."
         )

@@ -1,6 +1,6 @@
-"""Offline exercise of the FusionBridge add-in — no Fusion, no network.
+"""Offline exercise of the Arges add-in — no Fusion, no network.
 
-Loads the REAL fusion_bridge_impl.py (not a copy) with a stub `adsk` on the
+Loads the REAL arges_impl.py (not a copy) with a stub `adsk` on the
 path, redirects its state directory into a temp dir and binds a free port, then
 drives the HTTP surface for real. This is the file that accepts arbitrary code
 into Fusion, so its auth, host pinning, size limits, single-flight guard and
@@ -23,8 +23,8 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-IMPL = REPO / "server/src/arges_mcp/addin/FusionBridge/fusion_bridge_impl.py"
-LOADER = REPO / "server/src/arges_mcp/addin/FusionBridge/FusionBridge.py"
+IMPL = REPO / "server/src/arges_mcp/addin/Arges/arges_impl.py"
+LOADER = REPO / "server/src/arges_mcp/addin/Arges/Arges.py"
 
 sys.path.insert(0, str(HERE / "stubs"))
 
@@ -60,9 +60,9 @@ STATE.mkdir(parents=True, exist_ok=True)
 (STATE / "token").write_text(TOKEN, encoding="utf-8")
 os.chmod(STATE / "token", 0o600)
 
-spec = importlib.util.spec_from_file_location("fusion_bridge_impl", IMPL)
+spec = importlib.util.spec_from_file_location("arges_impl", IMPL)
 impl = importlib.util.module_from_spec(spec)
-sys.modules["fusion_bridge_impl"] = impl
+sys.modules["arges_impl"] = impl
 spec.loader.exec_module(impl)
 
 print(f"loaded the real add-in from {IMPL.relative_to(REPO)}")

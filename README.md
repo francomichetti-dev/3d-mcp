@@ -60,14 +60,14 @@ Claude Code ──┐
 chat panel ───┘                       │
  (agent/)                             │  HTTP 127.0.0.1:7654 + token
                                       ▼
-                              FusionBridge   (Fusion add-in, Python)
+                              Arges   (Fusion add-in, Python)
                                       │
                                       │  CustomEvent marshal → main thread
                                       ▼
                                Fusion API (adsk.core / adsk.fusion)
 ```
 
-The add-in lives at `server/src/arges_mcp/addin/FusionBridge/` — inside the package rather than at
+The add-in lives at `server/src/arges_mcp/addin/Arges/` — inside the package rather than at
 the repo root, so a PyPI install ships it and `arges-mcp install` can put it where Fusion looks.
 A checkout symlinks it from there instead, so edits are live.
 
@@ -406,12 +406,12 @@ re-reads the token per request, so Fusion does not need restarting.
 
 Fusion cannot enable an add-in from outside, so once, in Fusion:
 
-> **Utilities → Add-Ins → select FusionBridge → Run**
+> **Utilities → Add-Ins → select Arges → Run**
 > (older builds put this under **Tools**; `Shift+S` works either way)
 
 It auto-starts on later launches — `runOnStartup` is set in the manifest.
 
-> **If FusionBridge isn't in the list, restart Fusion.** It scans its add-ins folder only at
+> **If Arges isn't in the list, restart Fusion.** It scans its add-ins folder only at
 > launch, so an add-in installed while Fusion was running will not appear until you relaunch.
 
 ### Verify
@@ -482,8 +482,8 @@ add-in exceptions silently.
 
 | Symptom | Likely cause |
 | --- | --- |
-| FusionBridge isn't in the Add-Ins list | Fusion scans that folder at launch only — **restart Fusion**. |
-| `Fusion not running or FusionBridge add-in not enabled` | Fusion closed, or the add-in was never run — see the manual step. |
+| Arges isn't in the Add-Ins list | Fusion scans that folder at launch only — **restart Fusion**. |
+| `Fusion not running or Arges add-in not enabled` | Fusion closed, or the add-in was never run — see the manual step. |
 | Health check returns 401 | Token mismatch. Re-run `scripts/install.sh` (preserves the token) or `--rotate-token`. |
 | Add-in never starts, `addin.log` says no token | `~/.fusion-mcp/token` missing or empty. The listener fails closed by design. |
 | Add-in loaded but port bind failed | Something else holds 127.0.0.1:7654 — the reason is in `addin.log`. |
@@ -499,7 +499,7 @@ add-in exceptions silently.
 | `agent.log` says `uv not found` | Fusion launched from Finder inherits a minimal `PATH`. The panel probes absolute locations; if `uv` is elsewhere, start the service from a terminal with `scripts/fusion-chat.sh`. |
 | `agent.log` shows `ModuleNotFoundError: No module named 'encodings'` | Fusion's `PYTHONHOME`/`PYTHONPATH` leaked into the child. The spawn strips every `PYTHON*` variable — if you see this, the add-in is running stale code, so Stop/Run it. |
 
-### Two FusionBridge entries in the add-in list
+### Two Arges entries in the add-in list
 
 If you install *and* also work on a checkout, Fusion can end up with the add-in
 registered twice — once at the checkout and once under `API/AddIns`. Both load,
@@ -515,7 +515,7 @@ To see which one is actually live:
 ```python
 # through fusion_execute
 import sys
-result = sys.modules["fusion_bridge_impl"].__file__
+result = sys.modules["arges_impl"].__file__
 ```
 
 Fusion's registry is `JSLoadedScriptsinfo`, under
@@ -532,8 +532,8 @@ curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" \
      http://127.0.0.1:7654/reload
 ```
 
-Reloads `fusion_bridge_impl.py` without restarting Fusion. A change to the manifest or to
-`FusionBridge.py` still needs **Stop/Run**. Refused with 409 while an execution is in flight, 503
+Reloads `arges_impl.py` without restarting Fusion. A change to the manifest or to
+`Arges.py` still needs **Stop/Run**. Refused with 409 while an execution is in flight, 503
 when the add-in is stopped, and 400 on a syntax error — with the running bridge left untouched.
 
 ## Uninstall
@@ -598,7 +598,7 @@ That is a macOS run; on Linux the count is lower because the installer is macOS-
 `tests/e2e/` additionally stands in for Rhino, so the full `claude → MCP → broker → CAD` chain can
 be exercised on a machine with no CAD installed at all.
 
-`fusion_bridge_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
+`arges_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to.
 
 [`docs/`](docs/README.md) has the background: the Rhino traps worth knowing before you touch that

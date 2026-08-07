@@ -448,7 +448,7 @@ es.onmessage = (e) => {
 
   if (ev.type === 'document') { applyDocument(ev); return; }
   if (ev.type === 'bridge') {
-    if (!ev.ok) status('Fusion is not reachable — is the FusionBridge add-in running?', 'err');
+    if (!ev.ok) status('Fusion is not reachable — is the Arges add-in running?', 'err');
     return;
   }
   // Every other event belongs to one design. Anything from a design that is

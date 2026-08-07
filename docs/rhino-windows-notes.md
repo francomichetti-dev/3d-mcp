@@ -171,7 +171,7 @@ line endings, since `cmd.exe` mis-parses LF-only batch files.
 
 ## How the architecture actually ported
 
-The expectation here was that most of `fusion_bridge_impl.py` would be reused
+The expectation here was that most of `arges_impl.py` would be reused
 with only the marshaling primitive and the namespace swapped. That was wrong in
 one important place — the row this table originally got backwards is marked:
 

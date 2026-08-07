@@ -18,9 +18,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/FusionBridge"
+ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/Arges"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
-ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
+ADDIN_LINK="${ADDINS_DIR}/Arges"
 
 SKILL_LINK="${HOME}/.claude/skills/fusion-360"
 
@@ -54,7 +54,7 @@ done
 
 # --- add-in link -------------------------------------------------------------
 
-step "Removing the FusionBridge add-in link"
+step "Removing the Arges add-in link"
 
 if [ -L "${ADDIN_LINK}" ]; then
     # The old layout: the whole folder was one symlink.
@@ -88,7 +88,7 @@ else
     info "nothing to remove (${ADDIN_LINK} does not exist)"
 fi
 
-info "stop the add-in inside Fusion too: Tools → Add-Ins → FusionBridge → Stop"
+info "stop the add-in inside Fusion too: Tools → Add-Ins → Arges → Stop"
 info "add-in source stays in the repo: ${ADDIN_SOURCE}"
 
 # --- knowledge skill ---------------------------------------------------------

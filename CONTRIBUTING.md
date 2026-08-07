@@ -18,7 +18,7 @@ cd 3d-mcp
 scripts/install.sh
 ```
 
-Then, once, in Fusion: **Utilities → Add-Ins → FusionBridge → Run**. If it is not listed, restart
+Then, once, in Fusion: **Utilities → Add-Ins → Arges → Run**. If it is not listed, restart
 Fusion — it scans that folder only at launch.
 
 **Rhino** — Rhino 8 and the `claude` CLI. No `uv`, no install script, and no Fusion: everything under
@@ -41,7 +41,7 @@ than by hand, cover here.
 
 ## The edit–reload loop
 
-`fusion_bridge_impl.py` hot-reloads, so you do not need to restart Fusion:
+`arges_impl.py` hot-reloads, so you do not need to restart Fusion:
 
 ```sh
 curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" \
@@ -49,7 +49,7 @@ curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" \
 ```
 
 A syntax error is refused with 400 and the running bridge is left untouched. Changes to
-`FusionBridge.py` or the manifest still need **Stop/Run** in Fusion, because the loader itself is
+`Arges.py` or the manifest still need **Stop/Run** in Fusion, because the loader itself is
 what is being replaced.
 
 For the chat panel: restart the service (`scripts/fusion-chat.sh --stop` then run it again). The
@@ -93,7 +93,7 @@ server/src/arges_mcp/          the published package (PyPI: arges-mcp)
     cli.py                      `arges-mcp` — bare invocation serves stdio
     bootstrap.py                `install` / `uninstall` / `status`
     broker.py                   the job queue the Rhino half polls
-    addin/FusionBridge/         the Fusion add-in, shipped inside the package
+    addin/Arges/         the Fusion add-in, shipped inside the package
 scripts/rhino/                  the Rhino half — dependency-free, not published
     rhino_mcp.py                the Rhino MCP server
     rhino-poller.py             the timer that runs inside Rhino

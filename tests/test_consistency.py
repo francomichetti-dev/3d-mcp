@@ -45,7 +45,7 @@ def read(rel):
 
 # Everything that speaks the bridge protocol, on both sides.
 FUSION_SERVER = "server/src/arges_mcp/server.py"
-FUSION_ADDIN = "server/src/arges_mcp/addin/FusionBridge/fusion_bridge_impl.py"
+FUSION_ADDIN = "server/src/arges_mcp/addin/Arges/arges_impl.py"
 BROKER = "server/src/arges_mcp/broker.py"
 RHINO_MCP = "scripts/rhino/rhino_mcp.py"
 RHINO_POLLER = "scripts/rhino/rhino-poller.py"
@@ -177,7 +177,7 @@ for rel in [FUSION_ADDIN, BROKER]:
     if found:
         caps[Path(rel).name] = int(found.group(1))
 
-check("both listeners declare a cap", sorted(caps), ["broker.py", "fusion_bridge_impl.py"])
+check("both listeners declare a cap", sorted(caps), ["arges_impl.py", "broker.py"])
 check("and it is the same number", len(set(caps.values())), 1)
 check("which is what SECURITY.md says", set(caps.values()), {8})
 
@@ -197,7 +197,7 @@ for rel in [FUSION_ADDIN, BROKER]:
         graces[Path(rel).name] = float(found.group(1))
 
 check("both listeners declare a grace period", sorted(graces),
-      ["broker.py", "fusion_bridge_impl.py"])
+      ["arges_impl.py", "broker.py"])
 check("and it is the same", len(set(graces.values())), 1)
 truthy("and it is long enough to absorb cleanup, short enough to still refuse",
        all(0.1 <= g <= 2.0 for g in graces.values()))
@@ -349,10 +349,10 @@ truthy("it pins .sh to LF", re.search(r"^\*\.sh\s+text eol=lf", attributes, re.M
 # release day; this fails immediately.
 print("Packaging")
 PACKAGED_ROOT = REPO / "server" / "src" / "arges_mcp"
-ADDIN_FILES = ["FusionBridge.py", "FusionBridge.manifest", "fusion_bridge_impl.py"]
+ADDIN_FILES = ["Arges.py", "Arges.manifest", "arges_impl.py"]
 for name in ADDIN_FILES:
     truthy(f"{name} is inside the packaged tree",
-           (PACKAGED_ROOT / "addin" / "FusionBridge" / name).is_file())
+           (PACKAGED_ROOT / "addin" / "Arges" / name).is_file())
 
 pyproject = read("server/pyproject.toml")
 truthy("the wheel packages src/arges_mcp",
@@ -390,7 +390,7 @@ truthy("the chat service pins Host as middleware",
 # Now that the service refuses a mismatched Host, the URL the palette is
 # pointed at is load-bearing: the browser derives the Host header from it. Move
 # it to a hostname the service does not list and the panel 403s itself.
-CHAT_PANEL = "server/src/arges_mcp/addin/FusionBridge/chat_panel.py"
+CHAT_PANEL = "server/src/arges_mcp/addin/Arges/chat_panel.py"
 service_url = re.search(r'SERVICE_URL\s*=\s*"(http://[^"%]+)', read(CHAT_PANEL))
 truthy("the palette declares its service URL", service_url)
 if service_url:

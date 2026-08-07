@@ -11,7 +11,7 @@ Architecture
                                           server/mcp_server.py
                                                  │  HTTP 127.0.0.1:7654 + token
                                                  ▼
-                                          FusionBridge add-in ─▶ Fusion
+                                          Arges add-in ─▶ Fusion
 
 The palette talks to THIS service directly and never through the add-in's
 Python.  That is deliberate: the add-in's main thread is what serves bridge
@@ -1274,7 +1274,7 @@ async def handle_send(request: web.Request) -> web.Response:
         # when Fusion is not even running — the first thing a new user hits.
         if registry.bridge_ok is False:
             error = ("Fusion is not reachable — open Fusion, then "
-                     "Utilities → Add-Ins → FusionBridge → Run.")
+                     "Utilities → Add-Ins → Arges → Run.")
         else:
             error = "No design is open in Fusion — open or create one first."
         return web.json_response({"ok": False, "error": error}, status=409)

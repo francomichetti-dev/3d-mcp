@@ -1,4 +1,4 @@
-"""FusionBridge implementation — all logic lives here so it can be hot-reloaded.
+"""Arges implementation — all logic lives here so it can be hot-reloaded.
 
 Architecture
 ------------
@@ -58,7 +58,7 @@ ALLOWED_HOSTS = frozenset(("127.0.0.1:%d" % BIND_PORT, "localhost:%d" % BIND_POR
 AUTH_HEADER = "X-Fusion-Bridge-Token"
 VERSION_HEADER = "X-Bridge-Version"
 
-EVENT_ID = "FusionBridgeMarshalEvent"
+EVENT_ID = "ArgesMarshalEvent"
 
 MARSHAL_TIMEOUT_S = 60.0
 # Per socket operation, not per request: the 60 s marshal wait is a pure-Python
@@ -284,7 +284,7 @@ def _alert_once(message):
     _bootstrap_alert_shown = True
     try:
         if _ui is not None:
-            _ui.messageBox(message, "FusionBridge")
+            _ui.messageBox(message, "Arges")
     except Exception:
         pass
 
@@ -984,7 +984,7 @@ def _parse_dimension(body, name, default, maximum):
 
 
 class _BridgeHandler(BaseHTTPRequestHandler):
-    server_version = "FusionBridge/" + BRIDGE_PROTOCOL_VERSION
+    server_version = "Arges/" + BRIDGE_PROTOCOL_VERSION
     sys_version = ""
     timeout = SOCKET_TIMEOUT_S
 
@@ -1311,7 +1311,7 @@ def _schedule_reload():
     with _lifecycle_lock:
         generation = _generation
     threading.Thread(
-        target=_reload_worker, args=(generation,), name="FusionBridgeReload", daemon=True
+        target=_reload_worker, args=(generation,), name="ArgesReload", daemon=True
     ).start()
 
 
@@ -1347,7 +1347,7 @@ def _reexec_self(module):
     """
     spec = getattr(module, "__spec__", None)
     if spec is None or spec.loader is None:
-        raise ImportError("fusion_bridge_impl has no loadable spec")
+        raise ImportError("arges_impl has no loadable spec")
     spec.loader.exec_module(module)
 
 
@@ -1401,7 +1401,7 @@ def _reload_worker(generation):
                         if value is not missing:
                             setattr(module, name, value)
             module._start(register_event=False)
-            module._log("fusion_bridge_impl reloaded")
+            module._log("arges_impl reloaded")
         except Exception:
             _log("reload failed:\n%s" % traceback.format_exc(), "ERROR")
             # The listener is already down at this point; bring it back on
@@ -1466,7 +1466,7 @@ def _start_locked(register_event):
     if not _tokens.get():
         _log("refusing to start: %s is missing, empty or unreadable" % TOKEN_PATH, "ERROR")
         _alert_once(
-            "FusionBridge did not start: no token found at ~/.fusion-mcp/token.\n"
+            "Arges did not start: no token found at ~/.fusion-mcp/token.\n"
             "Run scripts/install.sh, then restart the add-in "
             "(Utilities → Add-Ins → stop/run)."
         )
@@ -1490,7 +1490,7 @@ def _start_locked(register_event):
         _httpd = None
         _log("could not bind %s:%d — %s" % (BIND_HOST, BIND_PORT, err), "ERROR")
         _alert_once(
-            "FusionBridge could not bind 127.0.0.1:%d (%s).\n"
+            "Arges could not bind 127.0.0.1:%d (%s).\n"
             "Another instance may still hold the port — see ~/.fusion-mcp/addin.log."
             % (BIND_PORT, err)
         )
@@ -1499,7 +1499,7 @@ def _start_locked(register_event):
         return
 
     _shutting_down = False
-    _server_thread = threading.Thread(target=_serve, name="FusionBridgeHTTP", daemon=True)
+    _server_thread = threading.Thread(target=_serve, name="ArgesHTTP", daemon=True)
     _server_thread.start()
     _log(
         "listening on %s:%d (protocol v%s, Fusion %s)"
@@ -1531,7 +1531,7 @@ def _register_event():
         _custom_event = None
         _log("could not register the marshal custom event:\n%s" % traceback.format_exc(), "ERROR")
         _alert_once(
-            "FusionBridge could not register its main-thread event — see "
+            "Arges could not register its main-thread event — see "
             "~/.fusion-mcp/addin.log."
         )
         return False

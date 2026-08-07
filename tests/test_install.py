@@ -18,7 +18,7 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
-ADDIN = REPO / "server/src/arges_mcp/addin/FusionBridge"
+ADDIN = REPO / "server/src/arges_mcp/addin/Arges"
 
 sys.path.insert(0, str(HERE / "stubs"))
 sys.path.insert(0, str(REPO / "server/src"))
@@ -61,7 +61,7 @@ def raises(label, fn, kind=Exception, contains=None):
 # ------------------------------------------------------------- loader ----
 print("Add-in loader")
 
-spec = importlib.util.spec_from_file_location("_loader_probe", ADDIN / "FusionBridge.py")
+spec = importlib.util.spec_from_file_location("_loader_probe", ADDIN / "Arges.py")
 loader = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(loader)
 
@@ -71,7 +71,7 @@ with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
     # Reproduce the layout the installer creates: a real folder of per-file
     # symlinks. This is exactly the shape that broke the old abspath check.
-    linked = tmp / "AddIns" / "FusionBridge"
+    linked = tmp / "AddIns" / "Arges"
     linked.mkdir(parents=True)
     for source in ADDIN.iterdir():
         if source.is_file():
@@ -81,8 +81,8 @@ with tempfile.TemporaryDirectory() as tmp:
     truthy("layout: files inside are symlinks",
            all(p.is_symlink() for p in linked.iterdir()))
 
-    via_link = linked / "fusion_bridge_impl.py"
-    via_repo = ADDIN / "fusion_bridge_impl.py"
+    via_link = linked / "arges_impl.py"
+    via_repo = ADDIN / "arges_impl.py"
 
     # The regression: abspath does not follow symlinks, so the same file reached
     # two ways compared unequal and the add-in refused to load itself.
@@ -93,25 +93,25 @@ with tempfile.TemporaryDirectory() as tmp:
 
     # and a genuinely foreign module must still be rejected
     check("a different file is still different",
-          os.path.realpath(tmp / "elsewhere" / "fusion_bridge_impl.py")
+          os.path.realpath(tmp / "elsewhere" / "arges_impl.py")
           == os.path.realpath(via_repo), False)
 
     # drive the real check: a module already registered under the linked path
     # must be accepted when the loader is reached through the repo path
-    sys.modules.pop("fusion_bridge_impl", None)
-    fake = type(sys)("fusion_bridge_impl")
+    sys.modules.pop("arges_impl", None)
+    fake = type(sys)("arges_impl")
     fake.__file__ = str(via_link)
-    sys.modules["fusion_bridge_impl"] = fake
+    sys.modules["arges_impl"] = fake
     try:
-        loader._IMPL_NAME = "fusion_bridge_impl"
-        loader.__file__ = str(ADDIN / "FusionBridge.py")
+        loader._IMPL_NAME = "arges_impl"
+        loader.__file__ = str(ADDIN / "Arges.py")
         check("the same file via another path is accepted", loader._load_impl(), fake)
 
-        fake.__file__ = "/somewhere/else/fusion_bridge_impl.py"
+        fake.__file__ = "/somewhere/else/arges_impl.py"
         raises("a foreign module is refused", loader._load_impl,
                ImportError, "not this add-in")
     finally:
-        sys.modules.pop("fusion_bridge_impl", None)
+        sys.modules.pop("arges_impl", None)
 
 
 # ---------------------------------------------------------- bootstrap ----
@@ -121,7 +121,7 @@ from arges_mcp import bootstrap  # noqa: E402
 from arges_mcp import cli  # noqa: E402
 
 truthy("ships the add-in inside the package", bootstrap.bundled_addin().is_dir())
-for required in ("FusionBridge.py", "FusionBridge.manifest", "fusion_bridge_impl.py"):
+for required in ("Arges.py", "Arges.manifest", "arges_impl.py"):
     truthy(f"bundled: {required}", (bootstrap.bundled_addin() / required).is_file())
 
 with tempfile.TemporaryDirectory() as tmp:
@@ -161,13 +161,13 @@ if platform.system() == "Darwin":
         tmp = Path(tmp)
         addins = tmp / "AddIns"
         addins.mkdir()
-        os.symlink(ADDIN, addins / "FusionBridge")
+        os.symlink(ADDIN, addins / "Arges")
         original = bootstrap.MACOS_ADDINS_DIR
         bootstrap.MACOS_ADDINS_DIR = addins
         try:
             raises("refuses to clobber a checkout symlink",
                    bootstrap.install_addin, RuntimeError, "symlink")
-            truthy("and leaves it in place", (addins / "FusionBridge").is_symlink())
+            truthy("and leaves it in place", (addins / "Arges").is_symlink())
         finally:
             bootstrap.MACOS_ADDINS_DIR = original
 
@@ -182,18 +182,18 @@ if platform.system() == "Darwin":
             target, action = bootstrap.install_addin()
             check("installs", action, "installed")
             truthy("copied, not linked", target.is_dir() and not target.is_symlink())
-            truthy("loader present", (target / "FusionBridge.py").is_file())
-            truthy("manifest present", (target / "FusionBridge.manifest").is_file())
+            truthy("loader present", (target / "Arges.py").is_file())
+            truthy("manifest present", (target / "Arges.manifest").is_file())
             truthy("no __pycache__ shipped", not (target / "__pycache__").exists())
 
             target, action = bootstrap.install_addin()
             check("second run is a no-op", action, "unchanged")
 
-            (target / "fusion_bridge_impl.py").write_text("# stale\n", encoding="utf-8")
+            (target / "arges_impl.py").write_text("# stale\n", encoding="utf-8")
             target, action = bootstrap.install_addin()
             check("a modified copy is refreshed", action, "updated")
             truthy("and restored to the real thing",
-                   (target / "fusion_bridge_impl.py").read_text() != "# stale\n")
+                   (target / "arges_impl.py").read_text() != "# stale\n")
         finally:
             bootstrap.MACOS_ADDINS_DIR = original
 else:

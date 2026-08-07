@@ -29,9 +29,9 @@ uvx arges-mcp install
 That copies the add-in into Fusion's add-ins folder and creates a bridge token at `~/.fusion-mcp/`
 (`0600`, inside a `0700` directory). Then, once, in Fusion:
 
-> **Utilities → Add-Ins → select FusionBridge → Run**
+> **Utilities → Add-Ins → select Arges → Run**
 
-If FusionBridge is not listed, restart Fusion — it scans that folder only at launch. It auto-starts
+If Arges is not listed, restart Fusion — it scans that folder only at launch. It auto-starts
 on later launches.
 
 Check it:

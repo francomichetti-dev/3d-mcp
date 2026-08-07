@@ -28,9 +28,9 @@ fi
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
-ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/FusionBridge"
+ADDIN_SOURCE="${REPO_DIR}/server/src/arges_mcp/addin/Arges"
 ADDINS_DIR="${HOME}/Library/Application Support/Autodesk/Autodesk Fusion 360/API/AddIns"
-ADDIN_LINK="${ADDINS_DIR}/FusionBridge"
+ADDIN_LINK="${ADDINS_DIR}/Arges"
 
 SKILL_SOURCE="${REPO_DIR}/skill/fusion-360"
 SKILLS_DIR="${HOME}/.claude/skills"
@@ -145,11 +145,11 @@ fi
 #
 # Symlinking the folder makes Fusion list the add-in TWICE: it follows the link
 # and registers the resolved repo path as a second, separate add-in, so Scripts
-# and Add-Ins shows two identical FusionBridge rows and removing one from
+# and Add-Ins shows two identical Arges rows and removing one from
 # Fusion's registry does not stick — it is re-discovered on the next scan.
 # A real folder gives Fusion exactly one path to record, while the files inside
 # still point at the checkout so edits remain live.
-step "Linking the FusionBridge add-in"
+step "Linking the Arges add-in"
 
 is_ours() {
     # Ours only if every entry is a symlink pointing into ADDIN_SOURCE. Anything
@@ -335,7 +335,7 @@ cat <<EOF
 
 Files are in place. One manual step is left, inside Fusion:
 
-  Tools → Add-Ins → select FusionBridge → Run
+  Tools → Add-Ins → select Arges → Run
   (auto-starts on later launches — runOnStartup is in the manifest)
 
 The verification command, if you ever need it by hand:
@@ -394,7 +394,7 @@ unexpected protocol version.
   ${mismatch}
 
 This server expects bridge_version 1. Restart the add-in inside Fusion
-(Tools → Add-Ins → FusionBridge → Stop, then Run) so it picks up the
+(Tools → Add-Ins → Arges → Stop, then Run) so it picks up the
 current code, then re-run the curl command above.
 Details: ${CONFIG_DIR}/addin.log
 EOF
@@ -404,7 +404,7 @@ else
 Install finished, but the bridge is NOT verified — nothing answered on
 127.0.0.1:7654 within 60s. That is expected if Fusion is not open yet.
 
-  1. Open Fusion, then: Tools → Add-Ins → select FusionBridge → Run
+  1. Open Fusion, then: Tools → Add-Ins → select Arges → Run
   2. Re-run the curl command printed above (or just re-run this script)
 
 If it still does not answer, the reason is in ${CONFIG_DIR}/addin.log.

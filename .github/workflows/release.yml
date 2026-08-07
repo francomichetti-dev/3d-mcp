@@ -58,9 +58,9 @@ jobs:
           import glob, sys, zipfile
           names = zipfile.ZipFile(sorted(glob.glob("dist/*.whl"))[-1]).namelist()
           needed = [
-              "arges_mcp/addin/FusionBridge/FusionBridge.py",
-              "arges_mcp/addin/FusionBridge/FusionBridge.manifest",
-              "arges_mcp/addin/FusionBridge/fusion_bridge_impl.py",
+              "arges_mcp/addin/Arges/Arges.py",
+              "arges_mcp/addin/Arges/Arges.manifest",
+              "arges_mcp/addin/Arges/arges_impl.py",
           ]
           missing = [n for n in needed if n not in names]
           if missing:

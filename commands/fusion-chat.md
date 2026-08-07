@@ -15,7 +15,7 @@ Report in one or two lines:
 - On success: that the panel is open, and whether the agent is ready or still
   connecting.
 - On failure: the script's own error message verbatim. The two common causes
-  are Fusion not running (or the FusionBridge add-in not started) and a missing
+  are Fusion not running (or the Arges add-in not started) and a missing
   install — both are named explicitly in the output.
 
 Do not offer to model anything yourself afterwards. The point of the panel is

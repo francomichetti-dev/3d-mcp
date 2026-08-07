@@ -1,4 +1,4 @@
-"""Install the FusionBridge add-in and mint the bridge token.
+"""Install the Arges add-in and mint the bridge token.
 
 The repo has scripts/install.sh, which symlinks the add-in out of the checkout
 so an edit is live immediately. That is the right thing for development and the
@@ -25,7 +25,7 @@ FUSION_DIR = Path("~/.fusion-mcp").expanduser()
 TOKEN_PATH = FUSION_DIR / "token"
 EXPORT_DIR = Path("~/Documents/fusion-mcp-exports").expanduser()
 
-ADDIN_NAME = "FusionBridge"
+ADDIN_NAME = "Arges"
 # Fusion's per-user add-in directory. macOS only for now; the add-in itself is
 # plain Python and portable, this path is not.
 MACOS_ADDINS_DIR = Path(
@@ -35,9 +35,9 @@ MACOS_ADDINS_DIR = Path(
 MANUAL_STEP = """
 One manual step remains — Fusion cannot enable an add-in from outside:
 
-    Fusion  ->  Utilities  ->  Add-Ins  ->  FusionBridge  ->  Run
+    Fusion  ->  Utilities  ->  Add-Ins  ->  Arges  ->  Run
 
-If FusionBridge is not in that list, restart Fusion: it scans its add-ins
+If Arges is not in that list, restart Fusion: it scans its add-ins
 folder only at launch, so anything installed while it was running is invisible
 until you relaunch. It auto-starts on later launches after that.
 """
@@ -131,7 +131,7 @@ def _same_tree(left: Path, right: Path) -> bool:
 def run_install(rotate_token: bool = False) -> int:
     # flush: stdout is block-buffered when piped, so without this the header
     # lands after an error written to stderr and the output reads backwards.
-    print("Installing the FusionBridge add-in\n", flush=True)
+    print("Installing the Arges add-in\n", flush=True)
     try:
         target, action = install_addin()
     except RuntimeError as exc:
@@ -158,7 +158,7 @@ def run_install(rotate_token: bool = False) -> int:
 
 
 def run_uninstall(purge: bool = False) -> int:
-    print("Removing the FusionBridge add-in\n")
+    print("Removing the Arges add-in\n")
     target = MACOS_ADDINS_DIR / ADDIN_NAME
     if target.is_symlink():
         print(f"  SKIPPED: {target} is a symlink from a checkout — "
@@ -169,7 +169,7 @@ def run_uninstall(purge: bool = False) -> int:
     else:
         print(f"  nothing to remove at {target}")
 
-    print("  stop it inside Fusion too: Utilities -> Add-Ins -> FusionBridge -> Stop")
+    print("  stop it inside Fusion too: Utilities -> Add-Ins -> Arges -> Stop")
 
     if purge:
         # Guarded because this is the one destructive path here, and an empty
@@ -227,5 +227,5 @@ def run_status() -> int:
         return 0
     except (urllib.error.URLError, OSError, ValueError) as exc:
         print(f"  bridge: not answering on 127.0.0.1:7654 ({exc})")
-        print("          open Fusion, then Utilities -> Add-Ins -> FusionBridge -> Run")
+        print("          open Fusion, then Utilities -> Add-Ins -> Arges -> Run")
         return 1

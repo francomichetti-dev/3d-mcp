@@ -1,6 +1,6 @@
-"""FusionBridge add-in loader.
+"""Arges add-in loader.
 
-Deliberately thin and dependency-free: all logic lives in ``fusion_bridge_impl``
+Deliberately thin and dependency-free: all logic lives in ``arges_impl``
 so it can be hot-reloaded via ``POST /reload``.  The only job here is to make
 sure a failure to even import that module still leaves a trace — otherwise a
 bootstrap crash produces no log, no listener and no symptom at all.
@@ -19,7 +19,7 @@ _LOG_PATH = os.path.join(_STATE_DIR, "addin.log")
 # loaded from an explicit path under a namespaced key rather than by putting our
 # directory on sys.path — that would let a generic module name collide with
 # another add-in's in either direction.
-_IMPL_NAME = "fusion_bridge_impl"
+_IMPL_NAME = "arges_impl"
 
 _impl = None
 _alert_shown = False
@@ -53,9 +53,9 @@ def _bootstrap_failure(stage, detail):
         app = adsk.core.Application.get()
         if app is not None and app.userInterface is not None:
             app.userInterface.messageBox(
-                "FusionBridge failed to start (%s).\n"
+                "Arges failed to start (%s).\n"
                 "Details: ~/.fusion-mcp/addin.log" % stage,
-                "FusionBridge",
+                "Arges",
             )
     except Exception:
         pass
