@@ -23,7 +23,7 @@ Two halves have to agree: this server, and a small add-in that runs *inside* Fus
 package cannot reach into another application, so installing the add-in is an explicit step:
 
 ```sh
-uvx arges-mcp install
+uvx arges install
 ```
 
 That copies the add-in into Fusion's add-ins folder and creates a bridge token at `~/.fusion-mcp/`
@@ -37,7 +37,7 @@ on later launches.
 Check it:
 
 ```sh
-uvx arges-mcp status
+uvx arges status
 ```
 
 ## Point your MCP client at it
@@ -74,7 +74,7 @@ model can read it and fix its own code.
 ## Upgrading
 
 Upgrading the package does not upgrade the add-in, because the add-in was copied into Fusion. Re-run
-`uvx arges-mcp install` after an upgrade. If you forget, the version check between server and
+`uvx arges install` after an upgrade. If you forget, the version check between server and
 bridge will say so rather than misbehaving quietly.
 
 ## Requirements

@@ -561,7 +561,7 @@ class Session:
                     "args": [
                         "run", "--frozen", "--no-sync",
                         "--directory", str(SERVER_DIR),
-                        "arges-mcp",
+                        "arges",
                     ],
                 }
             },

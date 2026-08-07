@@ -2,7 +2,7 @@
 
 Covers the two pieces a new user hits first and which have no other safety net:
 the add-in loader's provenance check (which refused to load itself through its
-own symlink), and `arges-mcp install`.
+own symlink), and `arges install`.
 
     cd agent && uv run --frozen --no-sync python ../tests/test_install.py
 """

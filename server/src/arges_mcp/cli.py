@@ -16,7 +16,7 @@ from . import __version__
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        prog="arges-mcp",
+        prog="arges",
         description="Model in Autodesk Fusion by prompting. "
                     "Run with no arguments to serve MCP over stdio.",
     )

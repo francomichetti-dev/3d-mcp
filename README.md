@@ -68,7 +68,7 @@ chat panel ───┘                       │
 ```
 
 The add-in lives at `server/src/arges_mcp/addin/Arges/` — inside the package rather than at
-the repo root, so a PyPI install ships it and `arges-mcp install` can put it where Fusion looks.
+the repo root, so a PyPI install ships it and `arges install` can put it where Fusion looks.
 A checkout symlinks it from there instead, so edits are live.
 
 Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-fusion-chat-panel) docked
@@ -366,7 +366,7 @@ them yourself.
 
 > **Not yet on PyPI.** The package is built and its release pipeline is in place, but
 > `arges-mcp` has not been published — so `uvx arges-mcp` will not work until it is. Once
-> it is, `uvx arges-mcp install` gives you the MCP tools with no checkout. The two differ in
+> it is, `uvx arges install` gives you the MCP tools with no checkout. The two differ in
 > one way worth knowing: a checkout **symlinks** the add-in so your edits are live, while the
 > package **copies** it, because a `uvx` install lives in a disposable cache a symlink would
 > outlive.

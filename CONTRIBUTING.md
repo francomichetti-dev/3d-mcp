@@ -111,7 +111,7 @@ them drifting, since every one of those mismatches fails silently.
 The add-in lives inside the package rather than at the repo root for a build reason: `uv build`
 builds the wheel from the sdist, and a `force-include` cannot reach outside the sdist root — an
 add-in above `server/` simply would not ship. One canonical copy also means the symlink a checkout
-creates and the copy `arges-mcp install` makes are always the same code.
+creates and the copy `arges install` makes are always the same code.
 
 ## Releasing
 

@@ -42,7 +42,7 @@ build-backend = "hatchling.build"
 # than at the repo root. It has to: uv builds the wheel from the sdist, and a
 # force-include cannot reach outside the sdist root, so anything above this
 # directory simply would not ship. One canonical copy also means the symlink
-# scripts/install.sh creates and the copy `arges-mcp install` makes are
+# scripts/install.sh creates and the copy `arges install` makes are
 # always the same code.
 [tool.hatch.build.targets.wheel]
 packages = ["src/arges_mcp"]
