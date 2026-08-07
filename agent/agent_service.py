@@ -85,7 +85,14 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 MAX_IMAGES_PER_MESSAGE = 8
 # id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
 # serving, so a crafted id cannot walk out of the attachments directory.
-ATTACHMENT_ID = re.compile(r"^[0-9a-f]{16}/[0-9a-f]{32}\.(?:png|jpg|gif|webp)$")
+# \Z, not $. In Python `$` also matches immediately before a trailing newline,
+# and a newline does reach here: a request for ...png%0A arrives with a real
+# newline in match_info, measured against aiohttp. That made the "exact shape"
+# this is matched against not quite exact. Nothing was exploitable — no stored
+# file has a trailing newline in its name, so the path simply 404s — but a
+# validator that accepts input the comment says it rejects is one refactor away
+# from mattering.
+ATTACHMENT_ID = re.compile(r"^[0-9a-f]{16}/[0-9a-f]{32}\.(?:png|jpg|gif|webp)\Z")
 
 DOC_POLL_SECONDS = 1.0
 # Per-viewer backlog before the oldest events are dropped. A panel that stops

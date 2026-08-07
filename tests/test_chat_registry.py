@@ -210,8 +210,14 @@ for bad in [
     "/etc/passwd",
     "a0e4b165d25040c1\\dd6ec782b14048beab65bc43d7147249.png",
     "A0E4B165D25040C1/dd6ec782b14048beab65bc43d7147249.png",   # uppercase hex
+    # Python's `$` also matches just before a trailing newline, and a newline
+    # really does arrive here: a request for ...png%0A reaches match_info with
+    # a literal newline in it, measured against aiohttp. The pattern uses \Z
+    # for that reason, and this is what would notice it going back to `$`.
+    "a0e4b165d25040c1/dd6ec782b14048beab65bc43d7147249.png\n",
+    "a0e4b165d25040c1/dd6ec782b14048beab65bc43d7147249.png\r\n",
 ]:
-    check(f"rejects {bad[:44]}", svc.ATTACHMENT_ID.match(bad) is None, True)
+    check(f"rejects {bad[:44]!r}", svc.ATTACHMENT_ID.match(bad) is None, True)
 
 # the design key never becomes a path component: a saved key is a URN of colons
 folder = svc.design_folder("file:urn:adsk.wipprod:dm.lineage:dQ6U4Jnt")
