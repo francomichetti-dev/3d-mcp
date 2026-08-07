@@ -287,6 +287,38 @@ if marker and manifest:
     check("and it matches the name in server.json", marker.group(1), manifest.get("name"))
 
 
+# ------------------------------------------------------------ packaging -----
+# release.yml opens the built wheel and fails if the add-in is not inside it,
+# because a package that installs without the add-in is a dead end: there is
+# nothing for Fusion to run and no way to get it. That check needs a build, so
+# it only happens on a tag.
+#
+# The structural reason the add-in ships is cheap to check without building:
+# it lives INSIDE the packaged tree. CONTRIBUTING explains why it has to —
+# hatch's force-include cannot reach outside the sdist root, so an add-in at
+# the repo root would silently not ship. Move it and the wheel guard fails on
+# release day; this fails immediately.
+print("Packaging")
+PACKAGED_ROOT = REPO / "server" / "src" / "fusion_mcp"
+ADDIN_FILES = ["FusionBridge.py", "FusionBridge.manifest", "fusion_bridge_impl.py"]
+for name in ADDIN_FILES:
+    truthy(f"{name} is inside the packaged tree",
+           (PACKAGED_ROOT / "addin" / "FusionBridge" / name).is_file())
+
+pyproject = read("server/pyproject.toml")
+truthy("the wheel packages src/fusion_mcp",
+       re.search(r'packages\s*=\s*\[\s*"src/fusion_mcp"', pyproject))
+
+# The manifest is the file Fusion reads to find the add-in at all, and it is
+# the one a broad exclude would take first, being the only non-.py file.
+excludes = re.search(r'exclude\s*=\s*\[([^\]]*)\]', pyproject)
+truthy("the build declares its excludes", excludes)
+if excludes:
+    patterns = re.findall(r'"([^"]+)"', excludes.group(1))
+    check("and excludes only build litter", sorted(patterns),
+          ["**/*.pyc", "**/__pycache__"])
+
+
 # -------------------------------------------------------- host pinning ------
 # Three listeners, three chances to forget. The chat service went without this
 # until it was audited: it binds loopback, which stops another machine but not
