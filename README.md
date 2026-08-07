@@ -48,6 +48,10 @@ needs the other present.
 **If you are here for Rhino, skip to [Rhino 8](#rhino-8).** Everything between here and there is
 Fusion-specific — the architecture differs enough that describing both at once helps nobody.
 
+**If you just want it running,** go straight to [Install](#install): three lines for Fusion, and for
+Rhino a single sentence you hand to Claude Code. Everything before that section explains what you
+are installing and why it is built the way it is — worth reading, but not first.
+
 ## How it works: Fusion
 
 ```
@@ -526,11 +530,11 @@ restored on switching back, a mid-turn switch stopping the turn, context survivi
 (the model still answers from the resumed session, not just the redrawn transcript), and a closed
 design compressing to core context.
 
-**Rhino 8 is working and in real use** on Windows — someone who is not the author has modelled
-actual parts with it. Verified end to end on real hardware: `rhino_state` reads the live document,
-`rhino_execute` builds geometry, `rhino_screenshot` returns a real capture, and the whole chain
-carries non-ASCII intact (Spanish comments, accented layer names, an em-dash and a degree sign —
-which cost two real bugs to get right, since Windows pipes default to cp1252, not UTF-8).
+**Rhino 8 is working and in real use** on Windows, and has been used to model real parts by someone
+other than its developer. Verified end to end on real hardware: `rhino_state` reads the live
+document, `rhino_execute` builds geometry, `rhino_screenshot` returns a real capture, and the whole
+chain carries non-ASCII intact — accented layer names, an em-dash, a degree sign — which cost two
+real bugs to get right, since Windows pipes default to cp1252, not UTF-8.
 
 The Fusion half is verified on macOS only. Both bridges are plain Python with nothing
 platform-specific in them, but `scripts/install.sh` knows only where Fusion keeps its add-ins on
