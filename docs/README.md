@@ -10,7 +10,7 @@ from the vendor documentation.
 | | |
 | --- | --- |
 | [rhino-handover.md](rhino-handover.md) | what Claude Code needs to know to work on the Rhino half — the traps, the never-do list, and how to get a change back upstream. The copy that ships to a Rhino machine. |
-| [rhino-windows-notes.md](rhino-windows-notes.md) | findings from the live Rhino 8 / Windows 11 spike: units, `RhinoCode.exe`, SSH's `PATH`, and the viewport-capture rule that inverts depending on which thread you are on. |
+| [rhino-windows-notes.md](rhino-windows-notes.md) | findings from the live Rhino 8 / Windows 11 spike: units, `RhinoCode.exe`, the PATH a non-interactive session gets, and the viewport-capture rule that inverts depending on which thread you are on. |
 | [rhino-dead-ends.md](rhino-dead-ends.md) | the four architectures tried before the one that worked, and what disproved each. Read this before proposing a listener or a thread inside Rhino. |
 | [reference-notes.md](reference-notes.md) | read-only study of two existing Fusion MCP projects, done before any code was written. Mechanisms and design ideas only — **no code was copied**, and nothing third-party runs inside the CAD. |
 

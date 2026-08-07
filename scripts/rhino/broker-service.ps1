@@ -1,6 +1,6 @@
-# Run the 3d-mcp broker so it survives the SSH session that started it.
+# Run the 3d-mcp broker so it survives the terminal that started it.
 #
-# Start-Process is not enough: Windows OpenSSH puts the session in a job object
+# Start-Process is not enough: Windows puts the session in a job object
 # and kills the whole tree when the connection closes, so the broker died every
 # time. A scheduled task is owned by the task scheduler instead, not by us.
 

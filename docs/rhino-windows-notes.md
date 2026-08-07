@@ -1,8 +1,8 @@
 # Rhino 8 on Windows — findings
 
 Notes from a live spike against Rhino 8.32.26160.13001 on Windows 11 Pro
-(10.0.26200), driven over SSH from macOS. Recorded because most of it was found
-empirically and none of it would have been guessed.
+(10.0.26200). Recorded because most of it was found empirically and none of it
+would have been guessed.
 
 Status: **both are now proven.** This file was written mid-spike, when only the
 modelling loop worked. It has been corrected rather than deleted, because two
@@ -18,7 +18,7 @@ can be inspected remotely — the same design → look → correct loop the Fusi
 bridge runs.
 
 Verified by building a car (body, cabin, four wheels) and filleting the body on
-**12 edges**, then capturing the viewport and pulling the PNG back over SSH.
+**12 edges**, then capturing the viewport and inspecting the PNG.
 
 ```
 document : (unsaved)
@@ -142,12 +142,14 @@ Rhino down with it. The hypothesis at the time — that a `rhinocode` script run
 is now confirmed. The probe was not faulty; the hang was the finding, and it is
 why nothing in the shipped design marshals.
 
-## Windows, over SSH
+## Windows
 
-**An SSH session gets the SYSTEM PATH, not the user's.** Observed:
+**A non-interactive session gets the SYSTEM PATH, not the user's.** This is
+what a scheduled task or any service-style launch sees. Observed:
 `C:\WINDOWS\system32\config\systemprofile\AppData\Local\Microsoft\WindowsApps`
 in `$env:PATH`. Anything installed per-user — `uv`, `gh`, Claude Code — is
-absent, and looks uninstalled when it is not. Read the user PATH explicitly:
+absent, and looks uninstalled when it is not. It matters here because the
+broker runs as a scheduled task. Read the user PATH explicitly:
 
 ```powershell
 [Environment]::GetEnvironmentVariable("PATH","User")
@@ -161,11 +163,11 @@ any Windows installer has to resolve tools by absolute path rather than by name.
 rather than on `PATH`. "`claude` is not on PATH" does not mean it is not
 installed.
 
-**Quoting through chat clients is a real hazard.** `powershell -File "C:\Program
-Files\..."` arrived with an em-dash instead of a hyphen and with the quotes
-stripped, twice. Ship a double-clickable `.cmd` instead of a command to paste —
-and write it with CRLF line endings, since `cmd.exe` mis-parses LF-only batch
-files.
+**A command someone has to copy is a command that arrives mangled.**
+`powershell -File "C:\Program Files\..."` turned up with an em-dash instead of
+a hyphen and with the quotes stripped, twice, in transit. Ship a
+double-clickable `.cmd` rather than a line to paste — and write it with CRLF
+line endings, since `cmd.exe` mis-parses LF-only batch files.
 
 ## How the architecture actually ported
 

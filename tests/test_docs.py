@@ -84,8 +84,8 @@ print("No personal data")
 # the very test written to keep them out, and after a history rewrite had been
 # run to remove them. A guard that has to contain what it forbids is the wrong
 # shape. Hashing costs nothing here because these are exact terms, not classes
-# of string; the structural patterns below stay as regexes because a Tailscale
-# address or an API key has no fixed value to hash.
+# of string; the structural patterns below stay as regexes because a private
+# host address or an API key has no fixed value to hash.
 FORBIDDEN_DIGESTS = {
     "e2f88324a7596528d94d3ab28eb3aaa8",
     "501b8c3f7cc1c285b8f9bb688d65c0f8",
@@ -125,11 +125,13 @@ for name, text in TRACKED:
 check("no collaborator name or private filename anywhere in the repo", named, [])
 
 PRIVATE = [
-    # Any *.ts.net host is a Tailscale machine. An earlier version of this
-    # pattern required six hex characters and missed the real hostname, which
-    # has five - found by planting the leak rather than by reading it.
-    (r"[\w-]+\.ts\.net", "a Tailscale machine address"),
-    (r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b", "a Tailscale IP"),
+    # Private mesh-VPN hostnames and addresses. These are not part of the
+    # project - they came from a development machine and leaked once, which is
+    # the whole reason the pattern exists. An earlier version required six hex
+    # characters and missed the real hostname, which had five; found by
+    # planting the leak rather than by reading the regex.
+    (r"[\w-]+\.ts\.net", "a private VPN hostname"),
+    (r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b", "a private VPN address"),
     (r"sk-ant-[A-Za-z0-9_-]{20,}", "an API key"),
     (r"/Users/(?!<)[a-z]+/(?:Documents|Desktop|Downloads)/", "someone's home path"),
     (r"C:\\\\Users\\\\(?!<)[A-Z][a-z]+\\\\", "someone's Windows path"),

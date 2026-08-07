@@ -92,9 +92,10 @@ These each cost hours to discover. They are not hypothetical.
 - **`os.chmod(0600)` does not restrict access.** It only toggles the read-only
   attribute; the file stays readable by every other account. Use
   `icacls <path> /inheritance:r /grant:r "%USERNAME%":F`.
-- **A process started over SSH dies with the session.** Windows puts it in a job
-  object and kills the tree. The broker runs as a scheduled task for this
-  reason.
+- **A process started from a shell dies with that shell.** Windows puts the
+  session in a job object and kills the whole tree when it closes, so a broker
+  launched with `Start-Process` goes with the terminal that started it. That is
+  why it runs as a scheduled task instead.
 - **`subprocess` with `text=True` uses cp1252, not UTF-8.** Anything with an
   accent or an em-dash raises `UnicodeDecodeError`. Always pass
   `encoding="utf-8", errors="replace"`. This bit twice.

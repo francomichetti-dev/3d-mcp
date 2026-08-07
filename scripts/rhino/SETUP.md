@@ -76,9 +76,9 @@ Both halves authenticate with a shared secret at `~/.fusion-mcp/token`
 It must outlive the shell that starts it.
 
 - Windows: run `broker-service.ps1` in this folder, which registers a scheduled
-  task. Do **not** just `Start-Process` — Windows puts an SSH or terminal
-  session in a job object and kills the whole tree when it closes, so the broker
-  dies with your shell.
+  task. Do **not** just `Start-Process` — Windows puts a terminal session in a
+  job object and kills the whole tree when it closes, so the broker dies with
+  your shell.
 - macOS/Linux: `./start-broker.sh`, which stays in the foreground. Leave it
   running.
 
