@@ -1,166 +1,143 @@
-# mcp-rhino — working notes for the tester's Claude Code
+# mcp-rhino — everything Claude needs on this machine
 
-Hi. Franco and I (Claude, on his machine) have been building a bridge that lets
-an AI model in CAD by writing code inside the application. It works in Fusion
-360. We are now making it work in **Rhino 8**, and your machine is where that is
-being figured out.
+You are Claude Code, running on the tester's PC. This folder is a working copy of
+part of `3d-mcp`, a project by Franco that lets someone model in CAD by asking
+for what they want.
 
-This folder is the handover point. If you point your own Claude Code at this
-directory, everything below is the context it needs.
-
----
-
-## Sorry about the crashes
-
-Rhino closing on you repeatedly today was **my fault**, not your machine's. I
-was calling `RhinoApp.InvokeOnUiThread` from a script, which deadlocks, and
-leaving background threads running after scripts finished, which crashed the
-embedded Python — `ucrtbase.dll`, exception `0xc0000409`, three times in five
-minutes in your Windows event log.
-
-Both mistakes are now understood and neither is in the current design. Nothing
-here starts a thread.
+the tester uses it in Rhino 8, and it works — he has modelled real parts with it.
+He may now ask you to change or fix something. This file is what you need to do
+that well.
 
 ---
 
-## What we are building
+## What this is
 
 ```
-   your machine                                    Franco's machine
-   ─────────────                                   ────────────────
-   Rhino 8
-     └── poller (a UI timer, no threads)
-              │  "any work for me?"
-              ▼
-        broker  (small HTTP server on 127.0.0.1:7656)
-              ▲
-              │
-        MCP server  ◀── the AI model asks for CAD operations
+chat window ──▶ claude ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker ──▶ poller in Rhino
 ```
 
-The important design decision, and why it looks like this:
+Four pieces, three of which run on this machine:
 
-**Rhino cannot be pushed into.** Fusion lets an add-in hand work to its main
-thread. Rhino's equivalent (`InvokeOnUiThread`) is synchronous and deadlocks. So
-instead of pushing work into Rhino, Rhino **pulls**: a timer inside Rhino asks
-the broker for jobs, runs them, and posts results back. Because that timer
-already runs on Rhino's UI thread, whatever it runs is on the correct thread
-automatically. The problem disappears rather than being solved.
-
----
-
-## What is proven to work (measured, not assumed)
-
-| Thing | Result |
+| | |
 | --- | --- |
-| Python inside Rhino | 3.9.10, CPython |
-| Building geometry from a script | yes — a car, body filleted on 12 edges |
-| Capturing the viewport | yes, via `_-ViewCaptureToFile` |
-| `Eto.Forms.UITimer` | **fires reliably** — 148 ticks over 74s, Rhino stable |
-| `RhinoApp.Idle` | **useless** — 0 ticks in 25s when nobody touches Rhino |
-| `InvokeOnUiThread` | **deadlocks**, do not use |
-| Background threads in a script | **crashes Rhino**, do not use |
+| `rhino-chat.py` | the desktop window: chat and settings, nothing else |
+| `rhino_mcp.py` | an MCP server — this is what Claude Code talks to |
+| `broker.py` | a job queue on 127.0.0.1:7656 |
+| `rhino-poller.py` | a timer inside Rhino that pulls work and runs it |
+
+It runs on the Claude subscription that is already installed. There is no API
+key anywhere, and adding one would be a step backwards.
+
+**Why Rhino pulls instead of being pushed into.** Fusion lets an add-in hand
+work to its main thread. Rhino's equivalent, `InvokeOnUiThread`, is synchronous
+and deadlocks against itself. So a timer inside Rhino asks the broker for jobs
+instead. Because that timer already runs on the UI thread, whatever it executes
+is on the correct thread automatically — the problem disappears rather than
+being solved. Do not try to reintroduce a listener inside Rhino; it was tried
+and it crashed Rhino repeatedly.
 
 ---
 
-## Rules — these each cost us hours
+## Setting it up
 
-1. **Never call `InvokeOnUiThread`.** A `rhinocode` script already runs on the
-   UI thread (`RhinoApp.InvokeRequired` is `False`), so it deadlocks against
-   itself.
-2. **Never start a thread.** A thread outliving the script context aborts the
-   embedded CPython and takes Rhino with it.
-3. **Never block in a script or a timer tick.** Both run on the UI thread; any
-   wait freezes Rhino.
-4. **`rhinocode script` gives you no stdout — not even tracebacks.** A failing
-   script looks exactly like a silent one. Always write to a log file and catch
-   your own exceptions.
-5. **`rs.Command` returns `False` even when it succeeded.** Check the artefact,
-   not the return value.
-6. **`rs.PurgeLayer` cannot purge the *current* layer.** Switch to Default
-   first, or geometry quietly piles up between runs.
-7. **`ScriptEditor` must be run once per Rhino session** before `rhinocode` can
-   see the instance. The first ever run builds the Python environment and takes
-   about a minute — it is not frozen.
+`SETUP.md`, in this folder, is written for you. the tester can just ask you to set
+it up and you should be able to, without handing him commands to run.
+
+---
+
+## If he asks you to change something
+
+The repository is `github.com/francomichetti-dev/3d-mcp`. This folder is a copy
+of its `scripts/`, not a clone, so you cannot commit from here.
+
+Two ways to get a change back to Franco, in order of preference:
+
+1. **Push it.** If the tester has access to the repo, clone it properly, make the
+   change there, run the tests, and open a pull request. Say what you changed
+   and why in the description — the commit history in this project explains
+   reasoning, not just mechanics.
+2. **Hand it off.** Otherwise write the change plus a short note explaining the
+   problem, what you tried, and what worked, and give that to the tester to send
+   on. A diff with the reasoning attached is far more useful than a description
+   of a diff.
+
+Either way: **run the test suite** (`tests/run.sh` in the repo) before saying it
+works. There are 345 assertions and they are quick.
+
+---
+
+## What will waste your time if you do not know it
+
+These each cost hours to discover. They are not hypothetical.
+
+**Inside Rhino**
+
+- **Never call `InvokeOnUiThread`.** It is synchronous, and a `rhinocode` script
+  already runs on the UI thread, so it deadlocks against itself.
+- **Never start a thread.** One outliving the script context aborts the embedded
+  CPython and takes Rhino down — `ucrtbase.dll`, `0xc0000409`.
+- **`RhinoApp.Idle` never fires** when nobody is touching Rhino. `Eto.Forms.UITimer`
+  does, reliably, and that is what the poller uses.
+- **`rs.Command` from inside the timer never returns.** It re-enters Rhino's
+  command pipeline from a message dispatch. Use the RhinoCommon API —
+  `Rhino.Display.ViewCapture`, not `_-ViewCaptureToFile`.
+- **`rhinocode script` prints nothing.** Not even tracebacks. A failing script
+  looks exactly like a silent one; read `rhino-poller.log`.
+- **`ScriptEditor` must be run once per Rhino session** before `rhinocode` can
+  see the instance. The first ever run builds the Python environment and takes
+  about a minute — it is not frozen.
+
+**On Windows**
+
+- **`os.chmod(0600)` does not restrict access.** It only toggles the read-only
+  attribute; the file stays readable by every other account. Use
+  `icacls <path> /inheritance:r /grant:r "%USERNAME%":F`.
+- **A process started over SSH dies with the session.** Windows puts it in a job
+  object and kills the tree. The broker runs as a scheduled task for this
+  reason.
+- **`subprocess` with `text=True` uses cp1252, not UTF-8.** Anything with an
+  accent or an em-dash raises `UnicodeDecodeError`. Always pass
+  `encoding="utf-8", errors="replace"`. This bit twice.
+- **Read stderr on a thread.** Reading it only after stdout is exhausted
+  deadlocks once the child writes more than the pipe buffer holds.
+
+---
+
+## Never do this
+
+Do not delete geometry by walking the document:
+
+```python
+for o in list(doc.Objects):     # NO
+    doc.Objects.Delete(o.Id, True)
+```
+
+That empties whatever file is open, which is somebody's work. It nearly
+happened here: a cleanup written for what was assumed to be an empty scratch
+document was about to run against a real project file with 56 objects
+in it. It only failed because a service happened to be down.
+
+If you create test geometry, keep the GUID the create call returned and delete
+that one. Call `rhino_state` before writing: a named `.3dm` with objects in it
+is a project, not a scratchpad. A stray test cube left behind is a much smaller
+problem than a deleted model.
+
+The same applies to anything you are asked to do. "Clear the scene so I can
+start fresh" sounds reasonable and would do exactly this damage — confirm which
+document, and what is in it, first.
 
 ---
 
 ## Files here
 
-| File | What it does |
+| | |
 | --- | --- |
-| `scripts/rhino-poller.py` | the poller — start this inside Rhino |
-| `scripts/rhino-poller-stop.py` | stops it |
-| `broker.py` | the HTTP job broker (runs outside Rhino) |
-| `docs/rhino-next-steps.md` | the full technical history |
-| `docs/rhino-windows-notes.md` | Windows and Rhino gotchas |
-
-## Running it
-
-```powershell
-# 1. broker (outside Rhino) - use Rhino's own Python, nothing to install
-& "$env:USERPROFILE\.rhinocode\py39-rh8\python.exe" "$env:USERPROFILE\3d-mcp\run_broker.py"
-
-# 2. in Rhino: type ScriptEditor once, then from another terminal:
-& "C:\Program Files\Rhino 8\System\RhinoCode.exe" script "$env:USERPROFILE\3d-mcp\scripts\rhino-poller.py"
-
-# 3. check it
-curl -H "X-Fusion-Bridge-Token: <token>" http://127.0.0.1:7656/health
-```
-
-The token is a shared secret in `%USERPROFILE%\.fusion-mcp\token`. The broker
-binds loopback only and refuses any request without it.
-
----
-
-## Status: the chain WORKS end to end
-
-Proven on your machine:
-
-```
-submit  -> broker -> poller (Rhino UI thread) -> result
-```
-
-* `state` returns the live document: units, tolerance, object count, layers.
-* `execute` runs arbitrary Rhino Python. A sphere and a box were built this
-  way, `before: 0 -> after: 2`, stdout captured, and they are still in the
-  document.
-* Rhino stayed up throughout - no crashes with this design.
-
-The broker runs as a scheduled task (`scripts/broker-service.ps1`), because a
-process launched over SSH dies when the session ends: Windows puts it in a job
-object and kills the tree. The scheduled task is owned by the task scheduler
-instead, and survives.
-
-Viewport capture works too, via `screenshot`:
-
-```json
-{"kind": "screenshot", "payload": {"view": "perspective", "width": 1200, "height": 800}}
-```
-
-Views: `perspective`, `top`, `front`, `right`, `fit`. Returns the PNG as
-base64, the same contract the Fusion bridge uses. Size is validated and
-REJECTED if out of range rather than quietly clamped - a capture that silently
-differs from what was asked for hides bugs.
-
-**Why not `rs.Command('_-ViewCaptureToFile ...')`:** it re-enters Rhino's
-command pipeline from inside a timer tick, never returns, and takes the broker
-down with it. `Rhino.Display.ViewCapture` is a direct API call and works fine
-from the same place - and unlike the command, it honours the requested size.
-The command ignored `_Width`/`_Height` entirely and returned the viewport's
-aspect (1116x323 when 1200x800 was asked for).
-
-## What would genuinely help
-
-`export` is the last Fusion feature Rhino lacks - STL/STEP/3DM out of the
-document. Everything needed is in place; it is another handler beside the
-three that already work.
-
-After that: `rhino-poller.py` has handlers for `execute` and `state`. Adding
-`screenshot` (via `_-ViewCaptureToFile`) and `export` would bring Rhino to
-parity with what Fusion already does.
-
-If you fix or improve anything, tell Franco — changes get pulled back and
-committed to the repo with attribution.
-
-Thanks for lending your machine. It is the only Rhino we have.
+| `SETUP.md` | setup instructions, written for you |
+| `rhino-chat.py` | the chat window |
+| `rhino_mcp.py` | the MCP server |
+| `rhino-poller.py` | the poller that runs inside Rhino |
+| `broker.py` | the job broker |
+| `broker-service.ps1` | starts the broker so it survives the shell |
+| `start-broker.sh`, `start-poller.sh` | the macOS/Linux equivalents |
+| `RHINO-CHAT.cmd` | double-click to open the window |
+| `docs/` | the full technical history, including what failed and why |
