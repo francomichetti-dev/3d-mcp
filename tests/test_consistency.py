@@ -185,6 +185,52 @@ truthy("SECURITY.md quotes that number",
        "%d concurrent connections" % (list(caps.values()) or [0])[0] in security_doc)
 
 
+# ------------------------------------------------------- no outbound calls --
+# SECURITY.md: "The bridge, the MCP server and the chat service make no
+# outbound calls at all. There is no telemetry." That is the kind of promise
+# that stays true only until someone adds a version check, a crash reporter or
+# a docs fetch without thinking of it as a network call.
+#
+# An allowlist rather than a ban, so a genuinely needed URL is a deliberate
+# edit to this list with a reason, not a silent addition.
+print("No outbound calls")
+ALLOWED_URLS = {
+    # The install command the Rhino window SHOWS the user to copy. It is a
+    # display string; nothing here ever fetches it.
+    "https://claude.ai/install.sh",
+    "https://claude.ai/install.ps1",
+}
+
+# OUR code only. An earlier version of this scan globbed the tree and swept
+# server/.venv, then reported a few hundred URLs from third-party packages -
+# a check that noisy is a check nobody reads.
+NOT_OURS = (".venv", "site-packages", "__pycache__", "node_modules")
+
+found_urls = set()
+sources = sorted(list((REPO / "server" / "src").rglob("*.py"))
+                 + list((REPO / "agent").rglob("*.py"))
+                 + list((REPO / "scripts").rglob("*.py")))
+sources = [p for p in sources if not any(part in NOT_OURS for part in p.parts)]
+truthy("the scan found our sources", len(sources) >= 5)
+for source in sources:
+    for url in re.findall(r"https?://[a-zA-Z0-9./_-]+",
+                          source.read_text(encoding="utf-8")):
+        if not url.startswith(("http://127.0.0.1", "http://localhost")):
+            found_urls.add(url)
+
+check("no URL outside loopback and the allowlist", found_urls - ALLOWED_URLS, set())
+truthy("and the loopback URLs are actually there, so the scan is looking",
+       any("127.0.0.1" in read(rel) for rel in ALL_SPEAKERS))
+
+# The install strings must stay strings. If one ever reaches a fetch, this is
+# the file where that shows up.
+chat = read(RHINO_CHAT)
+for url in ALLOWED_URLS:
+    if url in chat:
+        for opener in ("urlopen(%s" % url, 'urlopen("%s' % url):
+            check(f"{url} is never fetched", opener in chat, False)
+
+
 # ---------------------------------------------------------------- loopback --
 # The one security property that must never regress: nothing binds to anything
 # but loopback, on either side.
