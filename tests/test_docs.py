@@ -118,6 +118,43 @@ listed = set(re.findall(r"\| `(test_\w+\.py)` \|", readme))
 actual = {p.name for p in suites}
 check("the README lists every suite", listed, actual)
 
+# The count is quoted in more than one document, and only the README's was
+# checked - so a handover doc sat at 375 long after the real number was 402.
+# Any doc that states a whole-suite total must agree with the README's.
+if quoted:
+    disagreeing = []
+    for path in MARKDOWN:
+        for num, line in enumerate(path.read_text(encoding="utf-8").splitlines(), 1):
+            # Only whole-suite claims; per-file claims are checked below.
+            if re.search(r"`tests/test_\w+\.py`", line):
+                continue
+            for said in re.findall(r"(?:are|There are|all)\s+(\d+)\s+assertions", line):
+                if said != quoted.group(1):
+                    disagreeing.append(f"{path.relative_to(REPO)}:{num} says {said}")
+    check("every doc quoting the total agrees with the README", disagreeing, [])
+
+# A claim about ONE suite can be checked exactly, by running it. This is the
+# only count in the docs that is verified rather than cross-referenced.
+per_file = []
+for path in MARKDOWN:
+    text = path.read_text(encoding="utf-8")
+    per_file += re.findall(r"(\d+) assertions in `tests/(test_\w+\.py)`", text)
+
+for said, name in per_file:
+    suite = REPO / "tests" / name
+    if not suite.exists():
+        check(f"{name} exists to be counted", False, True)
+        continue
+    if name == Path(__file__).name:          # would recurse
+        continue
+    run = subprocess.run([sys.executable, str(suite)], cwd=REPO,
+                         capture_output=True, text=True, timeout=300)
+    got = re.search(r"^(\d+) passed", run.stdout, re.M)
+    # Some suites need the packaged environment and cannot run bare; a suite
+    # that will not start here is not evidence that the doc is wrong.
+    if got:
+        check(f"the docs' count for {name} matches running it", got.group(1), said)
+
 # Commands the README tells people to run must exist.
 for command in re.findall(r"`(scripts/[\w/.-]+\.(?:sh|ps1|cmd|py))`", readme):
     truthy(f"{command} exists", (REPO / command).exists())
@@ -159,6 +196,10 @@ for path in MARKDOWN:
         continue
     for ref in re.findall(r"`((?:scripts|server|agent|tests)/[\w/.-]+)`",
                           path.read_text(encoding="utf-8")):
+        # A log is written at runtime, so it is absent from a fresh checkout by
+        # definition - pointing someone at one is correct, not stale.
+        if ref.endswith(".log"):
+            continue
         if ref not in tracked and not (REPO / ref).exists():
             stale.append(f"{path.relative_to(REPO)} -> {ref}")
 check("no doc references a path that no longer exists", stale, [])
