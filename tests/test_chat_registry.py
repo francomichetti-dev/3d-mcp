@@ -380,6 +380,7 @@ async def recovery_checks():
         session.ready.set()
         session.start_error = None
         session.busy = False
+        session.transport_failures = 0
         session.sdk_session_id = None
 
         session.events = []
@@ -435,6 +436,122 @@ async def recovery_checks():
 
 
 asyncio.run(recovery_checks())
+
+
+# Three more ways this path could still leave somebody typing into nothing.
+print("The failure modes around the reconnect")
+
+
+async def hardening_checks():
+    from claude_agent_sdk import CLIJSONDecodeError
+
+    def bare_session():
+        registry = svc.Registry.__new__(svc.Registry)
+        registry.subscribers = set()
+        registry.store = svc.Store(Path(tempfile.mkdtemp()) / "chats.json")
+        registry._dirty = False
+
+        async def pin(_key):
+            return None
+
+        registry.pin = pin
+        registry.publish = lambda event: None
+        registry.append_transcript = lambda *a, **k: None
+
+        s = svc.Session.__new__(svc.Session)
+        s.key = "k"
+        s.name = "design"
+        s.registry = registry
+        s.client = None
+        s.pending = {}
+        s.lock = asyncio.Lock()
+        s.ready = asyncio.Event()
+        s.start_error = None
+        s.busy = False
+        s.transport_failures = 0
+        s.sdk_session_id = None
+        s.events = []
+
+        async def emit(event):
+            s.events.append(event)
+
+        s.emit = emit
+        return s
+
+    # 1. A session that already failed to start must say so at once. Waiting
+    #    the full 60s for an Event that nothing will ever set reproduces the
+    #    exact symptom this whole fix is about: type, and nothing happens.
+    s = bare_session()
+    s.start_error = "agent failed to start: claude not found"
+    began = asyncio.get_event_loop().time()
+    await asyncio.wait_for(s.run_turn("hello"), timeout=5)
+    took = asyncio.get_event_loop().time() - began
+    truthy("a known-broken session answers immediately, not after the timeout",
+           took < 2)
+    truthy("and says what actually went wrong",
+           any("claude not found" in (e.get("message") or "") for e in s.events))
+
+    # 2. The race: ready is set, so a queued turn gets past the readiness check
+    #    while a reconnect is in flight, and finds no client by the time it
+    #    holds the lock. That used to be an assert, which reports as
+    #    AttributeError on NoneType and vanishes entirely under -O.
+    s = bare_session()
+    s.ready.set()          # looks ready...
+    s.client = None        # ...but the reconnect already tore the client down
+    await asyncio.wait_for(s.run_turn("hello"), timeout=5)
+    check("a turn with no client is refused, not crashed", s.busy, False)
+    messages = [e.get("message") or "" for e in s.events]
+    truthy("and the person is told to try again rather than shown a traceback",
+           any("restarting" in m for m in messages))
+    truthy("with no NoneType error leaking out",
+           not any("NoneType" in m for m in messages))
+
+    # 3. A transport that fails every time must stop respawning and ask for a
+    #    restart. Retrying forever is a subprocess per message and no signal.
+    s = bare_session()
+    s.ready.set()
+    boom = CLIJSONDecodeError("oversized", ValueError("oversized"))
+    s.client = _DeadClient(boom)
+    s.starts = 0
+
+    async def start():
+        s.starts += 1
+        s.client = _DeadClient(boom)      # still broken
+        s.ready.set()
+
+    s.start = start
+
+    async def send(_p, _i):
+        return None
+
+    s._send = send
+
+    for _ in range(svc.MAX_TRANSPORT_RETRIES + 3):
+        await asyncio.wait_for(s.run_turn("go"), timeout=5)
+
+    check("it stops rebuilding after the threshold",
+          s.starts, svc.MAX_TRANSPORT_RETRIES)
+    truthy("and says how to recover",
+           any("Restart the service" in (e.get("message") or "") for e in s.events))
+    truthy("promising the conversation is kept",
+           any("conversation is saved" in (e.get("message") or "") for e in s.events))
+
+    # A turn that reaches the model clears the streak, so an isolated blip
+    # never accumulates toward the give-up threshold.
+    s = bare_session()
+    s.ready.set()
+    s.transport_failures = 2
+    s.client = _DeadClient(RuntimeError("an ordinary tool failure"))
+
+    async def send2(_p, _i):
+        return None
+
+    s._send = send2
+    await asyncio.wait_for(s.run_turn("go"), timeout=5)
+    check("an ordinary failure resets the streak", s.transport_failures, 0)
+
+
+asyncio.run(hardening_checks())
 
 # The SDK's 1 MiB default is what broke; the service must raise it. A 1920x1440
 # viewport measured 631 KB of base64 on its own, so a turn that looks at the

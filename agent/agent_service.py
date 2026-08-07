@@ -88,6 +88,9 @@ MAX_IMAGE_BYTES = 5 * 1024 * 1024
 # and a screenshot-heavy turn goes past it; the add-in already refuses a
 # body over 5 MB, so nothing legitimate approaches this.
 MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
+# Consecutive transport failures before the service stops rebuilding the
+# client and asks for a restart instead of retrying silently forever.
+MAX_TRANSPORT_RETRIES = 3
 MAX_IMAGES_PER_MESSAGE = 8
 # id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
 # serving, so a crafted id cannot walk out of the attachments directory.
@@ -336,6 +339,10 @@ class Session:
         self.ready = asyncio.Event()
         self.start_error: str | None = None
         self.busy = False
+        # Consecutive transport failures. Reset by any turn that reaches
+        # the model at all, so an isolated blip never counts toward the
+        # give-up threshold.
+        self.transport_failures = 0
         # Captured from the SDK's own messages so the conversation can be
         # resumed after a restart.
         self.sdk_session_id: str | None = None
@@ -558,6 +565,14 @@ class Session:
 
     async def run_turn(self, prompt: str,
                        images: list[dict[str, Any]] | None = None) -> None:
+        # A session that has already failed to start is not going to become
+        # ready by being waited on. Without this the panel sits silent for the
+        # full timeout before saying anything, which is the same "it stopped
+        # answering" the transport bug caused.
+        if self.start_error and self.client is None:
+            await self.emit({"type": "error", "message": self.start_error})
+            self.registry.publish({"type": "turn_end", "doc": self.key})
+            return
         try:
             await asyncio.wait_for(self.ready.wait(), timeout=60)
         except asyncio.TimeoutError:
@@ -565,8 +580,23 @@ class Session:
                              "message": self.start_error or "agent did not start in time"})
             self.registry.publish({"type": "turn_end", "doc": self.key})
             return
-        assert self.client is not None
         async with self.lock:
+            # Re-checked here, inside the lock, and not with an assert.
+            #
+            # The readiness check above happens before the lock, so a message
+            # queued behind a turn that is reconnecting passes it while the old
+            # client is still in place, then waits. By the time it holds the
+            # lock the client may have been torn down and replaced, or a failed
+            # reconnect may have left None. An assert would report that as
+            # AttributeError on NoneType, and disappears entirely under -O.
+            if self.client is None:
+                await self.emit({
+                    "type": "error",
+                    "message": self.start_error
+                    or "the agent is restarting — send that again in a moment",
+                })
+                self.registry.publish({"type": "turn_end", "doc": self.key})
+                return
             self.busy = True
             # Fence the bridge to this design for the whole turn. The document
             # watcher also interrupts on a tab switch, but it only polls once a
@@ -594,6 +624,11 @@ class Session:
                 # next message goes to the same conversation.
                 log.exception("turn failed for %s", self.key)
                 await self.emit({"type": "error", "message": str(exc)})
+                # A turn that got as far as a normal failure proves the
+                # transport is alive, so earlier trouble is not a streak.
+                self.transport_failures = 0
+            else:
+                self.transport_failures = 0
             finally:
                 self.busy = False
                 await self.registry.pin(None)
@@ -603,9 +638,31 @@ class Session:
         """Rebuild a client whose transport has died, keeping the conversation.
 
         start() resumes from the stored session id, so what the model knows
-        survives; only the subprocess is replaced. If even that fails, start()
-        has already reported why and left start_error set.
+        survives; only the subprocess is replaced.
+
+        Bounded, because reconnecting is only the right answer when the failure
+        was a one-off. If the transport dies every turn — a CLI that will not
+        run, something that overflows whatever the buffer is set to — retrying
+        forever spawns a subprocess per message and tells the person nothing
+        except that it is broken again.
         """
+        self.transport_failures += 1
+        if self.transport_failures > MAX_TRANSPORT_RETRIES:
+            self.ready.clear()
+            old, self.client = self.client, None
+            if old is not None:
+                with contextlib.suppress(Exception):
+                    await old.disconnect()
+            self.start_error = (
+                f"the agent connection failed {self.transport_failures} times in a row. "
+                "Restart the service with `scripts/fusion-chat.sh --stop` and open the "
+                "panel again; the conversation is saved and will resume."
+            )
+            log.error("giving up reconnecting %s after %d failures",
+                      self.key, self.transport_failures)
+            await self.emit({"type": "error", "message": self.start_error})
+            return
+
         self.ready.clear()
         old, self.client = self.client, None
         if old is not None:
