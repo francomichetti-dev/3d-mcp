@@ -263,7 +263,11 @@ A sample of what it documents, all verified against a running Fusion 2704:
 
 ## Requirements
 
-- macOS with Autodesk Fusion installed and launched at least once
+The two halves are independent — install whichever CAD you actually use, or both.
+
+**Fusion** (macOS)
+
+- Autodesk Fusion installed and launched at least once
 - [`uv`](https://docs.astral.sh/uv/) and `python3` on `PATH`
 - **Any MCP client.** The server imports nothing Claude-specific, so Claude Desktop, Claude Code,
   Cline, Zed and anything else that speaks MCP all work. The `claude` CLI is optional — it only
@@ -272,7 +276,16 @@ A sample of what it documents, all verified against a running Fusion 2704:
   CLI or an `ANTHROPIC_API_KEY`. The SDK ships its own CLI, so a separate Claude Code install is
   not required.
 
+**Rhino 8** (Windows or macOS)
+
+- Rhino 8, opened once and the `ScriptEditor` command run — that is what builds Rhino's Python
+- [Claude Code](https://code.claude.com/docs/en/setup) with a Pro, Max or Team plan. **No API key
+  and no `uv`**: the Rhino half runs on Rhino's own Python and your existing subscription.
+- `pywebview`, for the chat window only — the launcher installs it on first run
+
 ## Install
+
+### Fusion
 
 ```sh
 git clone https://github.com/francomichetti-dev/3d-mcp.git
@@ -280,7 +293,23 @@ cd 3d-mcp
 scripts/install.sh
 ```
 
-That is the whole install: MCP tools, the docked chat panel, and the Fusion knowledge skill.
+That is the whole Fusion install: MCP tools, the docked chat panel, and the Fusion knowledge skill.
+`install.sh` knows only where Fusion keeps add-ins on **macOS** and refuses to run elsewhere,
+naming the platform rather than failing obscurely.
+
+### Rhino
+
+Nothing to build and no installer. After cloning, open Rhino, then ask Claude Code to do the rest:
+
+```
+Set up the Rhino bridge in "<path>/scripts/rhino" — read SETUP.md there and do what it says.
+```
+
+`SETUP.md` is written for the agent: it locates Rhino's Python, registers the MCP server, starts
+the broker and the poller, and then proves it worked by reading your open document back to you.
+The [Rhino 8](#rhino-8) section above explains what it is connecting and why the design differs
+from Fusion's; the chat window's Settings screen has the manual commands if you would rather run
+them yourself.
 
 > **Not yet on PyPI.** The package is built and its release pipeline is in place, but
 > `fusion-3d-mcp` has not been published — so `uvx fusion-3d-mcp` will not work until it is. Once
