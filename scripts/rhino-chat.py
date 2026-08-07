@@ -47,6 +47,36 @@ IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+# Rhino 8 runs on macOS as well as Windows, so nothing user-facing may assume
+# PowerShell or .cmd files. Everything platform-specific is resolved here once.
+if os.name == "nt":
+    PLATFORM = "windows"
+elif sys.platform == "darwin":
+    PLATFORM = "macos"
+else:
+    PLATFORM = "linux"
+
+INSTALL_COMMAND = {
+    "windows": "irm https://claude.ai/install.ps1 | iex",
+    "macos": "curl -fsSL https://claude.ai/install.sh | bash",
+    "linux": "curl -fsSL https://claude.ai/install.sh | bash",
+}[PLATFORM]
+
+TERMINAL_NAME = {"windows": "PowerShell", "macos": "Terminal",
+                 "linux": "a terminal"}[PLATFORM]
+
+# How the person starts the two background pieces on their platform.
+START_STEPS = {
+    "windows": ("Double-click <code>START-BROKER.cmd</code>, open Rhino and run "
+                "the <code>ScriptEditor</code> command once, then double-click "
+                "<code>START-POLLER.cmd</code>."),
+    "macos": ("Run <code>./start-broker.sh</code>, open Rhino and run the "
+              "<code>ScriptEditor</code> command once, then run "
+              "<code>./start-poller.sh</code>."),
+    "linux": ("Run <code>./start-broker.sh</code>, then start the poller from "
+              "inside Rhino."),
+}[PLATFORM]
+
 
 # --------------------------------------------------------------------------
 # Finding Claude Code
@@ -225,7 +255,10 @@ class Api:
             "claude_found": bool(claude),
             "claude_path": claude,
             "claude_version": version,
-            "install_ps": "irm https://claude.ai/install.ps1 | iex",
+            "platform": PLATFORM,
+            "install_cmd": INSTALL_COMMAND,
+            "terminal": TERMINAL_NAME,
+            "start_steps": START_STEPS,
             # One line, paths already correct, pasteable as-is.
             "mcp_add": 'claude mcp add rhino -- "%s" "%s"' % (sys.executable, MCP_SERVER),
             "python_path": sys.executable,
@@ -519,7 +552,7 @@ small{color:var(--dim);font-size:12px}
            nothing to pay for separately.</p>
         <ol>
           <li>
-            <b>Install Claude Code.</b> Open <b>PowerShell</b> and paste:
+            <b>Install Claude Code.</b> Open <b id="term">a terminal</b> and paste:
             <div class="cmd"><code id="c-install"></code>
               <button class="copy" data-for="c-install">Copy</button></div>
             <small>Needs a Claude Pro, Max, or Team plan — the free plan does
@@ -531,10 +564,7 @@ small{color:var(--dim);font-size:12px}
             <div class="status" id="s-claude">checking…</div>
           </li>
           <li>
-            <b>Start Rhino's side.</b> Double-click
-            <code>START-BROKER.cmd</code>, open Rhino and type
-            <code>ScriptEditor</code> once, then double-click
-            <code>START-POLLER.cmd</code>.
+            <b>Start Rhino's side.</b> <span id="startsteps"></span>
             <div class="status" id="s-rhino">checking…</div>
           </li>
         </ol>
@@ -554,10 +584,10 @@ small{color:var(--dim);font-size:12px}
         <h3>If the dot is not green</h3>
         <p style="margin:0">
           <b>Red, “Claude Code not installed”</b> — do steps 1 and 2.<br><br>
-          <b>Red, “broker not running”</b> — double-click START-BROKER.cmd.<br><br>
+          <b>Red, “broker not running”</b> — do step 3.<br><br>
           <b>Amber, “Rhino not connected”</b> — Rhino must be open, with
-          <code>ScriptEditor</code> run once this session, then
-          START-POLLER.cmd.<br><br>
+          <code>ScriptEditor</code> run once this session, then the poller
+          started.<br><br>
           Restarting Rhino stops the poller, so repeat the last part after any
           Rhino restart. The conversation itself is kept.
         </p>
@@ -638,7 +668,9 @@ $("box").addEventListener("keydown", (e) => {
 /* ---- settings ---- */
 async function loadSetup(){
   const s = await window.pywebview.api.setup_info();
-  $("c-install").textContent = s.install_ps;
+  $("c-install").textContent = s.install_cmd;
+  $("term").textContent = s.terminal;
+  $("startsteps").innerHTML = s.start_steps;
   $("c-mcp").textContent = s.mcp_add;
   const el = $("s-claude");
   if (s.claude_found){
