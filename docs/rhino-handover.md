@@ -1,12 +1,12 @@
 # mcp-rhino — everything Claude needs on this machine
 
-You are Claude Code, running on the tester's PC. This folder is a working copy of
-part of `3d-mcp`, a project by Franco that lets someone model in CAD by asking
-for what they want.
+You are Claude Code, running on the machine where Rhino is installed. This
+folder is a working copy of part of `3d-mcp`, a project that lets someone model
+in CAD by asking for what they want.
 
-the tester uses it in Rhino 8, and it works — he has modelled real parts with it.
-He may now ask you to change or fix something. This file is what you need to do
-that well.
+It works — real parts have been modelled with it. The person you are working
+with may now ask you to change or fix something. This file is what you need to
+do that well.
 
 ---
 
@@ -40,29 +40,29 @@ and it crashed Rhino repeatedly.
 
 ## Setting it up
 
-`SETUP.md`, in this folder, is written for you. the tester can just ask you to set
-it up and you should be able to, without handing him commands to run.
+`SETUP.md`, in this folder, is written for you. The person can just ask you to
+set it up and you should be able to, without handing them commands to run.
 
 ---
 
-## If he asks you to change something
+## If you are asked to change something
 
 The repository is `github.com/francomichetti-dev/3d-mcp`. This folder is a copy
 of its `scripts/`, not a clone, so you cannot commit from here.
 
-Two ways to get a change back to Franco, in order of preference:
+Two ways to get a change back upstream, in order of preference:
 
-1. **Push it.** If the tester has access to the repo, clone it properly, make the
+1. **Push it.** If the person has access to the repo, clone it properly, make the
    change there, run the tests, and open a pull request. Say what you changed
    and why in the description — the commit history in this project explains
    reasoning, not just mechanics.
 2. **Hand it off.** Otherwise write the change plus a short note explaining the
-   problem, what you tried, and what worked, and give that to the tester to send
+   problem, what you tried, and what worked, and hand that over to be sent
    on. A diff with the reasoning attached is far more useful than a description
    of a diff.
 
 Either way: **run the test suite** (`tests/run.sh` in the repo) before saying it
-works. There are 345 assertions and they are quick.
+works. There are 375 assertions and they are quick.
 
 ---
 
@@ -113,8 +113,8 @@ for o in list(doc.Objects):     # NO
 ```
 
 That empties whatever file is open, which is somebody's work. It nearly
-happened here: a cleanup written for what was assumed to be an empty scratch
-document was about to run against a real project file with 56 objects
+happened during development: a cleanup written for what was assumed to be an
+empty scratch document was about to run against a real project with 56 objects
 in it. It only failed because a service happened to be down.
 
 If you create test geometry, keep the GUID the create call returned and delete

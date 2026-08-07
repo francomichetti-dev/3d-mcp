@@ -191,8 +191,7 @@ for o in list(doc.Objects):
 
 That deletes the person's model, not your test cube. It nearly did: a cleanup
 written for what was believed to be an empty scratch document ran after Rhino
-had restarted into a real project file — 56 objects of someone's real
-work. It only failed because the broker happened to be down at that moment.
+had restarted into a real project — 56 objects of someone's actual work. It only failed because the broker happened to be down at that moment.
 
 The document you tested in is not the document you clean up in. Rhino restarts,
 people open their own files, and an unsaved scratch document is indistinguishable
