@@ -365,6 +365,52 @@ try:
         bk.CLAIM_WAIT_S = _ceiling
 
     check("a non-numeric wait -> 400", call("GET", "/claim?wait=soon")[0], 400)
+
+    # ------------------------------------------------- connection cap --------
+    # The broker used to be an unbounded ThreadingHTTPServer while SECURITY.md
+    # described the cap as covering both sides. The cap is easy to add and easy
+    # to get subtly wrong: if a slot is not released on every path, the service
+    # keeps working until exactly MAX_CONCURRENT_CONNECTIONS requests have been
+    # served and then refuses everything, which would look like a broker that
+    # dies after a few minutes of normal use.
+    print("Connection cap")
+
+    # The leak check first, because it is the failure that would reach a user.
+    statuses = {call("GET", "/health")[0] for _ in range(bk.MAX_CONCURRENT_CONNECTIONS * 4)}
+    check("far more sequential requests than the cap all succeed", statuses, {200})
+
+    # Now hold the cap open. Each accepted socket takes a slot before any bytes
+    # are read, so connecting without sending is enough.
+    held = []
+    try:
+        for _ in range(bk.MAX_CONCURRENT_CONNECTIONS):
+            sock = _socket.socket()
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", _PORT))
+            held.append(sock)
+
+        refused = _socket.socket()
+        refused.settimeout(5)
+        try:
+            refused.connect(("127.0.0.1", _PORT))
+            refused.sendall(b"GET /health HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n")
+            first = refused.recv(64)
+        finally:
+            refused.close()
+        truthy("the connection past the cap is refused with 503", b"503" in first)
+    finally:
+        for sock in held:
+            sock.close()
+
+    # And the cap is a pause, not a latch: once those close, service resumes.
+    recovered = None
+    for _ in range(50):
+        status = call("GET", "/health")[0]
+        if status == 200:
+            recovered = status
+            break
+        time.sleep(0.1)
+    check("service recovers once the held connections close", recovered, 200)
 finally:
     _server.shutdown()
     _server.server_close()

@@ -234,6 +234,11 @@ ALLOWED_HOSTS = frozenset((
 ))
 MAX_BODY_BYTES = 5 * 1024 * 1024
 
+# Matches the Fusion listener's cap. Nothing legitimate comes close: the poller
+# claims with wait=0 so it never holds a connection, and the MCP server is
+# single-flight, which puts real usage at two or three at once.
+MAX_CONCURRENT_CONNECTIONS = 8
+
 
 def read_token() -> str:
     try:
@@ -356,11 +361,70 @@ def make_handler(broker: Broker):
     return Handler
 
 
+class _BrokerServer(ThreadingHTTPServer):
+    """ThreadingHTTPServer with a bound on how many threads it will spawn.
+
+    The Fusion listener has had this since it was written; the broker did not,
+    and SECURITY.md described the cap as applying to both. An unbounded
+    ThreadingHTTPServer spawns a thread per accepted connection, so a client
+    looping on connect - a buggy poller, not an attacker, since this is
+    loopback behind a token - can exhaust memory rather than being refused.
+
+    The acquire/release pairing is the subtle part, and it is the same one the
+    Fusion side documents at length:
+
+      * the slot is taken in process_request and released in shutdown_request,
+        which socketserver calls exactly once per accepted request on both the
+        success and error paths;
+      * a refused connection is closed with close_request, NOT shutdown_request,
+        so it never releases a slot it did not take;
+      * no try/except releases here, because socketserver already calls
+        shutdown_request when process_request raises - releasing again would be
+        a second release for one acquire, and BoundedSemaphore only detects that
+        while idle, so under load it would silently raise the cap.
+
+    This pairing holds only while ``verify_request`` is not overridden:
+    socketserver calls shutdown_request *without* process_request when it
+    returns False. Add request filtering and this has to be revisited.
+    """
+
+    daemon_threads = True
+    block_on_close = False
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._conn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
+
+    def process_request(self, request, client_address):
+        if not self._conn_slots.acquire(blocking=False):
+            try:
+                request.sendall(
+                    b"HTTP/1.1 503 Service Unavailable\r\n"
+                    b"Content-Length: 0\r\nConnection: close\r\n\r\n"
+                )
+            except OSError:
+                pass
+            self.close_request(request)
+            return
+        ThreadingHTTPServer.process_request(self, request, client_address)
+
+    def shutdown_request(self, request):
+        try:
+            ThreadingHTTPServer.shutdown_request(self, request)
+        finally:
+            try:
+                self._conn_slots.release()
+            except ValueError:
+                # An over-release means the pairing above has been broken. Do
+                # not let it kill the serving thread; the cap is a safety net,
+                # not a correctness invariant of the request itself.
+                pass
+
+
 def serve(broker: Broker | None = None, port: int = BROKER_PORT):
     """Start the broker listener. Returns (server, broker)."""
     broker = broker or Broker()
-    server = ThreadingHTTPServer((BROKER_HOST, port), make_handler(broker))
-    server.daemon_threads = True
+    server = _BrokerServer((BROKER_HOST, port), make_handler(broker))
     thread = threading.Thread(target=server.serve_forever,
                               kwargs={"poll_interval": 0.25},
                               daemon=True, name="BrokerHTTP")

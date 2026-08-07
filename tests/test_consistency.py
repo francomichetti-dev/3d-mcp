@@ -165,6 +165,26 @@ for kind in ["execute", "state", "screenshot"]:
            f'submit("{kind}"' in read(RHINO_MCP))
 
 
+# ------------------------------------------------------- connection cap -----
+# SECURITY.md states one number for both listeners. The broker went without a
+# cap entirely for a while, under a document that said it had one; keeping the
+# two values pinned together is what stops the claim drifting from either side.
+print("Connection cap")
+caps = {}
+for rel in [FUSION_ADDIN, BROKER]:
+    found = re.search(r'MAX_CONCURRENT_CONNECTIONS\s*=\s*(\d+)', read(rel))
+    if found:
+        caps[Path(rel).name] = int(found.group(1))
+
+check("both listeners declare a cap", sorted(caps), ["broker.py", "fusion_bridge_impl.py"])
+check("and it is the same number", len(set(caps.values())), 1)
+check("which is what SECURITY.md says", set(caps.values()), {8})
+
+security_doc = read("SECURITY.md")
+truthy("SECURITY.md quotes that number",
+       "%d concurrent connections" % (list(caps.values()) or [0])[0] in security_doc)
+
+
 # ---------------------------------------------------------------- loopback --
 # The one security property that must never regress: nothing binds to anything
 # but loopback, on either side.
