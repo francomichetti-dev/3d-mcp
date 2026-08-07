@@ -184,6 +184,23 @@ security_doc = read("SECURITY.md")
 truthy("SECURITY.md quotes that number",
        "%d concurrent connections" % (list(caps.values()) or [0])[0] in security_doc)
 
+# The grace period before refusing. Both listeners release a slot on the
+# handler thread after the client has moved on, so refusing the instant the cap
+# is reached turns ordinary sequential traffic into spurious 503s. If the two
+# sides disagree, the same client behaviour succeeds against one CAD and fails
+# against the other, which is the hardest kind of bug to believe.
+graces = {}
+for rel in [FUSION_ADDIN, BROKER]:
+    found = re.search(r'SLOT_GRACE_S\s*=\s*([\d.]+)', read(rel))
+    if found:
+        graces[Path(rel).name] = float(found.group(1))
+
+check("both listeners declare a grace period", sorted(graces),
+      ["broker.py", "fusion_bridge_impl.py"])
+check("and it is the same", len(set(graces.values())), 1)
+truthy("and it is long enough to absorb cleanup, short enough to still refuse",
+       all(0.1 <= g <= 2.0 for g in graces.values()))
+
 
 # ------------------------------------------------------- no outbound calls --
 # SECURITY.md: "The bridge, the MCP server and the chat service make no

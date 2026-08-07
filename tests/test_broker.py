@@ -434,6 +434,39 @@ try:
         for sock in held:
             sock.close()
 
+    # A slot freed DURING the grace period must be used, not refused. This is
+    # the property that matters: the slot is released on the handler thread
+    # after the client has already moved on, so a purely sequential caller can
+    # arrive while the previous connection is still being cleaned up. Refusing
+    # instantly turned that into spurious 503s - measured at 5.8% of 500
+    # sequential requests under CPU load, and it reached CI as a failure in
+    # test_bridge.py.
+    held = []
+    try:
+        for _ in range(bk.MAX_CONCURRENT_CONNECTIONS):
+            sock = _socket.socket()
+            sock.settimeout(5)
+            sock.connect(("127.0.0.1", _PORT))
+            held.append(sock)
+
+        # Free one a little after the request starts, well inside the grace.
+        freed = threading.Timer(0.15, lambda: held[0].close())
+        freed.start()
+        began = time.monotonic()
+        status = call("GET", "/health")[0]
+        waited = time.monotonic() - began
+        freed.cancel()
+
+        check("a slot freed within the grace period is used, not refused",
+              status, 200)
+        truthy("and the caller waited for it rather than failing fast",
+               waited >= 0.1)
+        truthy("but no longer than the grace period allows",
+               waited < bk.SLOT_GRACE_S + 2.0)
+    finally:
+        for sock in held:
+            sock.close()
+
     # And the cap is a pause, not a latch: once those close, service resumes.
     recovered = None
     for _ in range(50):

@@ -25,6 +25,7 @@ from __future__ import annotations
 import hmac
 import json
 import os
+import sys
 import threading
 import time
 import uuid
@@ -238,6 +239,9 @@ MAX_BODY_BYTES = 5 * 1024 * 1024
 # claims with wait=0 so it never holds a connection, and the MCP server is
 # single-flight, which puts real usage at two or three at once.
 MAX_CONCURRENT_CONNECTIONS = 8
+# How long to wait for a slot before refusing. Absorbs the lag between a client
+# finishing and the server releasing its slot; see _BrokerServer.process_request.
+SLOT_GRACE_S = 0.5
 
 
 def read_token() -> str:
@@ -396,7 +400,22 @@ class _BrokerServer(ThreadingHTTPServer):
         self._conn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
 
     def process_request(self, request, client_address):
-        if not self._conn_slots.acquire(blocking=False):
+        # Wait briefly rather than refusing the instant the cap is reached.
+        #
+        # A slot is released in shutdown_request, which runs on the handler
+        # thread AFTER the client has already read its response and moved on.
+        # So a purely sequential client - one that never opens two connections
+        # at once - can outrun the release and be refused. Measured on this
+        # machine: 1000 rapid sequential requests with the CPU idle produced
+        # zero refusals, but 500 of the same requests under CPU contention
+        # produced 29 (5.8%). A CI runner is exactly that contended, which is
+        # how this was found.
+        #
+        # The bound is unchanged: never more than MAX_CONCURRENT_CONNECTIONS
+        # threads. This only stops a queue of finished-but-not-yet-cleaned-up
+        # connections from being mistaken for load. A genuine flood still fills
+        # the slots for longer than the grace period and is still refused.
+        if not self._conn_slots.acquire(timeout=SLOT_GRACE_S):
             try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
@@ -407,6 +426,18 @@ class _BrokerServer(ThreadingHTTPServer):
             self.close_request(request)
             return
         ThreadingHTTPServer.process_request(self, request, client_address)
+
+    def handle_error(self, request, client_address):
+        """A client hanging up is normal, not an error worth a traceback.
+
+        socketserver's default prints the whole stack to stderr. A client that
+        disconnects mid-response - the poller when Rhino closes, a cancelled
+        tool call - produced 844 tracebacks in one load probe, which is noise
+        that buries anything real. Anything else still gets reported.
+        """
+        if not isinstance(sys.exc_info()[1], (ConnectionResetError, BrokenPipeError,
+                                              ConnectionAbortedError)):
+            ThreadingHTTPServer.handle_error(self, request, client_address)
 
     def shutdown_request(self, request):
         try:

@@ -147,6 +147,8 @@ _generation = 0
 # exhaust threads and memory inside Fusion's own process and take unsaved CAD
 # work with it.  Connections beyond this cap are refused at accept time.
 MAX_CONCURRENT_CONNECTIONS = 8
+# Grace period for a slot before refusing; see _BridgeServer.process_request.
+SLOT_GRACE_S = 0.5
 _conn_slots = threading.BoundedSemaphore(MAX_CONCURRENT_CONNECTIONS)
 
 _state_lock = threading.Lock()
@@ -1203,7 +1205,19 @@ class _BridgeServer(ThreadingHTTPServer):
         would release a slot that was never acquired.  Add request filtering and
         this pairing has to be revisited.
         """
-        if not _conn_slots.acquire(blocking=False):
+        # Wait briefly rather than refusing the instant the cap is reached.
+        # The slot is released in shutdown_request, on the handler thread,
+        # AFTER the client has read its response and moved on — so a purely
+        # sequential caller can outrun the release and be refused despite never
+        # opening two connections at once. Measured against the broker, which
+        # has the identical shape: 1000 rapid sequential requests on an idle
+        # machine produced zero refusals, while 500 under CPU contention
+        # produced 29 (5.8%). It surfaced as a CI failure here, in this suite,
+        # as a 503 with an empty body where a /health payload was expected.
+        # The bound is unchanged — never more than MAX_CONCURRENT_CONNECTIONS
+        # threads — and a genuine flood holds the slots past the grace period
+        # and is still refused.
+        if not _conn_slots.acquire(timeout=SLOT_GRACE_S):
             try:
                 request.sendall(
                     b"HTTP/1.1 503 Service Unavailable\r\n"
