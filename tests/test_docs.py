@@ -155,9 +155,13 @@ suites = sorted(REPO.glob("tests/test_*.py"))
 quoted = re.search(r"\*\*(\d+) assertions across (\w+) suites\*\*", readme)
 truthy("the README quotes an assertion count", quoted)
 if quoted:
-    words = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6,
-             "seven": 7, "eight": 8, "nine": 9, "ten": 10}
-    said = words.get(quoted.group(2), 0)
+    words = {"two": 2, "three": 3, "four": 4, "five": 5, "six": 6, "seven": 7,
+             "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+             "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16,
+             "seventeen": 17, "eighteen": 18, "nineteen": 19, "twenty": 20}
+    # An unrecognised word used to fall back to 0, which reads as "the README
+    # is wrong" when the truth is that this table stopped at ten. Say which.
+    said = words.get(quoted.group(2), f"unrecognised number word {quoted.group(2)!r}")
     check("the suite count matches the files on disk", said, len(suites))
 
 # Every suite the README lists in its table must exist, and vice versa.
