@@ -395,7 +395,31 @@ class Api:
         try:
             self._proc = subprocess.Popen(
                 args, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+                # text=True alone uses the LOCALE encoding, which is cp1252 on
+                # a Western Windows install. Claude Code emits UTF-8, so the
+                # first accented character or em-dash raised
+                # UnicodeDecodeError and killed the turn. Measured on the
+                # target machine, not hypothetical. errors="replace" means a
+                # stray byte degrades one character instead of the reply.
+                encoding="utf-8", errors="replace",
                 bufsize=1, cwd=CONFIG_DIR, creationflags=NO_WINDOW)
+
+            # FIX 2: drain stderr on a thread. Reading it only after stdout is
+            # exhausted deadlocks if the child writes more than the pipe buffer
+            # holds (~64 KB): the child blocks writing, so it never closes
+            # stdout, so this never stops reading.
+            collected = []
+
+            def _drain(stream, into):
+                try:
+                    for chunk in stream:
+                        into.append(chunk)
+                except Exception:                            # noqa: BLE001
+                    pass
+
+            drainer = threading.Thread(
+                target=_drain, args=(self._proc.stderr, collected), daemon=True)
+            drainer.start()
         except OSError as exc:
             return {"ok": False, "error": f"could not start Claude Code: {exc}"}
 
@@ -422,9 +446,8 @@ class Api:
                 final = event
 
         self._proc.wait()
-        stderr = ""
-        if self._proc.stderr:
-            stderr = (self._proc.stderr.read() or "").strip()
+        drainer.join(timeout=5)
+        stderr = "".join(collected).strip()
 
         if final is None:
             # No result event means the CLI itself failed - a bad flag, no
@@ -502,6 +525,9 @@ form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:non
 #send{background:var(--accent);color:#0d2233;border:0;border-radius:9px;
       height:40px;padding:0 20px;font:600 14px inherit;cursor:pointer;flex:none}
 #send:disabled{opacity:.45;cursor:default}
+#halt{background:transparent;border:1px solid var(--err);color:var(--err);
+      border-radius:9px;height:40px;padding:0 16px;font:600 14px inherit;
+      cursor:pointer;flex:none}
 #settings{overflow-y:auto;padding:22px;gap:20px;display:flex;flex-direction:column}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
       padding:16px 18px;max-width:660px}
@@ -541,6 +567,7 @@ small{color:var(--dim);font-size:12px}
       <button type="button" id="clip" title="Attach files or photos">📎</button>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
       <button id="send">Send</button>
+      <button id="halt" style="display:none">Stop</button>
     </form>
   </div>
 
@@ -649,13 +676,21 @@ $("form").onsubmit = async (e) => {
   $("box").value = ""; $("box").style.height = "auto";
   bubble("you", text + (attached.length ? "\n\n📎 " + attached.map(a=>a.name).join(", ") : ""));
   attached = []; drawChips();
+  // A modelling turn can run for minutes. Without a way out, a wedged turn
+  // leaves the window unusable with no recourse but killing the process.
   busy = true; $("send").disabled = true; $("clip").disabled = true;
+  $("send").style.display = "none"; $("halt").style.display = "";
   try {
     const r = await window.pywebview.api.chat(text);
     if (!r.ok) bubble("err", r.error || "something went wrong");
   } catch (e) { bubble("err", "the window failed: " + e); }
   finally { busy = false; $("send").disabled = false; $("clip").disabled = false;
+            $("send").style.display = ""; $("halt").style.display = "none";
             $("box").focus(); refresh(); }
+};
+$("halt").onclick = async () => {
+  const r = await window.pywebview.api.stop();
+  if (r.ok) bubble("tool", "stopped");
 };
 $("box").addEventListener("input", (e) => {
   e.target.style.height = "auto";
