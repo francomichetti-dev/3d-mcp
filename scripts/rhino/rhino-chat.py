@@ -18,6 +18,7 @@ Runs on Rhino's own Python (3.9). The only dependency is pywebview.
 import json
 import os
 import shutil
+import stat
 import subprocess
 import sys
 import threading
@@ -117,7 +118,7 @@ def _server_env():
 
 def write_mcp_config():
     """Write the MCP config the CLI is pointed at, with this machine's paths."""
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    ensure_dirs()
     config = {"mcpServers": {"rhino": {
         "command": sys.executable,          # the Python running this window
         "args": [MCP_SERVER],
@@ -135,6 +136,47 @@ def write_mcp_config():
 # --------------------------------------------------------------------------
 
 
+def restrict(path):
+    """Make a file or directory readable only by this account.
+
+    Attachments are whatever the person dragged in - drawings, briefs, photos of
+    a workshop. They are not more public than the document they describe just
+    because they passed through here.
+
+    os.chmod does NOT restrict access on Windows; it only toggles the read-only
+    attribute, so the path stays readable by every other account. Measured on a
+    real machine earlier in this project: after chmod(0600) the ACL still listed
+    SYSTEM, Administrators and the user, all inherited. icacls is what actually
+    restricts it.
+    """
+    if os.name == "nt":
+        user = os.environ.get("USERNAME")
+        if not user:
+            return False
+        try:
+            done = subprocess.run(
+                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)F"],
+                capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW)
+            return done.returncode == 0
+        except (OSError, subprocess.SubprocessError):
+            return False
+    try:
+        os.chmod(path, stat.S_IRWXU if os.path.isdir(path)
+                 else stat.S_IRUSR | stat.S_IWUSR)
+        return True
+    except OSError:
+        return False
+
+
+def ensure_dirs():
+    """Create the state directories with their permissions set, once."""
+    for path, existed in ((CONFIG_DIR, os.path.isdir(CONFIG_DIR)),
+                          (ATTACH_DIR, os.path.isdir(ATTACH_DIR))):
+        os.makedirs(path, exist_ok=True)
+        if not existed:
+            restrict(path)
+
+
 def load_config():
     try:
         with open(CONFIG_PATH, encoding="utf-8") as handle:
@@ -144,7 +186,7 @@ def load_config():
 
 
 def save_config(config):
-    os.makedirs(CONFIG_DIR, exist_ok=True)
+    ensure_dirs()
     with open(CONFIG_PATH, "w", encoding="utf-8") as handle:
         json.dump(config, handle, indent=2)
 
@@ -294,7 +336,7 @@ class Api:
         if not chosen:
             return {"ok": True, "added": []}
 
-        os.makedirs(ATTACH_DIR, exist_ok=True)
+        ensure_dirs()
         added = []
         for source in chosen:
             try:
@@ -313,6 +355,8 @@ class Api:
                 shutil.copy2(source, target)
             except OSError as exc:
                 return {"ok": False, "error": f"could not attach: {exc}"}
+            # copy2 preserves the source's mode, which may be world-readable.
+            restrict(target)
             added.append({"name": os.path.basename(source), "path": target,
                           "is_image": target.lower().endswith(IMAGE_SUFFIXES)})
         self._pending.extend(added)
