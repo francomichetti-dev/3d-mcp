@@ -16,6 +16,11 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v5
+        with:
+          # Full history: tests/test_docs.py scans every blob and commit
+          # message for personal data. The default shallow clone has one
+          # commit in it, so that check would pass without checking.
+          fetch-depth: 0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6

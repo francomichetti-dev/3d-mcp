@@ -199,6 +199,19 @@ def history_blobs():
             continue
 
 
+# A shallow clone has one commit in it, so this whole section would pass
+# without checking anything — which is worse than not having it, because the
+# build goes green and nobody looks again. CI checks out with fetch-depth: 0
+# for this reason; if that is ever dropped, this says so instead of shrugging.
+shallow = subprocess.run(["git", "rev-parse", "--is-shallow-repository"], cwd=REPO,
+                         capture_output=True, text=True).stdout.strip()
+check("the clone is deep enough to scan", shallow, "false")
+
+commit_count = subprocess.run(["git", "rev-list", "--count", "--all"], cwd=REPO,
+                              capture_output=True, text=True).stdout.strip()
+truthy(f"and has real history to scan (saw {commit_count} commits)",
+       commit_count.isdigit() and int(commit_count) > 10)
+
 history_hits = []
 for sha, name, text in history_blobs():
     if sha in KNOWN_HISTORY_BLOBS or sha[:8] in KNOWN_HISTORY_BLOBS:
