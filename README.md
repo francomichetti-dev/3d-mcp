@@ -523,7 +523,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**404 assertions across eight suites**, none of which need Fusion, Rhino, or an internet connection.
+**405 assertions across eight suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -544,6 +544,9 @@ be exercised on a machine with no CAD installed at all.
 `fusion_bridge_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
 [CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to.
 
+[`docs/`](docs/README.md) has the background: the Rhino traps worth knowing before you touch that
+half, the four architectures tried before the one that worked, and what disproved each.
+
 ## Prior art
 
 Built from scratch, but two projects informed the design and deserve credit:
@@ -551,6 +554,8 @@ Built from scratch, but two projects informed the design and deserve credit:
 execute + screenshot, custom-event marshalling, token auth) and
 [rahayesj/ClaudeFusion360MCP](https://github.com/rahayesj/ClaudeFusion360MCP), whose most useful
 finding was that the *knowledge files* mattered more than the bridge code.
+[`docs/reference-notes.md`](docs/reference-notes.md) records exactly what was studied and when —
+mechanisms and design ideas only, with no code copied and nothing third-party running inside a CAD.
 
 ## License
 

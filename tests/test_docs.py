@@ -204,6 +204,17 @@ for path in MARKDOWN:
             stale.append(f"{path.relative_to(REPO)} -> {ref}")
 check("no doc references a path that no longer exists", stale, [])
 
+# The reverse of a broken link, and just as bad: a document nothing points at.
+# Two accumulated here unnoticed - one of them a superseded plan whose code
+# sketches would crash Rhino if anyone found and followed them.
+print("Nothing is orphaned")
+orphans = []
+for path in sorted(REPO.glob("docs/*.md")):
+    others = [p for p in MARKDOWN if p != path]
+    if not any(path.name in p.read_text(encoding="utf-8") for p in others):
+        orphans.append(str(path.relative_to(REPO)))
+check("every doc under docs/ is linked from somewhere", orphans, [])
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
