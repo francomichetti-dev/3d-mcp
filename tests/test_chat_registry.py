@@ -171,6 +171,15 @@ cases = [
     ("app.activeDocument.close(False)", True),
     ("doc.close(True)", True),
     ("doc.saveAs('x', f, '', '')", True),
+    # The pattern is `.saveAs(` OR `.save(`; only the first half had a case, so
+    # a plain save was gated by a branch nothing exercised.
+    ("doc.save()", True),
+    ("doc.save( )", True),
+    # ...and the near-misses that must NOT ask, because a gate that fires on
+    # ordinary API calls trains people to click through it without reading.
+    ("doc.saveAsAlias(name)", False),
+    ("if closeEnough(a, b): pass", False),
+    ("handler = doc.close", False),
     ("extrudes.add(inp)", False),
     ("sk = root.sketches.add(plane)", False),
     ("result = design.rootComponent.bRepBodies.count", False),
