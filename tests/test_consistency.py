@@ -248,6 +248,45 @@ for url in ALLOWED_URLS:
             check(f"{url} is never fetched", opener in chat, False)
 
 
+# ------------------------------------------------------------- version ------
+# Four places declare the version and all four must agree. Until now that was
+# checked only by release.yml, which runs on a tag push — so a bump that
+# touched three of the four would sit broken until release day, which is the
+# worst possible moment to find out: the workflow's own comment notes that a
+# registry entry pointing at a version PyPI does not have is the failure being
+# guarded against.
+print("Version")
+import json as _json  # noqa: E402
+
+versions = {}
+found = re.search(r'^version\s*=\s*"([^"]+)"', read("server/pyproject.toml"), re.M)
+if found:
+    versions["server/pyproject.toml"] = found.group(1)
+found = re.search(r'__version__\s*=\s*"([^"]+)"', read("server/src/fusion_mcp/__init__.py"))
+if found:
+    versions["__init__.py"] = found.group(1)
+try:
+    manifest = _json.loads(read("server.json"))
+    versions["server.json"] = manifest["version"]
+    versions["server.json packages[0]"] = manifest["packages"][0]["version"]
+except (ValueError, KeyError, IndexError):
+    manifest = {}
+
+check("all four version declarations were found", len(versions), 4)
+check("and they agree", len(set(versions.values())), 1)
+truthy("the version looks like a version",
+       all(re.match(r"^\d+\.\d+\.\d+", v) for v in versions.values()))
+
+# The registry verifies PyPI ownership through this marker. Losing it fails the
+# release AFTER the package has already been published, which is unrecoverable
+# for that version number.
+server_readme = read("server/README.md")
+marker = re.search(r"<!--\s*mcp-name:\s*(\S+)\s*-->", server_readme)
+truthy("server/README.md carries the mcp-name marker", marker)
+if marker and manifest:
+    check("and it matches the name in server.json", marker.group(1), manifest.get("name"))
+
+
 # -------------------------------------------------------- host pinning ------
 # Three listeners, three chances to forget. The chat service went without this
 # until it was audited: it binds loopback, which stops another machine but not
