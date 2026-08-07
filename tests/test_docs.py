@@ -150,10 +150,17 @@ for said, name in per_file:
     run = subprocess.run([sys.executable, str(suite)], cwd=REPO,
                          capture_output=True, text=True, timeout=300)
     got = re.search(r"^(\d+) passed", run.stdout, re.M)
-    # Some suites need the packaged environment and cannot run bare; a suite
-    # that will not start here is not evidence that the doc is wrong.
+    # Exactly one assertion whether or not the suite could be run. An earlier
+    # version skipped silently when it could not, which made this file's own
+    # assertion count vary by environment - CI's macOS run came out one short
+    # of the local one and the runner's equality check rejected the README.
+    # A count check must not itself be uncountable.
     if got:
-        check(f"the docs' count for {name} matches running it", got.group(1), said)
+        actual = got.group(1)
+    else:
+        tail = (run.stderr or run.stdout or "").strip().splitlines()[-3:]
+        actual = f"could not run {name}: {' | '.join(tail) or 'no output'}"
+    check(f"the docs' count for {name} matches running it", actual, said)
 
 # Commands the README tells people to run must exist.
 for command in re.findall(r"`(scripts/[\w/.-]+\.(?:sh|ps1|cmd|py))`", readme):
