@@ -52,29 +52,54 @@ MODELS = [
 ]
 DEFAULT_MODEL = MODELS[0][0]
 MODEL_IDS = frozenset(m for m, _ in MODELS)
+
+# Mirrors the Fusion panel; see the note above about the duplication.
+EFFORTS = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "X-High"),
+    ("max", "Max"),
+]
+DEFAULT_EFFORT = "high"
+EFFORT_IDS = frozenset(e for e, _ in EFFORTS)
 # Kept beside the token rather than in the window, so the choice survives
 # closing it.
 SETTINGS_PATH = os.path.join(CONFIG_DIR, "rhino-chat.json")
 
 
-def read_model():
-    """The chosen model, falling back to the default for anything unknown."""
+def read_settings():
+    """The chosen model and effort, each falling back if unknown.
+
+    Validated on read as well as on write: a value dropped from either list in
+    an upgrade must not leave the window unable to start a turn.
+    """
+    stored = {}
     try:
         with open(SETTINGS_PATH, encoding="utf-8") as handle:
-            chosen = json.load(handle).get("model")
+            stored = json.load(handle) or {}
     except (OSError, ValueError):
-        return DEFAULT_MODEL
-    return chosen if chosen in MODEL_IDS else DEFAULT_MODEL
+        stored = {}
+    model = stored.get("model")
+    effort = stored.get("effort")
+    return {
+        "model": model if model in MODEL_IDS else DEFAULT_MODEL,
+        "effort": effort if effort in EFFORT_IDS else DEFAULT_EFFORT,
+    }
 
 
-def write_model(model):
-    if model not in MODEL_IDS:
-        return False
+def write_settings(model=None, effort=None):
+    """Persist whichever values are valid. Returns what is in force after."""
+    current = read_settings()
+    if model in MODEL_IDS:
+        current["model"] = model
+    if effort in EFFORT_IDS:
+        current["effort"] = effort
     ensure_dirs()
     with open(SETTINGS_PATH, "w", encoding="utf-8") as handle:
-        json.dump({"model": model}, handle)
+        json.dump(current, handle)
     restrict(SETTINGS_PATH)
-    return True
+    return current
 
 
 RHINO_TOOLS = ["mcp__rhino__rhino_execute", "mcp__rhino__rhino_state",
@@ -441,15 +466,20 @@ class Api:
                 pass
         return {"ok": False, "error": "nothing running"}
 
-    def models(self):
-        """The list the dropdown shows, plus what is selected now."""
-        return {"models": [{"id": m, "label": label} for m, label in MODELS],
-                "current": read_model()}
+    def settings(self):
+        """Both dropdowns' contents, plus what is selected now."""
+        current = read_settings()
+        return {
+            "models": [{"id": m, "label": label} for m, label in MODELS],
+            "efforts": [{"id": e, "label": label} for e, label in EFFORTS],
+            "model": current["model"],
+            "effort": current["effort"],
+        }
 
-    def set_model(self, model):
-        """Persist a choice. Rejected values leave the setting untouched."""
-        ok = write_model(model)
-        return {"ok": ok, "current": read_model()}
+    def set_settings(self, model, effort):
+        """Persist a choice. Anything unrecognised leaves that value alone."""
+        current = write_settings(model=model, effort=effort)
+        return {"ok": True, **current}
 
     def chat(self, message):
         if not (message or "").strip() and not self._pending:
@@ -485,11 +515,15 @@ class Api:
         prompt = self._build_prompt(message)
         self._pending = []
 
+        settings = read_settings()
         args = [
             claude, "-p", prompt,
-            # Explicit rather than inherited: without it the CLI picks its own
-            # default, which is not necessarily what the window is showing.
-            "--model", read_model(),
+            # Explicit rather than inherited: without these the CLI picks its
+            # own defaults, which are not necessarily what the window shows.
+            # Read per invocation, so a change applies to the next message and
+            # there is nothing to rebuild.
+            "--model", settings["model"],
+            "--effort", settings["effort"],
             # stream-json in print mode REQUIRES --verbose: without it the CLI
             # exits with "requires --verbose" and nothing runs at all.
             "--output-format", "stream-json", "--verbose",
@@ -640,6 +674,11 @@ form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:non
   max-width:96px;align-self:flex-end}
 #model:hover{color:#e6e8ea}
 #model:disabled{opacity:.45;cursor:default}
+#effort{background:transparent;color:#8b8f94;border:1px solid #3a3d42;
+  border-radius:6px;padding:7px 4px;font:inherit;font-size:11px;cursor:pointer;
+  max-width:82px;align-self:flex-end}
+#effort:hover{color:#e6e8ea}
+#effort:disabled{opacity:.45;cursor:default}
 #send{background:var(--accent);color:#0d2233;border:0;border-radius:9px;
       height:40px;padding:0 20px;font:600 14px inherit;cursor:pointer;flex:none}
 #send:disabled{opacity:.45;cursor:default}
@@ -684,6 +723,7 @@ small{color:var(--dim);font-size:12px}
     <form id="form">
       <button type="button" id="clip" title="Attach files or photos">📎</button>
       <select id="model" title="Which model answers in this chat"></select>
+      <select id="effort" title="How hard it thinks before answering"></select>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
       <button id="send">Send</button>
       <button id="halt" style="display:none">Stop</button>
@@ -831,22 +871,35 @@ $("box").addEventListener("keydown", (e) => {
 /* ---- settings ---- */
 async function loadSetup(){
   // Filled from Python so the page never hardcodes a list the CLI would
-  // reject. Switching only affects the NEXT turn — the CLI takes --model per
-  // invocation, so nothing in flight is disturbed.
-  const picker = $('model');
-  const info = await window.pywebview.api.models();
-  info.models.forEach((m) => {
-    const o = document.createElement('option');
-    o.value = m.id; o.textContent = m.label;
-    picker.appendChild(o);
-  });
-  picker.value = info.current;
-  picker.onchange = async () => {
-    const out = await window.pywebview.api.set_model(picker.value);
-    if (!out.ok) { picker.value = out.current; return; }
-    say('notice', 'Now using ' + picker.selectedOptions[0].textContent
-        + ' from the next message.');
+  // reject. Switching affects the NEXT message only — the CLI takes both flags
+  // per invocation, so nothing in flight is disturbed and there is no session
+  // to rebuild.
+  const modelPicker = $('model');
+  const effortPicker = $('effort');
+  const settings = await window.pywebview.api.settings();
+  const fill = (el, options, current) => {
+    options.forEach((o) => {
+      const opt = document.createElement('option');
+      opt.value = o.id; opt.textContent = o.label;
+      el.appendChild(opt);
+    });
+    el.value = current;
   };
+  fill(modelPicker, settings.models, settings.model);
+  fill(effortPicker, settings.efforts, settings.effort);
+  const applySettings = async () => {
+    const out = await window.pywebview.api.set_settings(
+      modelPicker.value, effortPicker.value);
+    // Re-read from what was actually stored, so a rejected value snaps back
+    // rather than leaving the page showing something that is not in force.
+    modelPicker.value = out.model;
+    effortPicker.value = out.effort;
+    say('notice', 'Now using ' + modelPicker.selectedOptions[0].textContent
+        + ' at ' + effortPicker.selectedOptions[0].textContent
+        + ' effort, from the next message.');
+  };
+  modelPicker.onchange = applySettings;
+  effortPicker.onchange = applySettings;
 
   const s = await window.pywebview.api.setup_info();
   $("c-install").textContent = s.install_cmd;

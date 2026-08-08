@@ -376,9 +376,13 @@ if excludes:
 print("The model lists")
 
 
-def model_ids(rel):
-    block = re.search(r"MODELS = \[(.*?)\]", read(rel), re.S)
+def listed(rel, name):
+    block = re.search(name + r" = \[(.*?)\]", read(rel), re.S)
     return re.findall(r'\("([^"]+)",\s*"([^"]+)"\)', block.group(1)) if block else []
+
+
+def model_ids(rel):
+    return listed(rel, "MODELS")
 
 
 fusion_models = model_ids("agent/agent_service.py")
@@ -398,9 +402,29 @@ for rel in ["agent/agent_service.py", RHINO_CHAT]:
 
 # Rhino passes it per invocation; Fusion bakes it into the session options.
 truthy("the Rhino window actually passes --model",
-       '"--model", read_model()' in read(RHINO_CHAT))
+       '"--model", settings["model"]' in read(RHINO_CHAT))
 truthy("the Fusion session reads the selection rather than a constant",
        "model=self.registry.model()" in read("agent/agent_service.py"))
+
+# Effort sits beside the model in both windows and drifts the same way.
+fusion_efforts = listed("agent/agent_service.py", "EFFORTS")
+rhino_efforts = listed(RHINO_CHAT, "EFFORTS")
+truthy("both windows offer effort levels", fusion_efforts and rhino_efforts)
+check("and the same ones, in the same order", fusion_efforts, rhino_efforts)
+# The SDK accepts exactly these five; anything else is refused at connect time,
+# which surfaces as a session that will not start rather than as a bad answer.
+check("matching the levels the SDK accepts",
+      [e for e, _ in fusion_efforts], ["low", "medium", "high", "xhigh", "max"])
+for rel in ["agent/agent_service.py", RHINO_CHAT]:
+    truthy(f"{Path(rel).name} names an explicit effort default",
+           re.search(r'DEFAULT_EFFORT = "(\w+)"', read(rel)))
+check("and both default to the same level",
+      re.search(r'DEFAULT_EFFORT = "(\w+)"', read("agent/agent_service.py")).group(1),
+      re.search(r'DEFAULT_EFFORT = "(\w+)"', read(RHINO_CHAT)).group(1))
+truthy("the Rhino window passes --effort",
+       '"--effort", settings["effort"]' in read(RHINO_CHAT))
+truthy("the Fusion session passes effort too",
+       "effort=self.registry.effort()" in read("agent/agent_service.py"))
 
 
 # -------------------------------------------------------- host pinning ------

@@ -165,6 +165,13 @@
   }
   #model:hover { color: var(--fg); border-color: var(--dim); }
   #model:disabled { opacity: .45; cursor: default; }
+  #effort {
+    align-self: flex-end; background: transparent; color: var(--dim);
+    border: 1px solid var(--line); border-radius: 6px; padding: 8px 4px;
+    font: inherit; font-size: 11px; cursor: pointer; max-width: 82px;
+  }
+  #effort:hover { color: var(--fg); border-color: var(--dim); }
+  #effort:disabled { opacity: .45; cursor: default; }
   /* the whole panel is the drop target, so aim is not a skill requirement */
   body.dragging #log { outline: 2px dashed var(--accent); outline-offset: -8px; }
   textarea {
@@ -212,6 +219,7 @@
     <div id="row">
       <button id="attach" title="Attach images — or drag them in, or paste">＋</button>
       <select id="model" title="Which model answers in this chat"></select>
+      <select id="effort" title="How hard it thinks before answering"></select>
       <textarea id="input" rows="1" placeholder="Describe what to model, or how to change it…"></textarea>
       <button id="send">Send</button>
     </div>
@@ -305,45 +313,52 @@ function lost() {
 
 const modelPicker = document.getElementById('model');
 
-// Populated from the service rather than hardcoded here, so the list cannot
-// drift from what the service will actually accept.
-function renderModels(models, current) {
-  if (!models || !models.length) return;
-  const same = Array.from(modelPicker.options).map((o) => o.value).join(',')
-             === models.map((m) => m.id).join(',');
+
+const effortPicker = document.getElementById('effort');
+
+function fillPicker(el, options, current) {
+  if (!options || !options.length) return;
+  const same = Array.from(el.options).map((o) => o.value).join(',')
+             === options.map((o) => o.id).join(',');
   if (!same) {
-    modelPicker.textContent = '';
-    models.forEach((m) => {
-      const o = document.createElement('option');
-      o.value = m.id;
-      o.textContent = m.label;
-      modelPicker.appendChild(o);
+    el.textContent = '';
+    options.forEach((o) => {
+      const opt = document.createElement('option');
+      opt.value = o.id;
+      opt.textContent = o.label;
+      el.appendChild(opt);
     });
   }
-  if (current) modelPicker.value = current;
+  if (current) el.value = current;
 }
 
-modelPicker.onchange = async () => {
-  const chosen = modelPicker.value;
-  modelPicker.disabled = true;
+// Both pickers hit the same endpoint, because both force the same session
+// rebuild on the service. Sending them together means one rebuild, not two.
+async function applySettings() {
+  const previous = { model: modelPicker.value, effort: effortPicker.value };
+  modelPicker.disabled = effortPicker.disabled = true;
   try {
-    const r = await fetch('/model', {
+    const r = await fetch('/settings', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: chosen }),
+      body: JSON.stringify(previous),
     });
     const out = await r.json();
-    if (!out.ok) { status(out.error || 'Could not switch model.', 'err'); return; }
-    // Switching rebuilds each idle session, resuming it, so the conversation
-    // survives — worth saying, because "switch model" usually means "lose it".
+    if (!out.ok) { status(out.error || 'Could not change that.', 'err'); return; }
+    // Worth saying out loud: "switch model" normally means "lose your context",
+    // and here it does not — the session is rebuilt by resuming it.
     status('Now using ' + (modelPicker.selectedOptions[0] || {}).textContent
-           + '. Your conversations are kept.', 'notice');
+           + ' at ' + (effortPicker.selectedOptions[0] || {}).textContent
+           + ' effort. Your conversations are kept.', 'notice');
   } catch (err) {
-    status('Could not reach the service to switch model.', 'err');
+    status('Could not reach the service to change that.', 'err');
   } finally {
-    modelPicker.disabled = false;
+    modelPicker.disabled = effortPicker.disabled = busy;
   }
-};
+}
+
+modelPicker.onchange = applySettings;
+effortPicker.onchange = applySettings;
 
 function status(text, cls) {
   const d = document.createElement('div');
@@ -469,11 +484,12 @@ function applyDocument(d) {
   }
   // The plan belongs to the design, so it is redrawn from the snapshot on
   // every switch — including back to one whose build finished days ago.
-  renderModels(d.models, d.model);
+  fillPicker(modelPicker, d.models, d.model);
+  fillPicker(effortPicker, d.efforts, d.effort);
   renderPlan(d.design ? d.plan : null);
   if (d.busy) working('Working'); else clearBanner();
   busy = !!d.busy;
-  modelPicker.disabled = busy;
+  modelPicker.disabled = effortPicker.disabled = busy;
   send.disabled = busy || !d.design;
   document.getElementById('attach').disabled = busy || !d.design;
   scroll();
@@ -515,7 +531,7 @@ es.onmessage = (e) => {
     // there for when a still is actually wanted.
     busy = false; send.disabled = false; current = null;
     document.getElementById('attach').disabled = false;
-    modelPicker.disabled = false;
+    modelPicker.disabled = effortPicker.disabled = false;
     finished();
   } else {
     render(ev, true);
@@ -675,14 +691,14 @@ async function submit() {
   pending = []; drawTray();
   input.value = ''; input.style.height = 'auto';
   busy = true; send.disabled = true; attachBtn.disabled = true; current = null;
-  modelPicker.disabled = true;
+  modelPicker.disabled = effortPicker.disabled = true;
   // Immediately, before the first tool call names what it is doing, so the
   // panel never looks like it ignored the message.
   working('Thinking');
 
   const restore = () => {
     busy = false; send.disabled = false; attachBtn.disabled = false;
-    modelPicker.disabled = false;
+    modelPicker.disabled = effortPicker.disabled = false;
     input.value = text; pending = sending; drawTray();
     // A send that never left the browser is not a build in progress.
     clearBanner();

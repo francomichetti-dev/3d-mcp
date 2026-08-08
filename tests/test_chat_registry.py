@@ -902,6 +902,69 @@ truthy("the operation beats the sketch that set it up",
                           {"code": "sk = sketches.add(p)\nfillets.add(inp)"}) == "Filleting")
 
 
+# ------------------------------------------------------------ settings ------
+# Model and effort are both fixed when a session's client connects, so both
+# force a rebuild. What matters is that the rebuild resumes rather than
+# restarts, and that it never lands on a turn already running.
+print("Choosing a model and an effort level")
+
+check("the offered models and efforts are non-empty",
+      bool(svc.MODELS) and bool(svc.EFFORTS), True)
+check("effort levels are exactly what the SDK accepts",
+      [e for e, _ in svc.EFFORTS], ["low", "medium", "high", "xhigh", "max"])
+
+
+async def settings_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        r.publish = lambda event: None
+
+        check("defaults before anything is chosen",
+              (r.model(), r.effort()), (svc.DEFAULT_MODEL, svc.DEFAULT_EFFORT))
+
+        # A value dropped from the list in some later upgrade must not leave the
+        # panel unable to start a session at all.
+        r.store.data["model"] = "claude-removed-in-2027"
+        r.store.data["effort"] = "extreme"
+        check("an unknown stored model falls back", r.model(), svc.DEFAULT_MODEL)
+        check("an unknown stored effort falls back", r.effort(), svc.DEFAULT_EFFORT)
+
+        r.store.data.pop("model"); r.store.data.pop("effort")
+        check("a change is applied and persisted",
+              await r.apply_settings(model="claude-sonnet-5", effort="max"), True)
+        check("both took", (r.model(), r.effort()), ("claude-sonnet-5", "max"))
+        check("and survive a reload",
+              svc.Store(Path(d) / "chats.json").data.get("model"), "claude-sonnet-5")
+
+        check("re-applying the same values changes nothing",
+              await r.apply_settings(model="claude-sonnet-5", effort="max"), False)
+        check("and junk is ignored rather than stored",
+              await r.apply_settings(model="nonsense", effort="nonsense"), False)
+        check("leaving the real values alone",
+              (r.model(), r.effort()), ("claude-sonnet-5", "max"))
+
+        # The reason both live behind one call: each rebuilds every session, so
+        # changing them separately would tear each conversation down twice.
+        rebuilt = []
+
+        class _Session:
+            def __init__(self, busy):
+                self.busy = busy
+
+            async def _reconnect(self):
+                rebuilt.append(self)
+                return True
+
+        idle, running = _Session(False), _Session(True)
+        r.sessions = {"a": idle, "b": running}
+        await r.apply_settings(model="claude-opus-5", effort="low")
+        check("one rebuild for a combined change", len(rebuilt), 1)
+        check("the idle session was rebuilt", rebuilt[0], idle)
+        truthy("and the running turn was left alone", running not in rebuilt)
+
+
+asyncio.run(settings_checks())
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

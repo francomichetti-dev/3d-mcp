@@ -109,6 +109,23 @@ MODELS = [
 DEFAULT_MODEL = MODELS[0][0]
 MODEL_IDS = frozenset(m for m, _ in MODELS)
 
+# How hard the model thinks before answering. Worth exposing beside the model
+# because the two trade against each other: a smaller model at high effort can
+# beat a larger one at low, and a long CAD turn is dominated by tool round
+# trips anyway, so effort costs less wall-clock here than it looks.
+EFFORTS = [
+    ("low", "Low"),
+    ("medium", "Medium"),
+    ("high", "High"),
+    ("xhigh", "X-High"),
+    ("max", "Max"),
+]
+# Explicit rather than leaving it unset. Getting a wrong extrude direction
+# costs a rebuild; thinking a little longer first is the cheaper side of that
+# trade, and most of a turn is spent waiting on Fusion regardless.
+DEFAULT_EFFORT = "high"
+EFFORT_IDS = frozenset(e for e, _ in EFFORTS)
+
 PLAN_STATUSES = ("todo", "doing", "done")
 # Enough to see the shape of a build at a glance; beyond this the list stops
 # being a plan and becomes a transcript.
@@ -548,6 +565,7 @@ class Session:
             append = append + CORE_CONTEXT_PREAMBLE % core
         return ClaudeAgentOptions(
             model=self.registry.model(),
+            effort=self.registry.effort(),
             # The SDK reads the CLI's output as NDJSON and refuses any single
             # line longer than this, raising CLIJSONDecodeError. Its default is
             # 1 MiB, which is too small for a CAD session: a screenshot comes
@@ -1049,18 +1067,33 @@ class Registry:
         chosen = self.store.data.get("model")
         return chosen if chosen in MODEL_IDS else DEFAULT_MODEL
 
-    async def set_model(self, model: str) -> bool:
-        """Switch models, keeping every conversation.
+    def effort(self) -> str:
+        """The chosen effort, or the default if the stored one is unknown."""
+        chosen = self.store.data.get("effort")
+        return chosen if chosen in EFFORT_IDS else DEFAULT_EFFORT
 
-        A session's model is fixed when its client connects, so switching means
-        rebuilding the clients. _reconnect resumes from the stored session id,
-        so the model changes and the conversation does not.
+    async def apply_settings(self, model: str | None = None,
+                             effort: str | None = None) -> bool:
+        """Change model and/or effort, keeping every conversation.
+
+        Both are fixed when a session's client connects, so changing either
+        means rebuilding the clients. _reconnect resumes from the stored
+        session id, so the setting changes and the conversation does not.
+
+        One function for both because they share that rebuild: changing them
+        separately would tear every session down twice for one intent.
         """
-        if model not in MODEL_IDS or model == self.model():
+        wanted = {}
+        if model is not None and model in MODEL_IDS and model != self.model():
+            wanted["model"] = model
+        if effort is not None and effort in EFFORT_IDS and effort != self.effort():
+            wanted["effort"] = effort
+        if not wanted:
             return False
-        self.store.data["model"] = model
+
+        self.store.data.update(wanted)
         self.store.save()
-        log.info("model switched to %s", model)
+        log.info("settings changed: %s", wanted)
         for session in list(self.sessions.values()):
             # Only idle sessions: rebuilding underneath a running turn would
             # kill it, which is the failure this panel has already had twice.
@@ -1188,6 +1221,8 @@ class Registry:
             # the list, and so a reconnecting panel shows the right selection.
             "model": self.model(),
             "models": [{"id": m, "label": label} for m, label in MODELS],
+            "effort": self.effort(),
+            "efforts": [{"id": e, "label": label} for e, label in EFFORTS],
             **self.snapshot(key),
         }
 
@@ -1409,17 +1444,26 @@ async def handle_permission(request: web.Request) -> web.Response:
     return web.json_response({"ok": False})
 
 
-async def handle_model(request: web.Request) -> web.Response:
-    """Switch which model the chat uses. Rejects anything not on the list."""
+async def handle_settings(request: web.Request) -> web.Response:
+    """Change the model and/or the effort level.
+
+    Both in one request because both force a session rebuild; sending them
+    separately would tear every conversation down twice for one intent.
+    """
     body = await request.json()
-    model = str(body.get("model") or "")
-    if model not in MODEL_IDS:
+    model = body.get("model")
+    effort = body.get("effort")
+    if model is not None and model not in MODEL_IDS:
         return web.json_response(
             {"ok": False, "error": f"unknown model {model!r}"}, status=400)
+    if effort is not None and effort not in EFFORT_IDS:
+        return web.json_response(
+            {"ok": False, "error": f"unknown effort {effort!r}"}, status=400)
     registry: Registry = request.app["registry"]
-    changed = await registry.set_model(model)
-    return web.json_response({"ok": True, "model": registry.model(),
-                              "changed": changed})
+    changed = await registry.apply_settings(model=model, effort=effort)
+    return web.json_response({"ok": True, "changed": changed,
+                              "model": registry.model(),
+                              "effort": registry.effort()})
 
 
 async def handle_interrupt(request: web.Request) -> web.Response:
@@ -1580,7 +1624,7 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app.router.add_post("/send", handle_send)
     app.router.add_post("/permission", handle_permission)
     app.router.add_post("/interrupt", handle_interrupt)
-    app.router.add_post("/model", handle_model)
+    app.router.add_post("/settings", handle_settings)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
