@@ -168,18 +168,23 @@ Switching is event-driven: the add-in's `documentActivated` handler keeps a cach
 `GET /document` answers from the HTTP thread, so following your tabs never occupies Fusion's main
 thread or queues behind a long modelling job.
 
-**Switching mid-turn stops the turn.** `fusion_execute` always acts on whatever document is active,
-so a turn that outlived a tab switch would start editing the design you just moved to. The panel
-says so, and the bridge independently refuses any pinned turn whose design is no longer active —
-which closes the gap where a tool call is already in flight.
+**Switching mid-turn pauses the turn, it does not kill it.** `fusion_execute` always acts on
+whatever document is active, so a turn that kept running after a tab switch would start editing the
+design you just moved to. Rather than tearing it down, the turn is held at its next tool call: it
+keeps its context, its plan and its place, and carries on the moment you switch back. The design
+you moved to shows what is held and offers to cancel it, and its Send box is disabled meanwhile —
+starting a second build would only queue behind the first. The bridge independently refuses any
+pinned turn whose design is no longer active, which closes the gap where a tool call is already in
+flight.
 
 <p align="center">
   <img src="docs/images/chat-design-switch-stops-turn.png" alt="The Fusion Chat panel mid-conversation. An amber line reads 'Stopped — you switched to another design while this was running.' The user then types 'continue', and Claude replies 'Back on the tower design. Finishing the tube bores.' before resuming its fusion_execute calls." width="880">
 </p>
 
-<p align="center"><em>What that looks like in practice: the turn halts the moment you change tabs,
-and says why. Come back, type <code>continue</code>, and it picks the same design up where it
-stopped — the conversation was never lost, only paused.</em></p>
+<p align="center"><em>Design-switching, caught in the act. This shot predates the change above —
+it shows the older behaviour, where the turn stopped and you typed <code>continue</code> to pick it
+back up. It now resumes on its own when you switch back; what the shot still shows accurately is
+that the conversation survives the switch either way.</em></p>
 
 ### Memory, and what happens when a design closes
 
@@ -576,7 +581,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**754 assertions across twelve suites**, none of which need Fusion, Rhino, or an internet connection.
+**775 assertions across twelve suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

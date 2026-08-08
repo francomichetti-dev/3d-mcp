@@ -950,6 +950,7 @@ async def settings_checks():
         class _Session:
             def __init__(self, busy):
                 self.busy = busy
+                self.name = "a design"      # busy_elsewhere reports it by name
 
             async def _reconnect(self):
                 rebuilt.append(self)
@@ -964,6 +965,85 @@ async def settings_checks():
 
 
 asyncio.run(settings_checks())
+
+# -------------------------------------------- switching mid-build ----------
+# Switching designs used to kill the running turn outright. It now holds it at
+# its next tool call instead, so the build keeps its context, its plan and its
+# place. The hold is not a nicety: the injected `design` is whatever Fusion has
+# active, so letting a held turn run would edit the design just switched TO.
+print("Switching away holds the turn instead of killing it")
+
+
+async def switching_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        published = []
+        r.publish = lambda ev: published.append(ev)
+
+        s = svc.Session.__new__(svc.Session)
+        s.key, s.name, s.registry = "design-1", "tower", r
+        s.busy, s.cancelled = True, False
+        s.plan, s.pending = [], {}
+        s.events = []
+
+        async def emit(ev):
+            s.events.append(ev)
+
+        s.emit = emit
+        interrupted = []
+
+        async def interrupt():
+            interrupted.append(True)
+
+        s.interrupt = interrupt
+        r.sessions = {"design-1": s}
+        r.current = {"key": "design-1", "name": "tower", "design": True}
+
+        # Switch away while it is working.
+        await r._on_switch(r.current, {"key": "design-2", "name": "bracket",
+                                       "design": True})
+        r.current = {"key": "design-2", "name": "bracket", "design": True}
+
+        check("the turn was NOT interrupted", interrupted, [])
+        truthy("and it is still marked busy", s.busy)
+        notices = [e for e in s.events if e.get("type") == "notice"]
+        truthy("the person is told it paused rather than died",
+               notices and "Paused" in notices[0]["text"])
+        truthy("and told it will carry on",
+               "carries on" in notices[0]["text"])
+
+        # The panel needs to know, or a disabled Send box looks broken.
+        other = r.busy_elsewhere()
+        check("the held work is reported", other and other["key"], "design-1")
+        check("by name, for the notice", other and other["name"], "tower")
+
+        # A turn on the design you are LOOKING at is not "elsewhere".
+        r.current = {"key": "design-1", "name": "tower", "design": True}
+        check("work on the visible design is not held elsewhere",
+              r.busy_elsewhere(), None)
+
+        # The hold itself: it waits while another design is on screen, and
+        # unwinds through CancelledError when the person gives up.
+        r.current = {"key": "design-2", "name": "bracket", "design": True}
+        s.cancelled = True
+        raised = None
+        try:
+            await asyncio.wait_for(s._await_own_design(), timeout=3)
+        except asyncio.CancelledError:
+            raised = "cancelled"
+        except asyncio.TimeoutError:
+            raised = "hung"
+        check("cancelling a held turn unwinds it", raised, "cancelled")
+
+        # And when the design comes back, the hold releases on its own.
+        s.cancelled = False
+        r.current = {"key": "design-1", "name": "tower", "design": True}
+        s.events.clear()
+        await asyncio.wait_for(s._await_own_design(), timeout=3)
+        check("no wait at all once its design is active", s.events, [])
+
+
+asyncio.run(switching_checks())
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

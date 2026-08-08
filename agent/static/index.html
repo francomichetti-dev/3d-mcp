@@ -87,6 +87,19 @@
   }
   #banner.done { color: var(--ok); }
   #banner.done .spin { display: none; }
+  #elsewhere {
+    flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
+    padding: 6px 10px; font-size: 12px; color: var(--warn);
+    background: rgba(255,180,84,.07); border-bottom: 1px solid var(--line);
+  }
+  #elsewhere-text { flex: 1; }
+  #elsewhere-cancel {
+    background: transparent; border: 1px solid var(--warn); color: var(--warn);
+    border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+  }
+  #elsewhere-cancel:hover { background: var(--warn); color: #3a2a10; }
+  #elsewhere-cancel:disabled { opacity: .5; cursor: default; }
+
   #banner.lost { color: var(--warn); }
   #banner.lost .spin { display: none; }
   .spin {
@@ -205,6 +218,15 @@
     <ol id="plan-steps"></ol>
   </div>
 
+  <!-- A turn held on a design that is not on screen. Separate from the working
+       banner: that one is about this design, this one is about somewhere else,
+       and conflating them made a disabled Send box look like a bug. -->
+  <div id="elsewhere" hidden>
+    <span class="spin" aria-hidden="true"></span>
+    <span id="elsewhere-text"></span>
+    <button id="elsewhere-cancel" type="button">Cancel it</button>
+  </div>
+
   <div id="banner" hidden>
     <span class="spin" aria-hidden="true"></span>
     <span id="banner-text"></span>
@@ -315,6 +337,36 @@ const modelPicker = document.getElementById('model');
 
 
 const effortPicker = document.getElementById('effort');
+const elsewhere = document.getElementById('elsewhere');
+const elsewhereText = document.getElementById('elsewhere-text');
+const cancelOther = document.getElementById('elsewhere-cancel');
+
+// Work held on a design that is not on screen. Shown here rather than left
+// implicit, because Send is disabled while it runs and an unexplained disabled
+// input reads as a broken panel.
+let heldElsewhere = null;
+
+function renderElsewhere(other) {
+  heldElsewhere = other || null;
+  if (!heldElsewhere) { elsewhere.hidden = true; return; }
+  elsewhereText.textContent =
+    'Still working on ' + (heldElsewhere.name || 'another design')
+    + ' — it carries on when you switch back.';
+  cancelOther.disabled = false;
+  elsewhere.hidden = false;
+}
+
+cancelOther.onclick = async () => {
+  cancelOther.disabled = true;
+  try {
+    await fetch('/cancel-other', { method: 'POST' });
+    // The service confirms by publishing a fresh document event; nothing is
+    // hidden here on the strength of the request alone.
+  } catch (err) {
+    status('Could not reach the service to cancel that.', 'err');
+    cancelOther.disabled = false;
+  }
+};
 
 function fillPicker(el, options, current) {
   if (!options || !options.length) return;
@@ -484,14 +536,16 @@ function applyDocument(d) {
   }
   // The plan belongs to the design, so it is redrawn from the snapshot on
   // every switch — including back to one whose build finished days ago.
+  renderElsewhere(d.busy_elsewhere);
   fillPicker(modelPicker, d.models, d.model);
   fillPicker(effortPicker, d.efforts, d.effort);
   renderPlan(d.design ? d.plan : null);
   if (d.busy) working('Working'); else clearBanner();
   busy = !!d.busy;
-  modelPicker.disabled = effortPicker.disabled = busy;
-  send.disabled = busy || !d.design;
-  document.getElementById('attach').disabled = busy || !d.design;
+  const blocked = busy || !!heldElsewhere;
+  modelPicker.disabled = effortPicker.disabled = blocked;
+  send.disabled = blocked || !d.design;
+  document.getElementById('attach').disabled = blocked || !d.design;
   scroll();
 }
 

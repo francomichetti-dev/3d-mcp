@@ -231,6 +231,51 @@ truthy('...even from a host that only fills items',
 check('but a dropped text selection is still left alone',
       h.fire('drop', { dataTransfer: { types: ['text/plain'], files: [] } }), false);
 
+// ------------------------------------------------- work held elsewhere -----
+// Switching designs used to kill a running turn. It now pauses instead, which
+// only works if the panel says so — an unexplained disabled Send box reads as
+// a broken panel, not as a deliberate hold.
+console.log('Work held on another design');
+
+h = start();
+check('nothing held, nothing shown',
+      h.doc.getElementById('elsewhere').hidden, true);
+
+h.deliver({ type: 'document', key: 'design-2', name: 'bracket', design: true,
+            transcript: [], plan: [], busy: false,
+            busy_elsewhere: { key: 'design-1', name: 'tower' } });
+check('the hold is shown', h.doc.getElementById('elsewhere').hidden, false);
+truthy('naming the design it is held on',
+       h.doc.getElementById('elsewhere-text').textContent.includes('tower'));
+truthy('and saying it resumes rather than that it died',
+       h.doc.getElementById('elsewhere-text').textContent.includes('carries on'));
+
+// The point of showing it: Send is disabled, and that needs explaining.
+check('Send is disabled while work is held elsewhere',
+      h.doc.getElementById('send').disabled, true);
+check('so is attaching', h.doc.getElementById('attach').disabled, true);
+check('and so are the pickers, which would rebuild that session',
+      h.doc.getElementById('model').disabled, true);
+
+// Cancelling asks the service; the panel does not hide it on its own say-so.
+h.doc.getElementById('elsewhere-cancel')._listeners;
+check('cancel is offered', h.doc.getElementById('elsewhere-cancel').disabled, false);
+
+// Once the service confirms, the panel frees up.
+h.deliver({ type: 'document', key: 'design-2', name: 'bracket', design: true,
+            transcript: [], plan: [], busy: false, busy_elsewhere: null });
+check('the hold clears', h.doc.getElementById('elsewhere').hidden, true);
+check('and Send comes back', h.doc.getElementById('send').disabled, false);
+
+// Switching BACK to the held design: it is the active one now, so there is no
+// "elsewhere" any more — it is just busy here.
+h.deliver({ type: 'document', key: 'design-1', name: 'tower', design: true,
+            transcript: [], plan: [], busy: true, busy_elsewhere: null });
+check('back on the working design, no elsewhere notice',
+      h.doc.getElementById('elsewhere').hidden, true);
+check('but Send is still disabled because it is busy here',
+      h.doc.getElementById('send').disabled, true);
+
 console.log();
 console.log(`${PASS} passed, ${FAIL} failed`);
 process.exit(FAIL ? 1 : 0);

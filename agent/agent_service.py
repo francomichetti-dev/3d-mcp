@@ -430,6 +430,9 @@ class Session:
         # the model at all, so an isolated blip never counts toward the
         # give-up threshold.
         self.transport_failures = 0
+        # Set by the panel's Cancel while this turn is paused behind
+        # another design. Cleared at the start of every turn.
+        self.cancelled = False
         # The build plan shown in the panel. Restored from disk so a design
         # reopened tomorrow still shows where its build got to.
         self.plan: list[dict[str, str]] = list(
@@ -513,6 +516,15 @@ class Session:
         tool_name = payload.get("tool_name", "")
         tool_input = payload.get("tool_input") or {}
         log.debug("PreToolUse: %s", tool_name)
+
+        # Hold here while another design is on screen.
+        #
+        # This hook is the only place in the loop that can wait without losing
+        # anything: the turn is suspended between tool calls, so its context,
+        # its plan and its place in the build all survive. Letting the call
+        # through would edit the wrong design; refusing it would make the model
+        # think the operation failed and start improvising around it.
+        await self._await_own_design()
         reason = destructive_reason(tool_name, tool_input)
         if reason is None:
             return {}          # no opinion — normal permission flow continues
@@ -547,6 +559,27 @@ class Session:
                 "Do not retry it; propose a non-destructive alternative instead."
             ),
         }}
+
+    async def _await_own_design(self) -> None:
+        """Block until this session's design is active again, or it is cancelled.
+
+        Polls rather than waits on an event because the switch is discovered by
+        a watcher that already polls; a second notification path would be one
+        more thing to keep in step for no gain at this timescale.
+        """
+        if self.registry.active_key() == self.key:
+            return
+        log.info("holding %s: another design is on screen", self.key)
+        while self.registry.active_key() != self.key:
+            if self.cancelled:
+                # Raised rather than returned: this unwinds the turn through the
+                # same path a transport failure takes, which already reports and
+                # tidies up.
+                raise asyncio.CancelledError("cancelled while paused")
+            await asyncio.sleep(DOC_POLL_SECONDS / 2)
+        log.info("resuming %s: its design is back on screen", self.key)
+        await self.emit({"type": "notice",
+                         "text": "Back on this design — carrying on."})
 
     def resolve_permission(self, request_id: str, approved: bool) -> bool:
         future = self.pending.get(request_id)
@@ -749,6 +782,7 @@ class Session:
                 self.registry.publish({"type": "turn_end", "doc": self.key})
                 return
             self.busy = True
+            self.cancelled = False
             # A new instruction starts a new build, so the previous build's
             # checklist goes with it. Left standing it reads as the plan for
             # what is happening now, which is worse than showing nothing —
@@ -1057,6 +1091,21 @@ class Registry:
             self._dirty = False
             self.store.save()
 
+    def active_key(self) -> str | None:
+        """The design on screen right now."""
+        return (self.current or {}).get("key")
+
+    def busy_elsewhere(self) -> dict[str, Any] | None:
+        """A turn running on some design other than the one on screen.
+
+        Drives the panel's "still working on another design" notice: without
+        it, a paused turn is invisible and the disabled Send box looks broken.
+        """
+        for key, session in self.sessions.items():
+            if session.busy and key != self.active_key():
+                return {"key": key, "name": session.name}
+        return None
+
     def model(self) -> str:
         """The chosen model, or the default if the stored one is unknown.
 
@@ -1188,15 +1237,21 @@ class Registry:
         previous_key = (previous or {}).get("key")
         session = self.sessions.get(previous_key) if previous_key else None
         if session is not None and session.busy:
-            # fusion_execute always acts on whatever document is active, so a
-            # turn that outlived the switch would edit the design just moved to.
-            # The bridge refuses it too; this is what makes it visible.
-            await session.interrupt()
+            # The turn is NOT killed any more. It keeps its place, its context
+            # and its plan, and waits for its own design to come back.
+            #
+            # It cannot make progress meanwhile, and that is a property of
+            # Fusion rather than a choice: the injected `design` is
+            # adsk.fusion.Design.cast(app.activeProduct), so any code this turn
+            # runs while another design is on screen would edit THAT design.
+            # The bridge refuses such a call outright. So the turn is held at
+            # its next tool call rather than being torn down — see
+            # Session._pre_tool_use.
             await session.emit({
                 "type": "notice",
-                "text": "Stopped — you switched to another design while this was running.",
+                "text": ("Paused — this design is no longer on screen. It keeps "
+                         "its place and carries on when you come back."),
             })
-            self.publish({"type": "turn_end", "doc": previous_key})
 
         self.publish(self.document_event())
 
@@ -1222,6 +1277,9 @@ class Registry:
             "model": self.model(),
             "models": [{"id": m, "label": label} for m, label in MODELS],
             "effort": self.effort(),
+            # A turn paused behind another design. The panel shows it and
+            # disables Send, because starting work here would queue behind it.
+            "busy_elsewhere": self.busy_elsewhere(),
             "efforts": [{"id": e, "label": label} for e, label in EFFORTS],
             **self.snapshot(key),
         }
@@ -1444,6 +1502,25 @@ async def handle_permission(request: web.Request) -> web.Response:
     return web.json_response({"ok": False})
 
 
+async def handle_cancel_other(request: web.Request) -> web.Response:
+    """Cancel a turn paused behind another design.
+
+    Named for what it does from the panel's side: the person is looking at one
+    design and giving up on the work held on a different one.
+    """
+    registry: Registry = request.app["registry"]
+    other = registry.busy_elsewhere()
+    if other is None:
+        return web.json_response({"ok": True, "cancelled": False})
+    session = registry.sessions.get(other["key"])
+    if session is not None:
+        session.cancelled = True
+        await session.interrupt()
+        await session.emit({"type": "notice",
+                            "text": "Cancelled — you stopped this from another design."})
+    return web.json_response({"ok": True, "cancelled": True, "doc": other["key"]})
+
+
 async def handle_settings(request: web.Request) -> web.Response:
     """Change the model and/or the effort level.
 
@@ -1625,6 +1702,7 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app.router.add_post("/permission", handle_permission)
     app.router.add_post("/interrupt", handle_interrupt)
     app.router.add_post("/settings", handle_settings)
+    app.router.add_post("/cancel-other", handle_cancel_other)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
