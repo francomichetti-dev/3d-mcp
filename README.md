@@ -84,7 +84,7 @@ than queued.
 
 | Tool | What it does |
 | --- | --- |
-| `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls. |
+| `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls, and `screenshot="iso"` returns the viewport with the result — one round trip per modeling step instead of two. |
 | `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
 | `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/fusion-mcp-exports/`. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
@@ -581,7 +581,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**779 assertions across twelve suites**, none of which need Fusion, Rhino, or an internet connection.
+**798 assertions across twelve suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

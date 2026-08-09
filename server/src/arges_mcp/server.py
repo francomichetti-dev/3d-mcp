@@ -120,7 +120,9 @@ mcp = FastMCP(
         "Python inside the live Fusion session, fusion_screenshot shows you the "
         "viewport, fusion_state reports what is open, fusion_export writes "
         "print-ready files. Check fusion_state before assuming anything about "
-        "the document, and screenshot after every geometry change."
+        "the document, and verify every geometry change visually: "
+        "fusion_execute(screenshot=\"iso\") returns the picture together with "
+        "the result in one call; fusion_screenshot is the standalone look."
     ),
 )
 
@@ -575,8 +577,11 @@ def _resolve_export_path(path: str, fmt: str, name: str) -> Path:
 
 @mcp.tool
 def fusion_execute(
-    code: str, reset: bool = False, allow_no_design: bool = False
-) -> dict[str, Any]:
+    code: str,
+    reset: bool = False,
+    allow_no_design: bool = False,
+    screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
+) -> Any:
     """Run Python inside the live Fusion 360 session.
 
     UNITS: the API's internal length unit is CENTIMETERS regardless of the
@@ -592,8 +597,13 @@ def fusion_execute(
     RESULT: assign to a variable named `result` to send a value back; anything
     you print() is captured and returned as `stdout`. Both are capped at 64 KB.
 
-    AFTER ANY GEOMETRY CHANGE, CALL fusion_screenshot AND VERIFY the result
-    before continuing. Do not chain several modeling steps blind.
+    VERIFY EVERY GEOMETRY CHANGE: pass screenshot="iso" (or another view) and
+    the viewport image arrives together with the result — one call instead of
+    two. LOOK at the picture before continuing; never chain modeling steps
+    blind. The capture runs only when your code succeeded, and a capture
+    problem never fails the call: the result gains a "screenshot_error" note
+    instead. Reach for fusion_screenshot only when you want a second angle, a
+    custom size, or a look without running any code.
 
     NEVER call ui.messageBox, adsk.doEvents(), or create/execute UI commands —
     a modal dialog deadlocks the bridge. Never write unbounded loops: the code
@@ -605,7 +615,8 @@ def fusion_execute(
     failing script is a normal result, read the traceback and fix the code; or
     {"ok": false, "error": ...} with NO traceback and NO stdout, which means the
     code never ran. The usual cause is "no active Fusion design".
-    Always check `error` when `traceback` is absent.
+    Always check `error` when `traceback` is absent. With screenshot set, that
+    same JSON is the first content block and the image is the second.
 
     NO DOCUMENT OPEN: pass allow_no_design=true to run anyway, with `design`
     injected as None, and create one yourself — this is the only way out of that
@@ -616,12 +627,34 @@ def fusion_execute(
     """
     if not isinstance(code, str) or not code.strip():
         raise ToolError("`code` must be a non-empty Python source string.")
+    # An unknown view must be refused BEFORE the code runs: rejecting it after
+    # would leave the geometry changed and the caller believing nothing
+    # happened, which is the worst possible reading of an error.
+    if screenshot is not None and screenshot not in VIEWS:
+        raise ToolError(
+            f"Unknown screenshot view {screenshot!r} — valid views: "
+            f"{', '.join(VIEWS)}. The code was NOT run."
+        )
     log.info(
-        "fusion_execute: %d chars, reset=%s, allow_no_design=%s",
-        len(code), reset, allow_no_design,
+        "fusion_execute: %d chars, reset=%s, allow_no_design=%s, screenshot=%s",
+        len(code), reset, allow_no_design, screenshot,
     )
     log.debug("fusion_execute code: %s", code[:2000])
-    return _execute(code, reset=reset, allow_no_design=allow_no_design)
+    result = _execute(code, reset=reset, allow_no_design=allow_no_design)
+    if screenshot is None or not result.get("ok"):
+        # A failed script wants its traceback read, not photographed; the
+        # geometry may be half-changed and the next step is fixing the code.
+        return result
+    try:
+        data = _bounded_capture(screenshot, 1200, 800)
+    except Exception as exc:                              # noqa: BLE001
+        # The code SUCCEEDED — reporting the capture as a tool error would
+        # read as "the script failed" and push the model into re-running it.
+        result["screenshot_error"] = (
+            f"the code ran fine, but the screenshot failed: {exc}"
+        )
+        return result
+    return [result, Image(data=data, format="png")]
 
 
 @mcp.tool
@@ -632,8 +665,9 @@ def fusion_screenshot(
 ) -> Image:
     """Capture the Fusion viewport as a PNG image.
 
-    Call this after every geometry change and look at what came back — this is
-    the only way to catch geometry that went somewhere unexpected.
+    For routine verification after running code, prefer fusion_execute's
+    screenshot parameter — the same picture, one round trip. Call this when you
+    want a look without executing anything, another angle, or a custom size.
 
     Views: "front", "top", "right", "iso" (isometric from top-right), and "fit"
     (keep the current camera orientation, just frame everything). Every view
@@ -653,19 +687,24 @@ def fusion_screenshot(
         raise ToolError(
             f"height must be between {SCREENSHOT_MIN_SIDE} and {SCREENSHOT_MAX_HEIGHT}."
         )
+    return Image(data=_bounded_capture(view, width, height), format="png")
 
+
+def _bounded_capture(view: str, width: int, height: int) -> bytes:
+    """Capture, then shrink and recapture until the PNG fits the budget.
+
+    An image travels to the model as base64 inside a single protocol message,
+    and every transport between here and there bounds how long one message
+    may be. A dense viewport is what pushes it: measured against a live
+    Fusion, an empty scene is around 200 KB at 1200x800 while a detailed
+    model at 1920x1440 reaches 631 KB of base64 — and several captures in one
+    turn is ordinary, since the whole method is look-then-correct.
+
+    So the size is bounded here rather than hoped about. Shrinking and
+    recapturing costs a second and keeps the picture; the alternative is a
+    turn that dies with the geometry half-built, which is what used to happen.
+    """
     data = _capture(view, width, height)
-
-    # An image travels to the model as base64 inside a single protocol message,
-    # and every transport between here and there bounds how long one message
-    # may be. A dense viewport is what pushes it: measured against a live
-    # Fusion, an empty scene is around 200 KB at 1200x800 while a detailed
-    # model at 1920x1440 reaches 631 KB of base64 — and several captures in one
-    # turn is ordinary, since the whole method is look-then-correct.
-    #
-    # So the size is bounded here rather than hoped about. Shrinking and
-    # recapturing costs a second and keeps the picture; the alternative is a
-    # turn that dies with the geometry half-built, which is what used to happen.
     for _ in range(SCREENSHOT_SHRINK_ATTEMPTS):
         if len(data) <= MAX_SCREENSHOT_BYTES:
             break
@@ -682,7 +721,7 @@ def fusion_screenshot(
         data = _capture(view, width, height)
 
     log.info("fusion_screenshot: view=%s %dx%d -> %d bytes", view, width, height, len(data))
-    return Image(data=data, format="png")
+    return data
 
 
 def _capture(view: str, width: int, height: int) -> bytes:

@@ -209,6 +209,113 @@ finally:
     srv._capture = real_capture
 
 
+# ------------------------------------------------- execute + screenshot -----
+# Every modeling step used to cost two tool calls - run the code, then look at
+# it - and the expensive half is the extra model turn between them, not the
+# 0.6s capture. fusion_execute(screenshot=...) folds the look into the same
+# call. The semantics under test: capture only after success, a capture
+# problem never masquerades as a code failure, and an invalid view is refused
+# before the code runs rather than after.
+print("Execute with a screenshot in the same call")
+
+bridge_calls = []
+
+
+def fake_bridge(answer):
+    """Stand in for the add-in, recording what reaches it."""
+    def request(method, path, payload=None):
+        bridge_calls.append((method, path))
+        return dict(answer)
+    return request
+
+
+real_bridge = srv._bridge_request
+try:
+    # Success: one execute, one capture, both halves in the return.
+    captures.clear()
+    bridge_calls.clear()
+    srv._bridge_request = fake_bridge({"ok": True, "result": 7, "stdout": ""})
+    srv._capture = fake_capture(lambda w, h: 100 * 1024)
+    out = srv.fusion_execute(code="x=1", screenshot="iso")
+    check("the return carries two parts", isinstance(out, list) and len(out), 2)
+    check("the first is the execute result", out[0]["ok"], True)
+    truthy("the second is the image", isinstance(out[1], srv.Image))
+    check("captured once, at the default size", captures, [("iso", 1200, 800)])
+
+    # Without the parameter nothing changes.
+    captures.clear()
+    out = srv.fusion_execute(code="x=1")
+    check("no screenshot means the plain dict, as before", out["ok"], True)
+    check("and no capture at all", captures, [])
+
+    # Failed code: the traceback is the story; no picture of it.
+    captures.clear()
+    srv._bridge_request = fake_bridge({"ok": False, "traceback": "boom"})
+    out = srv.fusion_execute(code="x=1", screenshot="iso")
+    check("a failing script returns its dict alone", out["ok"], False)
+    check("and is not photographed", captures, [])
+
+    # Capture failure after a successful run must not read as a code failure —
+    # a tool error here would push the model into re-running code that worked.
+    def broken_capture(view, width, height):
+        raise RuntimeError("viewport gone")
+
+    srv._bridge_request = fake_bridge({"ok": True, "result": 1, "stdout": ""})
+    srv._capture = broken_capture
+    out = srv.fusion_execute(code="x=1", screenshot="iso")
+    check("the code's success survives a capture failure", out["ok"], True)
+    truthy("with the reason attached",
+           "viewport gone" in out.get("screenshot_error", ""))
+
+    # An unknown view is refused BEFORE anything runs: rejecting it after
+    # would leave the geometry changed under a call that reported failure.
+    bridge_calls.clear()
+    refuses("an unknown view is refused",
+            lambda: srv.fusion_execute(code="x=1", screenshot="back"))
+    check("and the code was never sent to the bridge", bridge_calls, [])
+finally:
+    srv._bridge_request = real_bridge
+    srv._capture = real_capture
+
+
+# The mixed return - a dict and an Image in one list - relies on fastmcp
+# turning it into two content blocks. That conversion is fastmcp's own, so it
+# is proven through a real in-memory client rather than assumed.
+print("The combined return survives the protocol")
+
+import asyncio  # noqa: E402
+import base64  # noqa: E402
+import json  # noqa: E402
+
+from fastmcp import Client  # noqa: E402
+
+
+async def call_over_protocol(args):
+    async with Client(srv.mcp) as client:
+        return await client.call_tool("fusion_execute", args)
+
+
+try:
+    srv._bridge_request = fake_bridge({"ok": True, "result": 7, "stdout": ""})
+    srv._capture = fake_capture(lambda w, h: 10 * 1024)
+    result = asyncio.run(call_over_protocol({"code": "x=1", "screenshot": "iso"}))
+    blocks = result.content
+    check("two blocks arrive", len(blocks), 2)
+    check("the first is text", blocks[0].type, "text")
+    check("holding the execute result", json.loads(blocks[0].text)["ok"], True)
+    check("the second is a PNG image",
+          (blocks[1].type, blocks[1].mimeType), ("image", "image/png"))
+    truthy("whose data decodes back to the capture",
+           base64.b64decode(blocks[1].data).startswith(b"\x89PNG"))
+
+    result = asyncio.run(call_over_protocol({"code": "x=1"}))
+    check("without screenshot, one block as before", len(result.content), 1)
+    check("still the JSON result", json.loads(result.content[0].text)["ok"], True)
+finally:
+    srv._bridge_request = real_bridge
+    srv._capture = real_capture
+
+
 import shutil  # noqa: E402
 shutil.rmtree(SANDBOX, ignore_errors=True)
 shutil.rmtree(escape_target, ignore_errors=True)
