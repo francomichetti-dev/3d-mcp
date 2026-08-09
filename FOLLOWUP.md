@@ -4,17 +4,23 @@ Known gaps, kept in the open rather than in somebody's head. Each entry says
 why it is still open and what closing it takes. Remove entries as they close —
 an entry that quietly stopped being true is worse than none.
 
-## Untested: the agent actually launching its MCP server
+## Partly closed: the agent actually launching its MCP server
 
 The rename broke the spawn once — the agent invoked `arges-mcp` where the CLI
 installs as `arges` — and no suite noticed. The model lost every Fusion tool
-and reported "bridge disconnected" **while the bridge was answering /health**,
-because nothing exercises the agent *spawning* the server: every suite stubs
-one side of that join.
+and reported "bridge disconnected" **while the bridge was answering /health**.
+Worse, the first fix covered only the agent: `install.sh` still *registered*
+the dead name with Claude Code and both READMEs taught it, so every fresh
+install recreated the failure.
 
-Closing it: a test that starts `agent_service` with PATH pointing at a stub
-`arges` binary and asserts a session reaches ready — so the next time the
-spawn target's name drifts, a test fails instead of a user.
+**Closed:** the name-drift class. The package now installs both `arges` and
+`arges-mcp` (the latter is what makes `uvx arges-mcp` work), and
+`tests/test_consistency.py` holds every spawn site and doc to
+`[project.scripts]` — reverting the alias fails four checks by file name.
+
+**Still open:** the live join — nothing starts `agent_service` and asserts a
+session actually reaches its tools. That needs the `claude` CLI in the test
+environment; a stub `arges` on PATH plus a session-ready assertion would do.
 
 ## Live numbers for the combined execute+screenshot
 

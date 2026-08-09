@@ -32,7 +32,13 @@ Security = "https://github.com/francomichetti-dev/3d-mcp/blob/main/SECURITY.md"
 
 [project.scripts]
 # Bare invocation serves stdio, so this is what an MCP client runs directly.
+# Both names on purpose: `arges` is the product's name and what the chat agent
+# spawns; `arges-mcp` matches the PyPI package, which is what makes a plain
+# `uvx arges-mcp` work — uvx runs the script named after the package, and a
+# package that does not provide one fails at the user's machine, not here.
+# tests/test_consistency.py holds every spawn site and doc to this list.
 arges = "arges_mcp.cli:main"
+arges-mcp = "arges_mcp.cli:main"
 
 [build-system]
 requires = ["hatchling"]

@@ -466,6 +466,43 @@ for rel in [FUSION_ADDIN, BROKER]:
     truthy(f"{Path(rel).name} binds loopback", '127.0.0.1' in text)
     check(f"{Path(rel).name} never binds 0.0.0.0", "0.0.0.0" in text, False)
 
+
+# ------------------------------------------------------------ spawn names ---
+# Every binary a spawn site or a doc names must be one the package installs.
+#
+# The failure this pins is invisible at the scene of the crime: the rename
+# changed the console script to `arges` and the chat agent kept spawning
+# `arges-mcp` - registration succeeded, the session started, and the model
+# simply had no Fusion tools, reporting "bridge disconnected" while the bridge
+# was answering /health. The fix then missed that install.sh REGISTERS the
+# same wrong name with Claude Code and both READMEs teach it, so every fresh
+# install re-created the exact failure. Nothing held the names to the one
+# place that decides them, [project.scripts]; now this does.
+print("Spawned binaries exist")
+
+pyproject = read("server/pyproject.toml")
+scripts_block = re.search(r"\[project\.scripts\](.*?)(?:\n\[|\Z)", pyproject, re.S)
+truthy("pyproject declares console scripts", scripts_block)
+SCRIPTS = set(re.findall(r"^([A-Za-z0-9_-]+)\s*=",
+                         scripts_block.group(1), re.M)) if scripts_block else set()
+package = re.search(r'^name\s*=\s*"([^"]+)"', pyproject, re.M)
+truthy("`uvx <package>` can work: a script named after the package exists",
+       package and package.group(1) in SCRIPTS)
+
+spawn = re.search(r'"--directory",\s*str\(SERVER_DIR\),\s*"([A-Za-z0-9_-]+)"',
+                  read(AGENT_SERVICE))
+truthy("the chat agent spawns an installed script",
+       spawn and spawn.group(1) in SCRIPTS)
+
+# The sweep: any arges-ish token in the installer or the user-facing docs must
+# be an installed script. Module and folder names use underscores or capitals
+# (arges_mcp, Arges) and are excluded by construction.
+for rel in ["scripts/install.sh", "README.md", "server/README.md"]:
+    tokens = {t for t in re.findall(r"\barges[a-z0-9-]*\b", read(rel))
+              if "_" not in t}
+    unknown = sorted(tokens - SCRIPTS)
+    check(f"{rel} names only installed binaries", unknown, [])
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)
