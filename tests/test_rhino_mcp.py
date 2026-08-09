@@ -81,8 +81,11 @@ class _Handler(BaseHTTPRequestHandler):
                     out = {"ok": True, "result": {"hecho": True},
                            "stdout": "listo — 20°\n"}
             elif kind == "screenshot":
-                out = {"ok": True, "view": body["payload"].get("view"),
-                       "width": 1200, "height": 800, "png_base64": PNG_1PX}
+                if _mode["reply"] == "shot-fail":
+                    out = {"ok": False, "error": "la vista no existe"}
+                else:
+                    out = {"ok": True, "view": body["payload"].get("view"),
+                           "width": 1200, "height": 800, "png_base64": PNG_1PX}
             else:
                 out = {"ok": False, "error": "unknown kind"}
             payload = json.dumps(out).encode()
@@ -210,6 +213,20 @@ check("with a media type", block["mimeType"], "image/png")
 check("and the image data", block["data"], PNG_1PX)
 check("the requested view is passed through", _seen["jobs"][-1]["payload"]["view"], "top")
 
+# Execute + screenshot in one call — parity with the Fusion server. The
+# expensive half of look-then-correct is the extra model turn between the two
+# calls, not the capture itself.
+jobs_before = len(_seen["jobs"])
+result = s.call("rhino_execute", {"code": "result = 1", "screenshot": "front"})
+check("combined call is not an error", result["isError"], False)
+check("two blocks come back", len(result["content"]), 2)
+check("the first is the text result", result["content"][0]["type"], "text")
+truthy("still carrying the output", "hecho" in result["content"][0]["text"])
+check("the second is the picture", result["content"][1]["type"], "image")
+check("of the requested view", _seen["jobs"][-1]["payload"]["view"], "front")
+check("from exactly two jobs, execute then screenshot",
+      [j["kind"] for j in _seen["jobs"][jobs_before:]], ["execute", "screenshot"])
+
 check("the token is sent on every call", set(_seen["tokens"]), {TOKEN})
 check("clean exit", s.close(), 0)
 
@@ -234,6 +251,34 @@ result = s.call("rhino_execute", {"code": "1/0"})
 check("a Rhino traceback comes back as an error result", result["isError"], True)
 truthy("with the traceback intact",
        "ZeroDivisionError" in result["content"][0]["text"])
+
+# The combined call's three failure semantics. A failing script is not
+# photographed — its traceback is the story and the geometry may be
+# half-changed:
+jobs_before = len(_seen["jobs"])
+result = s.call("rhino_execute", {"code": "1/0", "screenshot": "top"})
+check("a failing script with a screenshot asked is the error alone",
+      result["isError"], True)
+check("and was never photographed",
+      [j["kind"] for j in _seen["jobs"][jobs_before:]], ["execute"])
+
+# A capture failure after a successful run must not read as a script failure,
+# or the model re-runs code that already changed the document:
+_mode["reply"] = "shot-fail"
+result = s.call("rhino_execute", {"code": "result = 1", "screenshot": "top"})
+check("a capture failure does not fail the call", result["isError"], False)
+truthy("the result text still arrives", "hecho" in result["content"][0]["text"])
+truthy("with the capture problem attached",
+       "screenshot failed" in result["content"][0]["text"])
+
+# And an unknown view is refused BEFORE the code runs — "iso" is the Fusion
+# name, exactly the mistake a model that knows both CADs will make:
+_mode["reply"] = "ok"
+jobs_before = len(_seen["jobs"])
+result = s.call("rhino_execute", {"code": "result = 1", "screenshot": "iso"})
+check("an unknown view is refused", result["isError"], True)
+truthy("saying the code did not run", "NOT run" in result["content"][0]["text"])
+check("with nothing sent to the broker", len(_seen["jobs"]), jobs_before)
 
 _mode["reply"] = "401"
 result = s.call("rhino_state")

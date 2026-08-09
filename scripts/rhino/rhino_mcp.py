@@ -78,6 +78,8 @@ def submit(kind, payload, timeout=120):
 # tool, so each says WHEN to use it, not only what it does.
 # --------------------------------------------------------------------------
 
+SCREENSHOT_VIEWS = ("perspective", "top", "front", "right", "fit")
+
 TOOLS = [
     {
         "name": "rhino_execute",
@@ -89,14 +91,25 @@ TOOLS = [
             "document) and `scriptcontext` are already in scope. Assign to "
             "`result` to return a value. Variables persist between calls, so "
             "you can build something up over several steps.\n\n"
-            "After changing geometry, call rhino_screenshot to check it looks "
-            "right before saying it is done."
+            "After changing geometry, LOOK at it before saying it is done: "
+            "pass screenshot=\"perspective\" (or another view) and the picture "
+            "comes back with the result in the same call — one round trip "
+            "instead of two. The capture runs only if the code succeeded, and "
+            "a capture problem never fails the call. Use rhino_screenshot only "
+            "for a second angle or a look without running code."
         ),
         "inputSchema": {
             "type": "object",
             "properties": {
                 "code": {"type": "string",
                          "description": "Python to run inside Rhino."},
+                "screenshot": {
+                    "type": "string",
+                    "enum": list(SCREENSHOT_VIEWS),
+                    "description": ("Also capture this view once the code "
+                                    "succeeds and return the image with the "
+                                    "result."),
+                },
             },
             "required": ["code"],
         },
@@ -138,8 +151,17 @@ def call_tool(name, arguments):
         code = (arguments or {}).get("code") or ""
         if not code.strip():
             return _text("no code given", error=True)
+        view = (arguments or {}).get("screenshot")
+        # An unknown view is refused BEFORE the code runs. Refusing it after
+        # would leave the geometry changed under a call that reported failure,
+        # which is the worst possible reading of an error.
+        if view is not None and view not in SCREENSHOT_VIEWS:
+            return _text("unknown screenshot view '%s' — valid views: %s. "
+                         "The code was NOT run."
+                         % (view, ", ".join(SCREENSHOT_VIEWS)), error=True)
         out = submit("execute", {"code": code})
         if not out.get("ok"):
+            # A failing script wants its traceback read, not photographed.
             return _text(out.get("traceback") or out.get("error") or "failed",
                          error=True)
         parts = []
@@ -147,7 +169,21 @@ def call_tool(name, arguments):
             parts.append(out["stdout"].rstrip())
         if out.get("result") is not None:
             parts.append("result = " + json.dumps(out["result"], default=str))
-        return _text("\n".join(parts) if parts else "done (no output)")
+        text = "\n".join(parts) if parts else "done (no output)"
+        if view is None:
+            return _text(text)
+        shot = submit("screenshot",
+                      {"view": view, "width": 1200, "height": 800}, timeout=90)
+        if not shot.get("ok"):
+            # The code SUCCEEDED — an error here would read as "the script
+            # failed" and push the model into re-running code that already
+            # changed the document.
+            return _text(text + "\n(the code ran fine, but the screenshot "
+                         "failed: %s)" % (shot.get("error") or "capture failed"))
+        return {"content": [{"type": "text", "text": text},
+                            {"type": "image", "data": shot["png_base64"],
+                             "mimeType": "image/png"}],
+                "isError": False}
 
     if name == "rhino_state":
         out = submit("state", {}, timeout=30)

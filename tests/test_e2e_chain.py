@@ -136,6 +136,15 @@ try:
     check("with a media type", block["mimeType"], "image/png")
     truthy("and decodable data", block["data"].startswith("iVBORw0KGgo"))
 
+    # Execute + screenshot in one call: two broker jobs behind one tool call,
+    # text block then image block. This is the build hot path — one model turn
+    # per modeling step instead of two.
+    result = tool("rhino_execute", {"code": code, "screenshot": "top"})
+    check("the combined call is not an error", result["isError"], False)
+    check("its first block is the text result", result["content"][0]["type"], "text")
+    check("its second block is a real image", result["content"][1]["type"], "image")
+    truthy("that decodes", result["content"][1]["data"].startswith("iVBORw0KGgo"))
+
     print("Single flight holds across the chain")
     # The broker is single-flight. Two submits cannot overlap here because the
     # MCP server is synchronous, so what is checked is that a second call after
