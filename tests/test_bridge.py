@@ -408,11 +408,37 @@ try:
     print("State directory permissions")
     check("state dir is 0700", oct(os.stat(STATE).st_mode & 0o777), "0o700")
 
+    print("Geometry does not outlive the modelling kernel")
+    # Fusion destroys the kernel BEFORE it finalises the embedded interpreter,
+    # so an adsk object still reachable from the add-in at that point is freed
+    # too late: its destructor calls into a dead ASM and Fusion crashes on quit.
+    # That is not hypothetical -- it is the 2026-08-08 20:42:26 crash, whose
+    # stack ran _Py_Finalize -> _PyGC_Collect -> ~Cylinder -> api_del_entity.
+    # A script's top-level names live in _exec_globals for the session, so that
+    # dict is what holds them, and stop() is the last moment it is safe to let
+    # go.  The stand-in records its own release the way a real adsk destructor
+    # would call into the kernel.
+    released = []
+
+    class _HeldGeometry:
+        def __del__(self):
+            released.append(True)
+
+    impl._reset_namespace()
+    impl._exec_globals["cyl"] = _HeldGeometry()
+    check("a script's objects stay reachable between calls",
+          "cyl" in impl._exec_globals, True)
+    check("and are still held while the add-in runs", released, [])
+
 finally:
     try:
         impl._shutdown(unregister_event=True)
     except Exception as exc:                              # noqa: BLE001
         print(f"  (shutdown raised: {exc!r})")
+
+    check("stop() releases geometry while the kernel is alive", released, [True])
+    check("and empties the namespace rather than leaving it live",
+          impl._exec_globals, None)
 
     print("Shutdown")
     try:

@@ -22,6 +22,7 @@ embedded CPython.
 import base64
 import builtins
 import contextlib
+import gc
 import hmac
 import io
 import json
@@ -801,6 +802,43 @@ def _reset_namespace():
         "adsk": adsk,
     }
     return _exec_globals
+
+
+def _release_exec_namespace():
+    """Drop the Fusion objects the namespace holds, while the kernel is alive.
+
+    A script's top-level names outlive the call that made them: `cyl =
+    face.geometry` leaves an adsk.core.Cylinder reachable from this module's
+    dict for the rest of the session, which is what makes the namespace useful
+    across calls.  The catch is the order Fusion shuts down in.  It destroys the
+    modelling kernel first and finalises the embedded interpreter afterwards, so
+    anything still holding geometry at that point is freed too late: the SWIG
+    destructor calls api_del_entity() into an ASM that is already gone, and
+    Fusion dies on quit -- long after the code that actually caused it ran, with
+    a stack that names only Autodesk's own libraries.
+
+    Measured, from the crash that found this (2026-08-08 20:42:26):
+
+        Nu::UIApplication::terminate -> Ns::PythonManager::shutdown
+          -> _Py_Finalize -> finalize_modules -> _PyGC_Collect
+          -> ~Cylinder -> api_del_entity -> get_restoring_history  [SIGSEGV]
+
+    stop() runs while the kernel is still up -- 10s ahead of the fault above --
+    so releasing here means those destructors run at a safe time.  Reload must
+    NOT come through here: _CARRIED_ATTRS keeps the namespace on purpose.
+    """
+    global _exec_globals
+
+    namespace, _exec_globals = _exec_globals, None
+    if namespace is None:
+        return
+    held = len(namespace)
+    namespace.clear()
+    # A cycle among the namespace's values would otherwise survive plain
+    # refcounting and be collected by the interpreter's final pass -- which is
+    # precisely the moment being avoided.
+    gc.collect()
+    _log("released exec namespace (%d name(s))" % held)
 
 
 def _job_execute(app, payload):
@@ -1588,6 +1626,15 @@ def _shutdown_locked(unregister_event):
         _unregister_event()
         _unregister_document_events()
         _uninstall_panel()
+        # Last, and only on a real stop: see _release_exec_namespace for why the
+        # timing is the whole point.  Kept off the reload path deliberately.
+        try:
+            _release_exec_namespace()
+        except Exception:
+            # Never let this stop the rest of the teardown -- a stop() that
+            # raises leaves the listener half-registered.
+            _log("releasing the exec namespace failed:\n%s"
+                 % traceback.format_exc(), "WARN")
     _log("listener stopped")
 
 
