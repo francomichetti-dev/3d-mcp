@@ -11,6 +11,12 @@
     --warn: #ffb454; --danger: #ff6b6b; --ok: #7ddc9a;
   }
   * { box-sizing: border-box; }
+  /* The hidden attribute must always win. An id rule that sets `display`
+     outranks the browser's own [hidden] { display: none }, so without this
+     guard `el.hidden = true` is a visual no-op for any element styled that
+     way — which is exactly how the elsewhere banner's wheel spun forever in
+     the live palette while every DOM-level test stayed green (2026-08-09). */
+  [hidden] { display: none !important; }
   html, body { height: 100%; margin: 0; }
   body {
     background: var(--bg); color: var(--fg);

@@ -276,6 +276,27 @@ check('back on the working design, no elsewhere notice',
 check('but Send is still disabled because it is busy here',
       h.doc.getElementById('send').disabled, true);
 
+// ---- the hidden attribute must actually hide ------------------------------
+//
+// Everything above drives the DOM, where `hidden` is a boolean this harness
+// respects by construction. The live palette is a browser, where an id rule
+// setting `display` OUTRANKS the UA's [hidden] { display: none } — so
+// elsewhere.hidden = true hid nothing and its wheel spun forever, on screen,
+// under 826 green assertions. A stub DOM cannot compute CSS specificity, so
+// the guard rule's presence in the stylesheet is what gets pinned instead.
+console.log('The hidden attribute wins over id display rules');
+truthy('the stylesheet carries the [hidden] override',
+       /\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/.test(HTML));
+{
+  // And the guard must precede every id rule that sets display, or the tie
+  // would fall to source order for equal-importance rules. (!important makes
+  // order moot, but cheap to pin while we are here: guard first.)
+  const guardAt = HTML.search(/\[hidden\]\s*\{/);
+  const firstDisplayId = HTML.search(/#\w[^{]*\{[^}]*display:\s*flex/);
+  truthy('and it appears before the first id display rule',
+         guardAt !== -1 && firstDisplayId !== -1 && guardAt < firstDisplayId);
+}
+
 console.log();
 console.log(`${PASS} passed, ${FAIL} failed`);
 process.exit(FAIL ? 1 : 0);
