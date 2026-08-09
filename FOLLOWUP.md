@@ -30,14 +30,25 @@ The semantics are pinned offline; the cadence gain is not yet measured against
 a live CAD. Next session with Fusion open: run a real build and compare
 step cadence with and without it.
 
-## Verify the add-in registry after the 2026-08-08 crash fix
+## Known cosmetic: a symlinked checkout shows two Arges rows
 
-Fusion crashed during `terminate()` (see commit 30db799) and never rewrote
-`JSLoadedScriptsinfo`, leaving `FusionBridge` registered at a path the rename
-had deleted, with `runOnStartup` set. The stale entry was removed by hand
-(backup: `JSLoadedScriptsinfo.backup-crash-fix-20260808`). On the next Fusion
-launch confirm **Utilities → Add-Ins** lists exactly one entry, **Arges**, and
-re-tick **Run on Startup** — the old flag went with the stale record.
+Resolved 2026-08-09, live. Fusion discovers a symlinked add-in twice — the
+folder scan resolves `AddIns/Arges` to the repo path while the saved
+registration keeps the link path, and the two never merge. Consequences, all
+verified: the Add-Ins dialog can show two rows, quit writes both paths into
+`JSLoadedScriptsinfo`, and every launch calls `run()` twice — the second is
+absorbed by the already-running guard and logged as expected. One listener,
+one instance, no user-visible fault. Wheel installs (`arges install`) are real
+copies, so both paths match and none of this applies.
+
+Do not tidy the registry per quit — it regrows by construction. Revisit only
+if Fusion ever stops merging the *listener* side too; the durable fix would be
+registering the direct repo path instead of symlinking, which changes
+install.sh and the documented checkout flow.
+
+(The 2026-08-08 crash also left a dead `FusionBridge` registration with
+`runOnStartup`; removed by hand, backup
+`JSLoadedScriptsinfo.backup-crash-fix-20260808`.)
 
 ## The rename is half-landed (branch `rename/arges`)
 

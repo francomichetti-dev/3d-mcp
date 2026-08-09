@@ -1485,7 +1485,15 @@ def _start_locked(register_event):
     global _cached_app_version
 
     if _httpd is not None:
-        _log("start requested but the listener is already running", "WARN")
+        # Expected once per launch on a checkout install, not a fault: Fusion
+        # discovers a symlinked add-in twice — its folder scan resolves the
+        # AddIns/Arges link to the repo path while the saved registration
+        # keeps the link path, and the two never merge — so run() arrives
+        # twice and the second lands here.  Verified live 2026-08-09 with a
+        # single registry entry.  Wheel installs are real copies, so both
+        # paths match and they see this only on a genuine double start.
+        _log("second start request ignored — the listener is already running "
+             "(a symlinked add-in is discovered twice; harmless)")
         return
 
     _ensure_state_dir()
