@@ -93,6 +93,20 @@
   }
   #banner.done { color: var(--ok); }
   #banner.done .spin { display: none; }
+  /* Orange, like the elsewhere Cancel: the panel's one colour for "make it
+     stop". Gone once there is nothing running to stop. */
+  #banner-stop {
+    background: transparent; border: 1px solid var(--warn); color: var(--warn);
+    border-radius: 5px; padding: 2px 9px; font-size: 11px; cursor: pointer;
+    flex: 0 0 auto;
+  }
+  #banner-stop:hover { background: var(--warn); color: #3a2a10; }
+  #banner-stop:disabled { opacity: .5; cursor: default; }
+  #banner.done #banner-stop, #banner.stopped #banner-stop { display: none; }
+  /* A cancelled turn ended because the person said so — that is not the green
+     "Done" of a finished build, and pretending so misreads what happened. */
+  #banner.stopped { color: var(--warn); }
+  #banner.stopped .spin { display: none; }
   #elsewhere {
     flex: 0 0 auto; display: flex; align-items: center; gap: 8px;
     padding: 6px 10px; font-size: 12px; color: var(--warn);
@@ -209,7 +223,6 @@
     <span class="dot" id="dot"></span>
     <span class="name none" id="design" title="the design this chat belongs to">no design</span>
     <span class="spacer"></span>
-    <button id="stop">Stop</button>
     <button id="shot">Screenshot</button>
   </header>
 
@@ -233,8 +246,12 @@
     <button id="elsewhere-cancel" type="button">Cancel it</button>
   </div>
 
+  <!-- Stop lives beside the wheel on purpose: the spinner says "running" and
+       the button is the answer to it. In the header it read as panel chrome
+       and nobody connected it to the prompt it would cancel. -->
   <div id="banner" hidden>
     <span class="spin" aria-hidden="true"></span>
+    <button id="banner-stop" type="button" title="Cancel the running prompt">Stop</button>
     <span id="banner-text"></span>
   </div>
 
@@ -310,34 +327,55 @@ function renderPlan(steps) {
 }
 
 // The banner answers "is it still going, and on what?" without reading the log.
+const bannerStop = document.getElementById('banner-stop');
+let stopping = false;         // a Stop click is in flight; colours the ending
+
 function working(label) {
-  banner.classList.remove('done');
-  banner.classList.remove('lost');
+  banner.classList.remove('done', 'lost', 'stopped');
   bannerText.textContent = label || 'Working';
+  bannerStop.disabled = false;
   banner.hidden = false;
 }
 
 function finished() {
-  banner.classList.remove('lost');
+  banner.classList.remove('lost', 'stopped');
   banner.classList.add('done');
   bannerText.textContent = 'Done';
   banner.hidden = false;
 }
 
+// The person cancelled it — that is an ending, not an achievement. Orange
+// "Stopped", never the green "Done" of a build that actually finished.
+function stoppedBanner() {
+  banner.classList.remove('done', 'lost');
+  banner.classList.add('stopped');
+  bannerText.textContent = 'Stopped';
+  banner.hidden = false;
+}
+
 function clearBanner() {
   banner.hidden = true;
-  banner.classList.remove('done');
-  banner.classList.remove('lost');
+  banner.classList.remove('done', 'lost', 'stopped');
 }
 
 // Connection gone. Not "done" — the build may well still be running in Fusion;
-// what stopped is the panel's ability to hear about it.
+// what stopped is the panel's ability to hear about it. Stop stays visible:
+// the interrupt travels by plain POST, which may well still get through.
 function lost() {
-  banner.classList.remove('done');
+  banner.classList.remove('done', 'stopped');
   banner.classList.add('lost');
   bannerText.textContent = 'Connection lost — reconnecting…';
   banner.hidden = false;
 }
+
+bannerStop.onclick = () => {
+  // Feedback first: the click must change something on screen immediately,
+  // or a slow interrupt reads as a dead button.
+  stopping = true;
+  bannerStop.disabled = true;
+  bannerText.textContent = 'Stopping…';
+  fetch('/interrupt', { method: 'POST' });
+};
 
 const modelPicker = document.getElementById('model');
 
@@ -546,6 +584,9 @@ function applyDocument(d) {
   fillPicker(modelPicker, d.models, d.model);
   fillPicker(effortPicker, d.efforts, d.effort);
   renderPlan(d.design ? d.plan : null);
+  // A Stop in flight belongs to the design it was clicked on; a switch means
+  // this panel is now about a different turn entirely.
+  stopping = false;
   if (d.busy) working('Working'); else clearBanner();
   busy = !!d.busy;
   const blocked = busy || !!heldElsewhere;
@@ -592,7 +633,7 @@ es.onmessage = (e) => {
     busy = false; send.disabled = false; current = null;
     document.getElementById('attach').disabled = false;
     modelPicker.disabled = effortPicker.disabled = false;
-    finished();
+    if (stopping) { stopping = false; stoppedBanner(); } else { finished(); }
   } else {
     render(ev, true);
   }
@@ -793,7 +834,6 @@ input.addEventListener('input', () => {
   input.style.height = 'auto';
   input.style.height = Math.min(input.scrollHeight, 120) + 'px';
 });
-document.getElementById('stop').onclick = () => fetch('/interrupt', {method: 'POST'});
 document.getElementById('shot').onclick = viewport;
 
 // Initial paint. /document already knows which design is active and carries its

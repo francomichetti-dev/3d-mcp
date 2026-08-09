@@ -276,6 +276,52 @@ check('back on the working design, no elsewhere notice',
 check('but Send is still disabled because it is busy here',
       h.doc.getElementById('send').disabled, true);
 
+// ---- the stop button ------------------------------------------------------
+//
+// It lives inside the working banner, beside the wheel: the spinner says
+// "running" and the button is the answer to it. It only exists while there is
+// something to stop, and a cancelled turn ends orange "Stopped", never the
+// green "Done" of a build that actually finished.
+console.log('The stop button');
+{
+  const h = start();
+  check('idle: no banner, so no stop either',
+        h.doc.getElementById('banner').hidden, true);
+
+  // A live tool event puts the turn on screen.
+  h.deliver({ type: 'tool', doc: 'design-1', name: 'fusion_execute',
+              summary: 'base plate', verb: 'Extruding' });
+  check('working: the banner is up', h.doc.getElementById('banner').hidden, false);
+  check('and stop is clickable',
+        h.doc.getElementById('banner-stop').disabled, false);
+
+  // The click must change the screen immediately, before the server answers.
+  h.sent.length = 0;
+  h.doc.getElementById('banner-stop').onclick();
+  check('the click posts the interrupt', h.sent[0] && h.sent[0].url, '/interrupt');
+  check('and says so at once',
+        h.doc.getElementById('banner-text').textContent, 'Stopping…');
+  check('and cannot be double-clicked',
+        h.doc.getElementById('banner-stop').disabled, true);
+
+  // The turn ends because it was cancelled: orange Stopped, not green Done.
+  h.deliver({ type: 'turn_end', doc: 'design-1' });
+  const cls = h.doc.getElementById('banner').className;
+  check('a cancelled turn reads Stopped',
+        h.doc.getElementById('banner-text').textContent, 'Stopped');
+  check('styled as stopped', /stopped/.test(cls) && !/done/.test(cls), true);
+  check('and Send comes back', h.doc.getElementById('send').disabled, false);
+
+  // The next turn starts clean — the old Stop must not colour its ending.
+  h.deliver({ type: 'tool', doc: 'design-1', name: 'fusion_execute',
+              summary: 'fillet', verb: 'Filleting' });
+  check('a new turn re-arms the button',
+        h.doc.getElementById('banner-stop').disabled, false);
+  h.deliver({ type: 'turn_end', doc: 'design-1' });
+  check('and an uncancelled turn is still green Done',
+        h.doc.getElementById('banner-text').textContent, 'Done');
+}
+
 // ---- the hidden attribute must actually hide ------------------------------
 //
 // Everything above drives the DOM, where `hidden` is a boolean this harness
