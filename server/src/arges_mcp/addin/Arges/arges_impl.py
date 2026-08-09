@@ -1670,8 +1670,16 @@ def _find_repo():
     copied out of an installed wheel by `arges install`, where there is
     no checkout above it at all.  Identified by the agent/ directory because that
     is the thing the panel actually needs.
+
+    realpath, not abspath: when Fusion discovers the add-in through the
+    AddIns/Arges symlink, __file__ is the ~/Library path and walking up from
+    THERE finds no checkout — the panel silently skipped itself exactly that
+    way on 2026-08-09.  It had always worked before only because the old
+    registration pointed at the repo path directly, so the symlink case the
+    docstring promised was never actually exercised.  For a wheel-copied
+    install the two are the same path and nothing changes.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
+    here = os.path.dirname(os.path.realpath(__file__))
     for _ in range(8):
         parent = os.path.dirname(here)
         if parent == here:

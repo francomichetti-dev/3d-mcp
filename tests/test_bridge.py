@@ -408,6 +408,44 @@ try:
     print("State directory permissions")
     check("state dir is 0700", oct(os.stat(STATE).st_mode & 0o777), "0o700")
 
+    print("The panel finds its checkout through a symlink")
+    # Fusion discovers the add-in through the AddIns/Arges symlink, so
+    # __file__ is the ~/Library path — abspath() walked up from there, found
+    # no checkout, and the panel silently skipped itself (2026-08-09, live).
+    # The docstring had promised the symlink case all along; the old direct
+    # registration meant it was never actually exercised.
+    fake_home = Path(tempfile.mkdtemp(prefix="panel-home-"))
+    checkout = fake_home / "code" / "myrepo"
+    (checkout / "agent").mkdir(parents=True)
+    addin_real = checkout / "server/src/arges_mcp/addin/Arges"
+    addin_real.mkdir(parents=True)
+    addin_link = fake_home / "Library" / "AddIns" / "Arges"
+    addin_link.parent.mkdir(parents=True)
+    addin_link.symlink_to(addin_real)
+
+    real_file = impl.__file__
+    # resolve() on the expectation too: on macOS the temp dir itself sits
+    # behind /var -> /private/var, so realpath changes the prefix as well.
+    checkout_resolved = str(checkout.resolve())
+    try:
+        # Loaded through the symlink, as Fusion does:
+        impl.__file__ = str(addin_link / "arges_impl.py")
+        check("a symlinked add-in still finds the checkout",
+              impl._find_repo(), checkout_resolved)
+        # Loaded from the real path, as the old registration did:
+        impl.__file__ = str(addin_real / "arges_impl.py")
+        check("and a direct load finds the same one",
+              impl._find_repo(), checkout_resolved)
+        # Copied out of a wheel: no checkout above, and that is a normal state.
+        wheel_copy = fake_home / "Library" / "AddIns2" / "Arges"
+        wheel_copy.mkdir(parents=True)
+        impl.__file__ = str(wheel_copy / "arges_impl.py")
+        check("a PyPI install reports no checkout rather than guessing",
+              impl._find_repo(), None)
+    finally:
+        impl.__file__ = real_file
+        shutil.rmtree(fake_home, ignore_errors=True)
+
     print("Geometry does not outlive the modelling kernel")
     # Fusion destroys the kernel BEFORE it finalises the embedded interpreter,
     # so an adsk object still reachable from the add-in at that point is freed

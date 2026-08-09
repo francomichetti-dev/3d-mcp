@@ -189,5 +189,5 @@ logging did all carry over — but into `broker.py`, which runs *outside* Rhino,
 not into anything living inside it. That relocation is the whole port: the
 CAD-agnostic 80% was real, it just could not stay in the same process.
 
-The 73 assertions in `tests/test_bridge.py` cover the Fusion side of that shared
+The 76 assertions in `tests/test_bridge.py` cover the Fusion side of that shared
 portion and `tests/test_broker.py` covers the Rhino side, so both are protected.
