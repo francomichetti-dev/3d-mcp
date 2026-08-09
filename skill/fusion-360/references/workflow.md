@@ -20,6 +20,8 @@ Also check `design.designType` early — `adsk.fusion.DesignTypes.ParametricDesi
 
 Not after every three changes. Not "at the end". After **each** operation that creates or modifies geometry.
 
+The cheap way is built in: pass `screenshot="iso"` (or another view) on the same `fusion_execute` call that changes the geometry, and the viewport image arrives together with the result — one round trip, nothing to remember to do afterwards. The capture only happens when the code succeeded; a failed script comes back as a traceback alone. Reach for a standalone `fusion_screenshot` when you want a second angle, a custom size, or a look without running code.
+
 **Never chain modelling steps blind.** A wrong extrude direction, a profile that picked the wrong region, a fillet that consumed the wrong edge — all of these run without raising an exception and all of them silently poison every subsequent step. Ten blind steps means ten steps to unwind instead of one.
 
 The screenshot is not a formality: read it. Is the feature where you predicted? Is the body one piece or two? Did something disappear? If the image doesn't match the mental model, stop and diagnose before adding more.
