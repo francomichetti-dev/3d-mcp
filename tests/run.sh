@@ -26,8 +26,16 @@ done
 
 status=0
 total=0
-captured="$(mktemp)"
-trap 'rm -f "${captured}"' EXIT
+capture_dir="$(mktemp -d)"
+trap 'rm -rf "${capture_dir}"' EXIT
+
+# The suites run concurrently: every one already isolates its state in its own
+# temp directory and binds ports it probed for itself, which is what makes this
+# safe. Serial took 14.5s and the slowest single suite 4.3s (measured), so the
+# wall time is the slowest suite, not the sum. Output is captured per suite and
+# printed in order afterwards, so a failure reads exactly as it did serially.
+labels=()
+pids=()
 
 for test_file in "${SCRIPT_DIR}"/test_*.py; do
     # A test that imports agent_service needs the agent env; everything else
@@ -37,22 +45,34 @@ for test_file in "${SCRIPT_DIR}"/test_*.py; do
     else
         project=server
     fi
-    printf '\n=== %s  [%s env] ===\n' "$(basename "${test_file}")" "${project}"
+    label="$(basename "${test_file}")  [${project} env]"
+    labels+=("${label}")
     uv run --frozen --no-sync --directory "${REPO_DIR}/${project}" python "${test_file}" \
-        2>&1 | tee "${captured}" || status=1
-    passed="$(grep -oE '^[0-9]+ passed' "${captured}" | grep -oE '^[0-9]+' || true)"
-    total=$(( total + ${passed:-0} ))
+        > "${capture_dir}/${#labels[@]}" 2>&1 &
+    pids+=($!)
 done
 
 # The chat panel is JavaScript, so it runs under node rather than a venv. It is
 # the product's face and had no coverage at all until a spinner that would not
 # stop had to be diagnosed by reading the source.
+have_node=0
 if command -v node >/dev/null 2>&1; then
-    printf '\n=== %s  [node] ===\n' "test_panel.js"
-    node "${SCRIPT_DIR}/test_panel.js" 2>&1 | tee "${captured}" || status=1
-    passed="$(grep -oE '^[0-9]+ passed' "${captured}" | grep -oE '^[0-9]+' || true)"
+    have_node=1
+    labels+=("test_panel.js  [node]")
+    node "${SCRIPT_DIR}/test_panel.js" > "${capture_dir}/${#labels[@]}" 2>&1 &
+    pids+=($!)
+fi
+
+for i in "${!pids[@]}"; do
+    wait "${pids[$i]}" || status=1
+    printf '\n=== %s ===\n' "${labels[$i]}"
+    cat "${capture_dir}/$(( i + 1 ))"
+    passed="$(grep -oE '^[0-9]+ passed' "${capture_dir}/$(( i + 1 ))" \
+              | grep -oE '^[0-9]+' || true)"
     total=$(( total + ${passed:-0} ))
-else
+done
+
+if [ "${have_node}" -eq 0 ]; then
     printf '\nERROR: node is required for the panel tests — install it or the\n' >&2
     printf 'panel ships unverified.\n' >&2
     status=1
