@@ -102,14 +102,22 @@ def digest(text):
 # commit messages and markdown, so this check was written for markdown - but
 # nothing stops the next one landing in a test fixture or a comment, and the
 # scan costs milliseconds either way.
+#
+# Untracked-but-not-ignored files are scanned too. They are exactly the set
+# `git add -A` is about to commit, and a run of this suite before that commit
+# is the whole point of the local gate - a new file was invisible here once,
+# and the name it carried would only have failed in CI, after landing in
+# history. (Found by planting the leak in a NEW file rather than an old one.)
 TRACKED = []
-for name in subprocess.run(["git", "ls-files"], cwd=REPO, capture_output=True,
-                           text=True).stdout.split():
-    path = REPO / name
-    try:
-        TRACKED.append((name, path.read_text(encoding="utf-8")))
-    except (OSError, UnicodeDecodeError):
-        continue          # images and anything else not text
+for args in (["git", "ls-files"],
+             ["git", "ls-files", "-o", "--exclude-standard"]):
+    for name in subprocess.run(args, cwd=REPO, capture_output=True,
+                               text=True).stdout.split():
+        path = REPO / name
+        try:
+            TRACKED.append((name, path.read_text(encoding="utf-8")))
+        except (OSError, UnicodeDecodeError):
+            continue      # images and anything else not text
 truthy("there are tracked files to scan", len(TRACKED) >= 20)
 
 named = []
