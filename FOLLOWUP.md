@@ -70,7 +70,10 @@ written.
 
 ## The remote Rhino machine
 
-The attachment-permissions fix and `scripts/cleanup-downloads.ps1` are ready
-but the machine has been unreachable. Deploy both on next contact, and run the
-cleanup script against the Downloads folder as agreed.
+The deploy vector is the repo zip: `scripts/rhino/UPDATE.md` is written for
+the Claude Code on that machine and covers the whole update — including the
+two items that were waiting on contact, re-applying real token permissions
+(`icacls`; the old install's chmod restricted nothing on Windows) and the
+agreed `cleanup-downloads.ps1` run, which it requires local consent for.
+Open until the update is confirmed run.
 

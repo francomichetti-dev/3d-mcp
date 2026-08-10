@@ -223,6 +223,54 @@ else:
     source_text = SOURCE.read_text(encoding="utf-8")
     truthy("Windows restriction goes through icacls", "icacls" in source_text)
 
+# ---------------------------------------------------------- the window UI --
+# The page is a string inside the module, and pywebview renders it with the
+# same engines as any browser, so the lessons the Fusion panel paid for apply
+# verbatim. No harness runs this page, so what the panel pins behaviourally is
+# pinned statically here — presence of the guard, not its computed effect.
+print("The window carries the panel's fixes")
+page = SOURCE.read_text(encoding="utf-8")
+
+# The engine draws the open <select> list itself; without this it is a white
+# popup over a dark window (live on the Fusion panel, 2026-08-09).
+truthy("the page declares itself dark to the engine", "color-scheme:dark" in page)
+truthy("and pins the dropdown rows to the window colours",
+       "#model option,#effort option{background:var(--panel)" in page)
+
+# An id rule setting display outranks [hidden] without this.
+truthy("the hidden attribute always wins", "[hidden]{display:none!important}" in page)
+
+# Stop lives in the working banner beside the wheel, orange; the red form
+# button it replaces is gone entirely.
+truthy("the banner carries the stop button", 'id="banner-stop"' in page)
+truthy("styled with the warn colour, like the elsewhere cancel",
+       "#banner-stop{background:transparent;border:1px solid var(--warn)" in page)
+check("the old red halt button is gone", "halt" in page, False)
+
+# A cancelled turn must never read as a finished one.
+truthy("a stopped turn has its own ending", '"Stopped"' in page)
+truthy("distinct from the green Done", "#banner.stopped{color:var(--warn)}" in page)
+
+# loadSetup runs on every Settings visit; filling without clearing duplicated
+# the dropdown lists each time.
+truthy("the pickers are cleared before filling", 'el.innerHTML = ""' in page)
+
+# The settings confirmation called say('notice', ...), which was never
+# defined: the value stuck, the notice threw inside the async handler, the
+# person saw nothing. Matched as a call — the comment recording the bug is
+# allowed to name it.
+check("no call to the phantom say() helper", "say('" in page, False)
+
+# The update path ships beside the setup path, and the one security-relevant
+# step in it — icacls on the EXISTING token, because the old install's chmod
+# restricted nothing — must stay written down.
+update = (SOURCE.parent / "UPDATE.md")
+truthy("UPDATE.md ships next to SETUP.md", update.exists())
+if update.exists():
+    text = update.read_text(encoding="utf-8")
+    truthy("and re-applies the token permissions", "icacls" in text)
+    truthy("and forbids regenerating the token", "Do NOT regenerate" in text)
+
 import shutil as _cleanup_shutil  # noqa: E402
 _cleanup_shutil.rmtree(TMP, ignore_errors=True)
 

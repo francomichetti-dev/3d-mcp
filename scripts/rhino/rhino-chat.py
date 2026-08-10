@@ -47,6 +47,7 @@ AUTH_HEADER = "X-Fusion-Bridge-Token"
 # fails when somebody switches, not at review.
 MODELS = [
     ("claude-opus-5", "Opus 5"),
+    ("claude-fable-5", "Fable 5"),
     ("claude-sonnet-5", "Sonnet 5"),
     ("claude-haiku-4-5-20251001", "Haiku 4.5"),
 ]
@@ -629,7 +630,15 @@ class Api:
 PAGE = r"""
 <!doctype html><html><head><meta charset="utf-8"><title>Rhino Chat</title><style>
 :root{--bg:#1e2226;--panel:#272c31;--line:#3a4046;--fg:#e8eaec;--dim:#949ca4;
-      --accent:#6cc0ff;--ok:#7ddc9a;--warn:#ffb454;--err:#ff6b6b;}
+      --accent:#6cc0ff;--ok:#7ddc9a;--warn:#ffb454;--err:#ff6b6b;
+      /* The engine draws the open <select> list and the scrollbars itself,
+         and without this it draws them for a LIGHT page — a white popup over
+         the dark window. Same fix as the Fusion panel. */
+      color-scheme:dark;}
+/* The hidden attribute must always win over id rules that set display —
+   learned in the Fusion panel, where an always-visible banner spun a wheel
+   forever. Cheap insurance here for the same class of bug. */
+[hidden]{display:none!important}
 *{box-sizing:border-box}html,body{height:100%;margin:0}
 body{background:var(--bg);color:var(--fg);display:flex;flex-direction:column;
      font:14px/1.6 -apple-system,"Segoe UI",sans-serif}
@@ -679,12 +688,33 @@ form{display:flex;gap:8px;padding:12px;border-top:1px solid var(--line);flex:non
   max-width:82px;align-self:flex-end}
 #effort:hover{color:#e6e8ea}
 #effort:disabled{opacity:.45;cursor:default}
+/* Pin the popup rows to the window's colours, on top of color-scheme. */
+#model option,#effort option{background:var(--panel);color:var(--fg)}
 #send{background:var(--accent);color:#0d2233;border:0;border-radius:9px;
       height:40px;padding:0 20px;font:600 14px inherit;cursor:pointer;flex:none}
 #send:disabled{opacity:.45;cursor:default}
-#halt{background:transparent;border:1px solid var(--err);color:var(--err);
-      border-radius:9px;height:40px;padding:0 16px;font:600 14px inherit;
-      cursor:pointer;flex:none}
+/* The working banner, as in the Fusion panel: the wheel says "running" and
+   the Stop beside it — orange, the one colour for "make it stop" — is the
+   answer to it. A cancelled turn ends orange "Stopped", never green "Done". */
+#banner{display:flex;align-items:center;gap:8px;padding:6px 14px;
+        font-size:12.5px;color:var(--dim);border-bottom:1px solid var(--line);
+        background:var(--panel);flex:none}
+#banner.done{color:var(--ok)}
+#banner.stopped{color:var(--warn)}
+#banner.done .spin,#banner.stopped .spin{display:none}
+#banner.done #banner-stop,#banner.stopped #banner-stop{display:none}
+#banner-stop{background:transparent;border:1px solid var(--warn);color:var(--warn);
+  border-radius:5px;padding:2px 9px;font-size:11px;cursor:pointer;flex:none}
+#banner-stop:hover{background:var(--warn);color:#3a2a10}
+#banner-stop:disabled{opacity:.5;cursor:default}
+.spin{width:11px;height:11px;flex:none;border-radius:50%;
+  border:2px solid var(--line);border-top-color:var(--accent);
+  animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion: reduce){
+  .spin{animation:pulse 1.4s ease-in-out infinite}
+  @keyframes pulse{50%{opacity:.35}}
+}
 #settings{overflow-y:auto;padding:22px;gap:20px;display:flex;flex-direction:column}
 .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
       padding:16px 18px;max-width:660px}
@@ -713,6 +743,11 @@ small{color:var(--dim);font-size:12px}
 </header>
 <main>
   <div class="view on" id="v-chat">
+    <div id="banner" hidden>
+      <span class="spin" aria-hidden="true"></span>
+      <button id="banner-stop" type="button" title="Cancel the running prompt">Stop</button>
+      <span id="banner-text"></span>
+    </div>
     <div id="log"><div id="empty">
       <h2>Model by asking</h2>
       <p>“Make a 20&nbsp;cm cube on a new layer called Blocks”</p>
@@ -726,7 +761,6 @@ small{color:var(--dim);font-size:12px}
       <select id="effort" title="How hard it thinks before answering"></select>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
       <button id="send">Send</button>
-      <button id="halt" style="display:none">Stop</button>
     </form>
   </div>
 
@@ -810,8 +844,45 @@ function bubble(cls, text){
   $("log").appendChild(el); $("log").scrollTop = $("log").scrollHeight;
 }
 window.onAgent = (kind, text) => {
-  if (kind === "tool") bubble("tool", text + "…");
+  if (kind === "tool") { bubble("tool", text + "…"); working(text); }
   else bubble("claude", text);
+};
+
+/* ---- the working banner ----
+   As in the Fusion panel: the wheel says "running", the orange Stop beside it
+   is the answer to it, and a cancelled turn ends "Stopped" — never the green
+   "Done" of a build that actually finished. */
+let stopping = false;
+function working(label){
+  const b = $("banner");
+  b.classList.remove("done", "stopped");
+  $("banner-text").textContent = label || "Working";
+  $("banner-stop").disabled = false;
+  b.hidden = false;
+}
+function finished(){
+  const b = $("banner");
+  b.classList.remove("stopped"); b.classList.add("done");
+  $("banner-text").textContent = "Done";
+  b.hidden = false;
+}
+function stoppedBanner(){
+  const b = $("banner");
+  b.classList.remove("done"); b.classList.add("stopped");
+  $("banner-text").textContent = "Stopped";
+  b.hidden = false;
+}
+function clearBanner(){
+  const b = $("banner");
+  b.hidden = true; b.classList.remove("done", "stopped");
+}
+$("banner-stop").onclick = async () => {
+  // Feedback first: the click must change the screen before the server
+  // answers, or a slow interrupt reads as a dead button.
+  stopping = true;
+  $("banner-stop").disabled = true;
+  $("banner-text").textContent = "Stopping…";
+  try { await window.pywebview.api.stop(); } catch (e) {}
 };
 
 /* ---- attachments ---- */
@@ -844,21 +915,25 @@ $("form").onsubmit = async (e) => {
   $("box").value = ""; $("box").style.height = "auto";
   bubble("you", text + (attached.length ? "\n\n📎 " + attached.map(a=>a.name).join(", ") : ""));
   attached = []; drawChips();
-  // A modelling turn can run for minutes. Without a way out, a wedged turn
-  // leaves the window unusable with no recourse but killing the process.
-  busy = true; $("send").disabled = true; $("clip").disabled = true;
-  $("send").style.display = "none"; $("halt").style.display = "";
+  // A modelling turn can run for minutes. The banner's Stop is the way out —
+  // without one, a wedged turn leaves the window unusable with no recourse
+  // but killing the process. The pickers freeze too: the CLI takes the flags
+  // per invocation, so a mid-turn change would silently apply to a turn that
+  // is not the one on screen.
+  busy = true; stopping = false;
+  $("send").disabled = true; $("clip").disabled = true;
+  $("model").disabled = true; $("effort").disabled = true;
+  working("Working");
   try {
     const r = await window.pywebview.api.chat(text);
-    if (!r.ok) bubble("err", r.error || "something went wrong");
-  } catch (e) { bubble("err", "the window failed: " + e); }
-  finally { busy = false; $("send").disabled = false; $("clip").disabled = false;
-            $("send").style.display = ""; $("halt").style.display = "none";
+    if (stopping) stoppedBanner();
+    else if (r.ok) finished();
+    else { bubble("err", r.error || "something went wrong"); clearBanner(); }
+  } catch (e) { bubble("err", "the window failed: " + e); clearBanner(); }
+  finally { busy = false; stopping = false;
+            $("send").disabled = false; $("clip").disabled = false;
+            $("model").disabled = false; $("effort").disabled = false;
             $("box").focus(); refresh(); }
-};
-$("halt").onclick = async () => {
-  const r = await window.pywebview.api.stop();
-  if (r.ok) bubble("tool", "stopped");
 };
 $("box").addEventListener("input", (e) => {
   e.target.style.height = "auto";
@@ -878,6 +953,9 @@ async function loadSetup(){
   const effortPicker = $('effort');
   const settings = await window.pywebview.api.settings();
   const fill = (el, options, current) => {
+    // loadSetup runs on every visit to the Settings tab; without clearing,
+    // each visit appended the whole list again.
+    el.innerHTML = "";
     options.forEach((o) => {
       const opt = document.createElement('option');
       opt.value = o.id; opt.textContent = o.label;
@@ -894,7 +972,10 @@ async function loadSetup(){
     // rather than leaving the page showing something that is not in force.
     modelPicker.value = out.model;
     effortPicker.value = out.effort;
-    say('notice', 'Now using ' + modelPicker.selectedOptions[0].textContent
+    // bubble, not a phantom helper: this line used to call say(), which was
+    // never defined — the setting stuck but the confirmation threw inside the
+    // async handler and the person saw nothing change.
+    bubble('tool', 'Now using ' + modelPicker.selectedOptions[0].textContent
         + ' at ' + effortPicker.selectedOptions[0].textContent
         + ' effort, from the next message.');
   };

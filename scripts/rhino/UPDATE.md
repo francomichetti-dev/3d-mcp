@@ -1,0 +1,79 @@
+# Updating an existing install — instructions for Claude Code
+
+You are Claude Code on the Windows machine where the Rhino bridge is already
+installed and working. The folder this file sits in is the NEW version,
+arriving as a zip. Your job is to replace the old install with it without
+losing anything the person has set up. Do the work yourself; do not hand the
+person commands unless a step genuinely needs them (closing Rhino, approving
+a cleanup).
+
+## What must survive the update
+
+- `%USERPROFILE%\.fusion-mcp\` — the token and `rhino-chat.json` settings.
+  Do NOT regenerate the token: the broker and the poller share it, and a new
+  one would orphan whichever side you did not restart.
+- The conversation history and any exports. Nothing here touches them; keep it
+  that way.
+
+## Steps, in order
+
+1. **Find the old install.** The broker runs as a scheduled task — read its
+   action path (`schtasks /query /tn <task> /v`, or search for
+   `broker-service.ps1`). That path's folder is the old `scripts/rhino`.
+   `START-BROKER.cmd` on the Desktop, if present, points at the same place.
+
+2. **Stop what is running, gently.**
+   - Chat window: ask the person to close it if it is open.
+   - Poller: run `rhino-poller-stop.py` through `rhinocode` if Rhino is open
+     (remember: `ScriptEditor` must have been run once this Rhino session
+     before `rhinocode` can see the instance). If Rhino is closed, the poller
+     is already stopped.
+   - Broker: end the scheduled task (`schtasks /end /tn <task>`).
+
+3. **Replace the files.** Copy everything from this folder over the old one,
+   same location, so the scheduled task's path stays valid. Overwrite; do not
+   merge by hand.
+
+4. **Re-apply the token permissions — this matters.** The old installer used
+   `os.chmod(0o600)`, which restricts nothing on Windows (it only toggles the
+   read-only attribute). The new code does it properly, but the EXISTING
+   files need it once:
+
+       icacls "%USERPROFILE%\.fusion-mcp" /inheritance:r /grant:r "%USERNAME%":F
+       icacls "%USERPROFILE%\.fusion-mcp\token" /inheritance:r /grant:r "%USERNAME%":F
+
+5. **Start everything again.** Broker task first; then, with Rhino open and
+   `ScriptEditor` run once, the poller; then the chat window
+   (`RHINO-CHAT.cmd`).
+
+6. **Verify before saying it works.**
+   - The window's dot is green and says Rhino is connected.
+   - A trivial prompt round-trips ("what's in this document?").
+   - The model dropdown lists five entries including **Fable 5**, and picking
+     one confirms itself in the chat.
+   - During a turn, an orange **Stop** appears beside the spinner; afterwards
+     the banner reads a green **Done**.
+
+7. **One-time housekeeping, agreed with the repo owner:** run
+   `cleanup-downloads.ps1` (in this folder) against the Downloads folder.
+   List what it would remove and get a yes from the person at the machine
+   BEFORE running it — it deletes files, and agreement from another machine
+   is not consent from this one.
+
+## What changed since the version you are replacing
+
+Worth telling the person, briefly: model and effort selection in the window
+(including Fable 5); Stop now sits beside the working spinner and a cancelled
+turn reads "Stopped" instead of pretending it finished; the dropdowns match
+the dark theme instead of opening white; `rhino_execute` can return a
+screenshot with the result in one call, so build steps are faster; the
+settings confirmation actually appears now; the dropdowns no longer duplicate
+after visiting Settings; and the token file is genuinely restricted on
+Windows.
+
+## Unchanged rules
+
+Everything in `SETUP.md` and `docs/` still holds: loopback only, never expose
+a port, never delete geometry by walking the document, and read
+`rhino-poller.log` when something looks silent — `rhinocode` prints nothing,
+ever.
