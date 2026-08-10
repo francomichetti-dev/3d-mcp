@@ -333,6 +333,15 @@ console.log('The stop button');
 console.log('The hidden attribute wins over id display rules');
 truthy('the stylesheet carries the [hidden] override',
        /\[hidden\]\s*\{\s*display:\s*none\s*!important;?\s*\}/.test(HTML));
+
+// Same class of check, same reason: the engine draws a <select>'s open list
+// (and the scrollbars) itself, and without color-scheme it draws them for a
+// light page — a white popup over the dark panel, live on 2026-08-09. A stub
+// DOM cannot open a native popup, so the declaration is what gets pinned.
+truthy('the page declares itself dark to the engine',
+       /color-scheme:\s*dark/.test(HTML));
+truthy('and pins the dropdown rows to the panel colours',
+       /option[^{]*\{[^}]*background:\s*var\(--panel\)/.test(HTML));
 {
   // And the guard must precede every id rule that sets display, or the tie
   // would fall to source order for equal-importance rules. (!important makes

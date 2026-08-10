@@ -9,6 +9,11 @@
     --bg: #2b2f33; --panel: #34383d; --line: #45494f;
     --fg: #e6e8ea; --dim: #9aa0a6; --accent: #7cc7ff;
     --warn: #ffb454; --danger: #ff6b6b; --ok: #7ddc9a;
+    /* The engine draws some things itself — the open dropdown list of a
+       <select>, the scrollbars — and without this it draws them for a LIGHT
+       page: a white popup over a dark panel. Styling the closed select does
+       not reach the popup; only color-scheme does. */
+    color-scheme: dark;
   }
   * { box-sizing: border-box; }
   /* The hidden attribute must always win. An id rule that sets `display`
@@ -205,6 +210,12 @@
   }
   #effort:hover { color: var(--fg); border-color: var(--dim); }
   #effort:disabled { opacity: .45; cursor: default; }
+  /* The popup's rows. color-scheme above makes the engine paint the list
+     dark; this pins the exact colours so the rows match the panel rather
+     than whatever the engine's idea of dark is. */
+  #model option, #effort option {
+    background: var(--panel); color: var(--fg);
+  }
   /* the whole panel is the drop target, so aim is not a skill requirement */
   body.dragging #log { outline: 2px dashed var(--accent); outline-offset: -8px; }
   textarea {
