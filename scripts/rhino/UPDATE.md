@@ -65,6 +65,25 @@ a cleanup).
    BEFORE running it — it deletes files, and agreement from another machine
    is not consent from this one.
 
+## New in this version: memory, video, and cost
+
+The window now keeps **one conversation per project**, where Rhino's
+incremental saves are the same project — `chair.3dm`, `chair001.3dm`,
+`chair_v2.3dm` and `chair - Copy.3dm` all share a thread. The first project
+opened inherits the old single global conversation, so nothing said before is
+lost. Claude can save notes with `rhino_remember` and look them up with
+`rhino_recall`; the sidebar lists every project with what it has cost so far.
+
+Videos can be attached: six frames spread across the clip, plus a local
+transcript of anything spoken. **Both are optional** — see the table in
+`SETUP.md`. Without ffmpeg, videos are refused with a message naming the
+install command and everything else works exactly as before; without
+`faster-whisper`, frames still attach and only the transcript is missing.
+
+Memory lives in `%USERPROFILE%\.fusion-mcp\memory\`. It is restricted to the
+account like the token is, and it holds project names, file paths and notes —
+if the person shares that machine, it is worth telling them it exists.
+
 ## What changed since the version you are replacing
 
 Worth telling the person, briefly: model and effort selection in the window

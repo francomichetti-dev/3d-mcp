@@ -25,6 +25,22 @@ needed at all:
 | the chat window (`RHINO-CHAT.cmd`) | 2, 3, 4 | **skip step 1** |
 | both | 1, 2, 3, 4 | |
 
+### Optional extras, only if they ask for video
+
+The window attaches videos by pulling six frames out of the clip and, if it
+can, transcribing what was said. Both tools are looked for at attach time, so
+installing either later just works and **neither is needed for anything else** —
+without them, videos are the only thing that does not work:
+
+| For | Install | Needed for |
+| --- | --- | --- |
+| frames | `winget install Gyan.FFmpeg` (Windows), `brew install ffmpeg` (macOS) | attaching a video at all |
+| speech | `pip install faster-whisper` | the spoken transcript; runs locally, uploads nothing |
+
+Do not install these by default. Whisper downloads a few hundred MB of model
+weights the first time it transcribes, which is a surprise nobody asked for if
+they only ever attach photos.
+
 The chat window does not use the registration from step 1. It passes its own
 MCP config inline with `--strict-mcp-config`, pointing at the same Python that
 is running the window — so registering is neither required nor read. Steps 2 to

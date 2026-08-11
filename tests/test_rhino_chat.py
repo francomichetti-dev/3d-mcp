@@ -22,6 +22,7 @@ Covered:
 """
 
 import importlib.util
+import re
 import json
 import os
 import stat
@@ -263,6 +264,50 @@ truthy("the pickers are cleared before filling", 'el.innerHTML = ""' in page)
 # person saw nothing. Matched as a call — the comment recording the bug is
 # allowed to name it.
 check("no call to the phantom say() helper", "say('" in page, False)
+
+# Every element the script reaches for must exist in the markup. There is no
+# harness for this page — a typo'd id is a TypeError at click time, in a
+# window nobody is watching the console of.
+print("The page and its script agree")
+page = SOURCE.read_text(encoding="utf-8").split('PAGE = r"""', 1)[1]
+ids = set(re.findall(r'id="([^"]+)"', page))
+used = set(re.findall(r'\$\("([^"]+)"\)', page))
+check("no element is referenced that the page does not define",
+      sorted(used - ids), [])
+truthy("and the script does reach for elements at all", len(used) > 20)
+
+
+# ------------------------------------------------------------------ video --
+# ffmpeg and Whisper are OPTIONAL. Someone with neither must still get a
+# working chat — the whole feature degrades to "videos are not supported here"
+# rather than breaking startup.
+print("Video is optional, not required")
+source_text = SOURCE.read_text(encoding="utf-8")
+head = source_text.split("class Api", 1)[0]
+check("faster_whisper is never imported at module scope",
+      "\nfrom faster_whisper" in head or "\nimport faster_whisper" in head, False)
+truthy("it is imported inside the function that needs it",
+       "    from faster_whisper import WhisperModel" in source_text)
+truthy("ffmpeg is looked for at attach time, not startup",
+       "def find_ffmpeg" in source_text)
+truthy("and the install hint is the one for THIS platform",
+       "FFMPEG_HINT = {" in source_text and '"macos": "brew install ffmpeg"' in source_text)
+
+# Frames and transcripts are pictures and speech from somebody's workshop.
+# The plain-attachment path restricts what it copies; these must too.
+frames = source_text.split("def attach", 1)[1].split("def clear_attachments", 1)[0]
+truthy("extracted frames are restricted", 'restrict(frame["path"])' in frames)
+truthy("and so is the transcript", "restrict(tpath)" in frames)
+truthy("a re-taken frame is restricted too",
+       "restrict(target)" in source_text.split("def reframe", 1)[1])
+
+# The picker description may contain only word characters and spaces —
+# pywebview rejects a comma at click time, not at startup.
+picker = re.search(r'file_types=\("([^"]*)\(', source_text)
+truthy("the file filter description has no comma", picker)
+if picker:
+    check("(pywebview rejects one at click time)", "," in picker.group(1), False)
+
 
 # The update path ships beside the setup path, and the one security-relevant
 # step in it — icacls on the EXISTING token, because the old install's chmod

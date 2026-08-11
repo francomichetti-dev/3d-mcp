@@ -18,6 +18,7 @@ Runs on Rhino's own Python (3.9). The only dependency is pywebview.
 import glob
 import json
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -27,6 +28,15 @@ import traceback
 import urllib.error
 import urllib.request
 import uuid
+
+# Per-project memory is optional: the window is useful without it, and a
+# machine that cannot import it should get a chat with one conversation
+# rather than no chat at all.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import rhino_memory
+except ImportError:
+    rhino_memory = None
 
 HOME = os.path.expanduser("~")
 CONFIG_DIR = os.path.join(HOME, ".fusion-mcp")
@@ -109,6 +119,181 @@ RHINO_TOOLS = ["mcp__rhino__rhino_execute", "mcp__rhino__rhino_state",
 
 MAX_ATTACH_BYTES = 20 * 1024 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
+VIDEO_SUFFIXES = (".mp4", ".mov", ".avi", ".mkv", ".webm", ".m4v")
+# Videos may be big — a phone clip of a print running passes 20 MB fast — and
+# only the extracted frames ever reach Claude, so the cap is its own, larger one.
+MAX_VIDEO_BYTES = 500 * 1024 * 1024
+VIDEO_FRAMES = 6                     # evenly spaced across the clip
+
+
+# --------------------------------------------------------------------------
+# Video: frames, and speech if the machine can transcribe it
+#
+# Claude cannot watch a video, but it CAN read frames as images and text as
+# text. Both tools here are OPTIONAL and looked for at attach time rather than
+# at startup: a machine with neither still runs the chat exactly as before,
+# and installing ffmpeg while the window is open just works. Nothing is
+# uploaded anywhere — Whisper runs locally.
+# --------------------------------------------------------------------------
+
+
+def find_ffmpeg():
+    """ffmpeg if present, else None."""
+    path = shutil.which("ffmpeg")
+    if path:
+        return path
+    candidates = [
+        os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                     "Microsoft", "WinGet", "Links", "ffmpeg.exe"),
+        os.path.join(os.environ.get("ProgramData", ""),
+                     "chocolatey", "bin", "ffmpeg.exe"),
+        r"C:\ffmpeg\bin\ffmpeg.exe",
+        "/opt/homebrew/bin/ffmpeg",
+        "/usr/local/bin/ffmpeg",
+    ]
+    # winget installs under a versioned Packages directory. Links usually
+    # covers it, but a fresh install is not on PATH for an already-running
+    # process, which is exactly when somebody installs it: mid-attach.
+    packages = os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                            "Microsoft", "WinGet", "Packages")
+    try:
+        for entry in os.listdir(packages):
+            if "ffmpeg" in entry.lower():
+                for root, _dirs, files in os.walk(os.path.join(packages, entry)):
+                    if "ffmpeg.exe" in files:
+                        candidates.append(os.path.join(root, "ffmpeg.exe"))
+    except OSError:
+        pass
+    for cand in candidates:
+        if cand and os.path.isfile(cand):
+            return cand
+    return None
+
+
+_whisper_model = None
+
+
+def transcribe_video(ffmpeg, video, duration=0.0, on_progress=None):
+    """What was said in the clip, as timestamped text — or None.
+
+    Claude cannot hear, so speech in a video would otherwise be lost entirely.
+    Failure is silent by design: no Whisper installed, no audio track, or a
+    clip with nobody talking all end the same way, and the video still
+    attaches as frames. The transcript is a bonus, never a gate.
+
+    on_progress(fraction) is called as segments arrive — Whisper yields them
+    in order, so seg.end / duration is honest progress rather than a guess.
+    """
+    global _whisper_model
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        return None
+
+    import tempfile
+
+    wav = os.path.join(tempfile.gettempdir(),
+                       "rhino-chat-%s.wav" % uuid.uuid4().hex[:8])
+    try:
+        # 16 kHz mono is what Whisper wants; anything richer is wasted bytes.
+        result = subprocess.run(
+            [ffmpeg, "-i", video, "-vn", "-ac", "1", "-ar", "16000", "-y", wav],
+            capture_output=True, creationflags=NO_WINDOW)
+        if result.returncode != 0 or not os.path.isfile(wav):
+            return None                      # no audio track at all
+        if _whisper_model is None:
+            if on_progress:
+                on_progress(0.0)             # about to block, loading weights
+            # "small" understands Spanish well where "base" mangles it. Loaded
+            # once per process — it is a few hundred MB of weights.
+            _whisper_model = WhisperModel("small", device="cpu",
+                                          compute_type="int8")
+        segments, _info = _whisper_model.transcribe(wav, vad_filter=True)
+        lines = []
+        for seg in segments:
+            if on_progress and duration > 0:
+                on_progress(min(seg.end / duration, 1.0))
+            text = seg.text.strip()
+            if text:
+                lines.append("[%02d:%02d] %s"
+                             % (seg.start // 60, seg.start % 60, text))
+        return "\n".join(lines) or None
+    except Exception:                                        # noqa: BLE001
+        return None
+    finally:
+        try:
+            os.remove(wav)
+        except OSError:
+            pass
+
+
+def video_duration(ffmpeg, video):
+    """Length in seconds, or 0.0 when the file cannot be read."""
+    probe = subprocess.run(
+        [ffmpeg, "-i", video, "-hide_banner"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+        creationflags=NO_WINDOW)
+    for line in (probe.stderr or "").splitlines():
+        line = line.strip()
+        if line.startswith("Duration:"):
+            try:
+                clock = line.split("Duration:")[1].split(",")[0].strip()
+                hours, minutes, seconds = clock.split(":")
+                return int(hours) * 3600 + int(minutes) * 60 + float(seconds)
+            except (ValueError, IndexError):
+                return 0.0
+    return 0.0
+
+
+def extract_frame_at(ffmpeg, video, target, moment):
+    """One still at `moment` seconds. True when the file exists afterwards."""
+    result = subprocess.run(
+        [ffmpeg, "-ss", "%.2f" % moment, "-i", video, "-frames:v", "1",
+         "-q:v", "3", "-y", target],
+        capture_output=True, creationflags=NO_WINDOW)
+    return result.returncode == 0 and os.path.isfile(target)
+
+
+def thumb_of(path):
+    """The frame as a data URI, so the window can preview it.
+
+    Inline rather than file://, because the page is served from a string and
+    local file URLs are not reliably reachable from it. Frames are 20-70 KB
+    JPEGs, cheap enough to inline.
+    """
+    import base64
+
+    try:
+        with open(path, "rb") as handle:
+            return ("data:image/jpeg;base64,"
+                    + base64.b64encode(handle.read()).decode("ascii"))
+    except OSError:
+        return ""
+
+
+def extract_frames(ffmpeg, video, out_dir, stamp, duration, on_step=None):
+    """VIDEO_FRAMES stills, evenly spaced, each named with its timestamp.
+
+    Six across the clip shows the progression — which is what "look at how
+    this print is going" actually needs — without flooding the context with
+    near-identical stills.
+    """
+    if duration <= 0:
+        return [], "could not read the video (is it a valid file?)"
+    frames = []
+    for i in range(VIDEO_FRAMES):
+        if on_step:
+            on_step(i)
+        # Nudged off the exact ends: second 0 is often black, and the last
+        # frame is often cut mid-motion.
+        moment = duration * (i + 0.5) / VIDEO_FRAMES
+        name = "%s-frame%d-at-%ds.jpg" % (stamp, i + 1, int(moment))
+        target = os.path.join(out_dir, name)
+        if extract_frame_at(ffmpeg, video, target, moment):
+            frames.append({"path": target, "at": int(moment)})
+    if not frames:
+        return [], "ffmpeg could not extract any frames"
+    return frames, None
 
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
@@ -129,6 +314,14 @@ INSTALL_COMMAND = {
 
 TERMINAL_NAME = {"windows": "PowerShell", "macos": "Terminal",
                  "linux": "a terminal"}[PLATFORM]
+
+# Only shown when somebody attaches a video without ffmpeg installed, so it
+# has to be the command for THEIR machine rather than the one the author used.
+FFMPEG_HINT = {
+    "windows": "winget install Gyan.FFmpeg",
+    "macos": "brew install ffmpeg",
+    "linux": "sudo apt install ffmpeg",
+}[PLATFORM]
 
 # How the person starts the two background pieces on their platform.
 START_STEPS = {
@@ -297,6 +490,66 @@ def _token():
         return ""
 
 
+def read_transcript(session, limit=40):
+    """Past messages of a session, oldest first, for repainting the window.
+
+    Claude Code writes one JSON object per line under
+    ~/.claude/projects/<cwd slug>/<session>.jsonl. The slug is the working
+    directory with separators replaced, and this app always runs Claude with
+    cwd=CONFIG_DIR, so the location is known rather than searched for.
+    """
+    slug = re.sub(r"[^A-Za-z0-9]", "-", CONFIG_DIR)
+    path = os.path.join(HOME, ".claude", "projects", slug, session + ".jsonl")
+    if not os.path.exists(path):
+        return []
+    out = []
+    try:
+        with open(path, encoding="utf-8", errors="replace") as handle:
+            for line in handle:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                kind = event.get("type")
+                if kind not in ("user", "assistant"):
+                    continue
+                content = (event.get("message") or {}).get("content")
+                if isinstance(content, str):
+                    text = content
+                elif isinstance(content, list):
+                    text = "\n".join(
+                        b.get("text", "") for b in content
+                        if isinstance(b, dict) and b.get("type") == "text")
+                else:
+                    continue
+                text = text.strip()
+                # Tool-result turns arrive as role "user" with no prose. They
+                # are plumbing, not something the person said.
+                if not text or text.startswith("<"):
+                    continue
+                out.append({"who": "you" if kind == "user" else "claude",
+                            "text": text})
+    except OSError:
+        return []
+    return out[-limit:]
+
+
+def submit_state(timeout=20):
+    """Ask Rhino which document is open. The state dict, or None."""
+    body = json.dumps({"kind": "state", "payload": {}}).encode()
+    request = urllib.request.Request(BROKER + "/submit", data=body, method="POST")
+    request.add_header(AUTH_HEADER, _token())
+    request.add_header("Content-Type", "application/json")
+    try:
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            return json.loads(response.read())
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
 def broker_health(timeout=5):
     request = urllib.request.Request(BROKER + "/health")
     request.add_header(AUTH_HEADER, _token())
@@ -316,7 +569,22 @@ sentence about what you did is usually enough. No code dumps, and no lists of \
 what you might do next unless they ask.
 
 Check units and tolerance before building to scale. If something fails, read \
-the traceback and fix it yourself rather than handing the error back."""
+the traceback and fix it yourself rather than handing the error back.
+
+You have memory of this project. A <project-memory> block arrives with each \
+message: the model open now, its other saved versions, and what you recorded \
+before. Rhino saves incrementally, so chair.3dm, chair001.3dm and chair_v2.3dm \
+are the SAME project at different points — treat them as continuous work, and \
+say so if the version moved rather than acting surprised.
+
+Call rhino_remember when something is worth knowing next time: what they are \
+building, a decision and why, a dimension that matters, what is left. Not \
+every message, and never what reading the file would tell you. If they mention \
+a different model, rhino_recall looks it up — answer from what is recorded, \
+and say you have nothing on it rather than inventing.
+
+A video arrives as frames in order plus a transcript of what was said. Read \
+the frames as a sequence and treat the speech as instructions."""
 
 
 def _describe(tool):
@@ -352,9 +620,69 @@ class Api:
         self._started = bool(self._config.get("session_started"))
         self._pending = []          # attachments queued for the next message
         self._proc = None
+        self._project = None        # which project the thread belongs to
+        self._detected = None       # what Rhino last reported as open
+        self._viewing = None        # a closed project being read, read-only
 
     def bind(self, window):
         self._window = window
+
+    # -- projects -------------------------------------------------------- #
+
+    def _detect_project(self):
+        """Which project is open in Rhino now, or None if it cannot be asked."""
+        if rhino_memory is None:
+            return None
+        try:
+            out = submit_state()
+        except Exception:                                    # noqa: BLE001
+            return None
+        if not out or not out.get("ok"):
+            return None
+        return rhino_memory.describe(out.get("path") or "",
+                                     out.get("document") or "")
+
+    def _use_project(self, info):
+        """Point the conversation at this project's own thread."""
+        if info is None or rhino_memory is None:
+            return False
+        if self._project and self._project["key"] == info["key"]:
+            self._project = info                 # same project, newer version
+            return False
+        session, existed = rhino_memory.session_id(info["key"])
+        if not existed and not self._config.get("migrated"):
+            # Upgrading from the single global conversation: hand it to the
+            # first project opened rather than stranding it, so everything
+            # said before per-project memory existed is still there.
+            legacy = self._config.get("session")
+            if legacy and self._config.get("session_started"):
+                session, existed = legacy, True
+                rhino_memory.adopt_session(info["key"], legacy)
+            self._config["migrated"] = True
+            try:
+                save_config(self._config)
+            except OSError:
+                pass
+        self._session, self._started = session, existed
+        self._project = info
+        rhino_memory.touch(info)
+        return True
+
+    def _memory_preamble(self):
+        """The project-memory block, or '' when there is nothing to say.
+
+        Sent every turn rather than only the first. A resumed session already
+        has it earlier in the thread, but the open FILE changes mid-session —
+        people save incrementally as they work — and this is what tells Claude
+        the version moved under it.
+        """
+        if rhino_memory is None or self._project is None:
+            return ""
+        try:
+            block = rhino_memory.context_block(self._project)
+        except Exception:                                    # noqa: BLE001
+            return ""
+        return "<project-memory>\n%s\n</project-memory>\n\n" % block if block else ""
 
     def _push(self, kind, text):
         if not self._window:
@@ -362,6 +690,22 @@ class Api:
         try:
             self._window.evaluate_js(
                 "window.onAgent(%s, %s)" % (json.dumps(kind), json.dumps(text)))
+        except Exception:                                    # noqa: BLE001
+            pass
+
+    def _progress(self, pct, note=""):
+        """Drive the attachment progress bar. pct=None hides it.
+
+        Safe to call from the API worker thread: evaluate_js marshals into the
+        page, which is exactly why the window keeps painting while ffmpeg and
+        Whisper grind away on this one.
+        """
+        if not self._window:
+            return
+        try:
+            self._window.evaluate_js(
+                "window.onAttachProgress(%s, %s)"
+                % (json.dumps(pct), json.dumps(note)))
         except Exception:                                    # noqa: BLE001
             pass
 
@@ -423,10 +767,16 @@ class Api:
         try:
             import webview
 
+            # pywebview validates each filter against ^([\w ]+)\(...\)$ — the
+            # description may contain ONLY word characters and spaces, so a
+            # comma in it fails with "is not a valid file filter" at click
+            # time, not at startup. "Images videos and documents", not
+            # "Images, videos and documents".
             chosen = self._window.create_file_dialog(
                 webview.OPEN_DIALOG, allow_multiple=True,
-                file_types=("Images and documents (*.png;*.jpg;*.jpeg;*.gif;"
-                            "*.webp;*.pdf;*.txt;*.md;*.csv;*.json)",
+                file_types=("Images videos and documents (*.png;*.jpg;*.jpeg;"
+                            "*.gif;*.webp;*.mp4;*.mov;*.avi;*.mkv;*.webm;*.m4v;"
+                            "*.pdf;*.txt;*.md;*.csv;*.json)",
                             "All files (*.*)"))
         except Exception as exc:                             # noqa: BLE001
             return {"ok": False, "error": f"could not open the file picker: {exc}"}
@@ -440,6 +790,63 @@ class Api:
                 size = os.path.getsize(source)
             except OSError:
                 continue
+
+            if source.lower().endswith(VIDEO_SUFFIXES):
+                if size > MAX_VIDEO_BYTES:
+                    self._progress(None)
+                    return {"ok": False, "error":
+                            f"{os.path.basename(source)} is larger than 500 MB"}
+                ffmpeg = find_ffmpeg()
+                if not ffmpeg:
+                    self._progress(None)
+                    return {"ok": False, "error": (
+                        "videos need ffmpeg, which was not found — install it "
+                        "with: " + FFMPEG_HINT)}
+                base = os.path.basename(source)
+                stamp = uuid.uuid4().hex[:8]
+                # ffmpeg and Whisper both block this thread for real seconds,
+                # so the window says what it is doing throughout. Silence here
+                # reads as a hang, and the person cancels a working attach.
+                self._progress(4, "reading %s…" % base)
+                duration = video_duration(ffmpeg, source)
+                frames, error = extract_frames(
+                    ffmpeg, source, ATTACH_DIR, stamp, duration,
+                    on_step=lambda i: self._progress(
+                        8 + i * 9, "frame %d of %d…" % (i + 1, VIDEO_FRAMES)))
+                if error:
+                    self._progress(None)
+                    return {"ok": False, "error": f"{base}: {error}"}
+                for frame in frames:
+                    # A frame is a picture of the person's workshop; it is no
+                    # more public than the file it came from.
+                    restrict(frame["path"])
+                    added.append({
+                        "name": "%s @ %ds" % (base, frame["at"]),
+                        "path": frame["path"], "is_image": True,
+                        "from_video": base, "video_path": source,
+                        "at": frame["at"], "duration": duration,
+                        "thumb": thumb_of(frame["path"])})
+                self._progress(64, "listening for speech…")
+                transcript = transcribe_video(
+                    ffmpeg, source, duration,
+                    on_progress=lambda f: self._progress(
+                        68 + int(f * 28), "transcribing… %d%%" % int(f * 100)))
+                if transcript:
+                    tpath = os.path.join(ATTACH_DIR, "%s-audio.txt" % stamp)
+                    try:
+                        with open(tpath, "w", encoding="utf-8") as handle:
+                            handle.write(transcript)
+                        restrict(tpath)      # somebody's voice, written down
+                        added.append({"name": "%s (audio)" % base,
+                                      "path": tpath, "is_image": False,
+                                      "from_video": base, "is_transcript": True,
+                                      "text": transcript})
+                    except OSError:
+                        pass             # frames still attach; audio is bonus
+                self._progress(100, "done")
+                self._progress(None)
+                continue
+
             if size > MAX_ATTACH_BYTES:
                 return {"ok": False,
                         "error": f"{os.path.basename(source)} is larger than 20 MB"}
@@ -463,9 +870,142 @@ class Api:
         self._pending = []
         return {"ok": True}
 
+    def remove_attachment(self, path):
+        """Drop one pending item.
+
+        The ✕ on a chip has to reach here: removing it only from the page left
+        the file still attached at send time, so a frame the person explicitly
+        dropped was sent anyway.
+        """
+        self._pending = [i for i in self._pending if i.get("path") != path]
+        return {"ok": True, "left": len(self._pending)}
+
+    def reframe(self, path, delta):
+        """Re-take one video frame `delta` seconds from where it was.
+
+        The person saw the six previews and wants a different moment — the
+        blurry one mid-pan, or two seconds later once the part is in shot.
+        Only that frame is re-extracted; the others stay exactly as they are.
+        """
+        for item in self._pending:
+            if (item.get("path") == path and item.get("video_path")
+                    and not item.get("is_transcript")):
+                ffmpeg = find_ffmpeg()
+                if not ffmpeg:
+                    return {"ok": False, "error": "ffmpeg is no longer available"}
+                duration = item.get("duration") or 0
+                top = max(duration - 0.5, 0.5)
+                moment = min(max(item["at"] + delta, 0.0), top)
+                target = os.path.join(
+                    ATTACH_DIR,
+                    "%s-at-%ds.jpg" % (uuid.uuid4().hex[:8], int(moment)))
+                if not extract_frame_at(ffmpeg, item["video_path"],
+                                        target, moment):
+                    return {"ok": False, "error": "could not grab that frame"}
+                restrict(target)
+                try:
+                    os.remove(item["path"])      # the old still is now junk
+                except OSError:
+                    pass
+                item.update({
+                    "path": target, "at": int(moment),
+                    "name": "%s @ %ds" % (item["from_video"], int(moment)),
+                    "thumb": thumb_of(target)})
+                return {"ok": True, "old_path": path,
+                        "item": {k: item[k] for k in
+                                 ("name", "path", "at", "thumb", "from_video",
+                                  "is_image")}}
+        return {"ok": False, "error": "that frame is no longer attached"}
+
     # -- chat ----------------------------------------------------------- #
 
+    @staticmethod
+    def _label(info):
+        title = info["title"]
+        if info.get("version"):
+            title += " · %s" % info["version"]
+        return title
+
+    def open_project(self, initial=False):
+        """Track the model open in Rhino.
+
+        `changed` is true only when Rhino actually moved to a different
+        project, not merely because this was called again — the window polls
+        it, so reporting a change every time would wipe the view out from
+        under someone reading it, and fight with a sidebar selection.
+        """
+        info = self._detect_project()
+        if info is None:
+            return {"ok": True, "project": None, "changed": False,
+                    "messages": [], "viewing": None}
+
+        moved = self._detected is None or self._detected["key"] != info["key"]
+        self._detected = info
+        if moved or initial:
+            self._use_project(info)
+            self._viewing = info["key"]
+            messages = read_transcript(self._session) if self._started else []
+            return {"ok": True, "project": info["key"],
+                    "title": self._label(info),
+                    "changed": bool(moved and not initial),
+                    "messages": messages, "viewing": info["key"]}
+        # Same model as before: keep whatever the person is looking at.
+        self._project = info                     # refresh the version label
+        return {"ok": True, "project": info["key"], "title": self._label(info),
+                "changed": False, "messages": None, "viewing": self._viewing}
+
+    def list_projects(self):
+        """Every project with a saved thread, newest first, for the sidebar."""
+        if rhino_memory is None:
+            return {"ok": True, "projects": [], "active": None}
+        try:
+            index = rhino_memory.load_index()
+        except Exception:                                    # noqa: BLE001
+            return {"ok": True, "projects": [], "active": None}
+        rows = sorted(index.items(),
+                      key=lambda kv: kv[1].get("last_seen", ""), reverse=True)
+        projects = [{
+            "key": key,
+            "title": meta.get("title") or key,
+            "last_seen": meta.get("last_seen", ""),
+            "versions": len(meta.get("versions") or []),
+            "cost_usd": meta.get("cost_usd") or 0.0,
+        } for key, meta in rows]
+        return {"ok": True, "projects": projects,
+                "active": self._detected["key"] if self._detected else None}
+
+    def view_project(self, key):
+        """Show a project's past conversation without switching the work.
+
+        Read-only on purpose: this window runs code in the document Rhino has
+        OPEN, so continuing another project's thread would build geometry in
+        the wrong file. Sending always goes to the open model.
+        """
+        if rhino_memory is None or not key:
+            return {"ok": False, "error": "no memory"}
+        try:
+            session, existed = rhino_memory.session_id(key)
+            meta = (rhino_memory.load_index().get(key) or {})
+            notes = rhino_memory.read_notes(key)
+        except Exception as exc:                             # noqa: BLE001
+            return {"ok": False, "error": str(exc)}
+        messages = read_transcript(session) if existed else []
+        active = self._detected["key"] if self._detected else None
+        self._viewing = key
+        return {"ok": True, "project": key,
+                "title": meta.get("title") or key,
+                "messages": messages, "notes": notes,
+                "is_active": key == active,
+                "active_title": (self._label(self._detected)
+                                 if self._detected else None)}
+
     def reset(self):
+        # Clearing the screen must not erase which project this is: the
+        # conversation restarts, the project does not.
+        if rhino_memory is not None and self._project is not None:
+            self._session = rhino_memory.reset_session(self._project["key"])
+            self._started = False
+            return {"ok": True}
         self._session = str(uuid.uuid4())
         self._started = False
         self._pending = []
@@ -517,13 +1057,35 @@ class Api:
 
     def _build_prompt(self, message):
         if not self._pending:
-            return message
-        lines = [message.strip(), "", "The person attached these files:"]
+            return self._memory_preamble() + message
+        # Frames from one video are grouped and labelled as a sequence.
+        # Listed flat they look like six unrelated photos, and the whole point
+        # of a clip is that the order carries the information.
+        videos = {}
+        plain = []
         for item in self._pending:
-            lines.append("  %s  ->  %s" % (item["name"], item["path"]))
-        lines.append("")
-        lines.append("Read them before answering.")
-        return "\n".join(lines)
+            if item.get("from_video"):
+                videos.setdefault(item["from_video"], []).append(item)
+            else:
+                plain.append(item)
+        lines = [message.strip(), ""]
+        if plain:
+            lines.append("The person attached these files:")
+            lines += ["  %s  ->  %s" % (i["name"], i["path"]) for i in plain]
+        for video, items in videos.items():
+            frames = [i for i in items if not i.get("is_transcript")]
+            audio = [i for i in items if i.get("is_transcript")]
+            lines.append("The person attached a video (%s). These are frames "
+                         "taken from it at even intervals, in order — read "
+                         "them as a sequence showing progression:" % video)
+            lines += ["  %s  ->  %s" % (i["name"], i["path"]) for i in frames]
+            for item in audio:
+                lines.append("What they SAY in that video is transcribed here "
+                             "with [mm:ss] timestamps matching the frames — "
+                             "read it, it is usually instructions:")
+                lines.append("  %s" % item["path"])
+        lines += ["", "Read them before answering."]
+        return self._memory_preamble() + "\n".join(lines)
 
     def _chat(self, message):
         claude = find_claude()
@@ -636,6 +1198,16 @@ class Api:
         except OSError:
             pass
 
+        # total_cost_usd is what THIS turn cost, so it accumulates onto the
+        # project rather than replacing its total. A missed entry is not worth
+        # failing a turn that otherwise worked.
+        if rhino_memory is not None and self._project is not None:
+            try:
+                rhino_memory.add_cost(self._project["key"],
+                                      final.get("total_cost_usd"))
+            except Exception:                                # noqa: BLE001
+                pass
+
         if final.get("is_error"):
             return {"ok": False,
                     "error": final.get("result") or "Claude Code reported an error"}
@@ -671,9 +1243,62 @@ header{display:flex;align-items:center;gap:10px;padding:10px 14px;
 .tab{background:transparent;border:1px solid var(--line);color:var(--dim);
      border-radius:6px;padding:4px 12px;font-size:12.5px;cursor:pointer}
 .tab:hover{color:var(--fg)}.tab.on{color:var(--fg);border-color:var(--dim)}
+#shell{flex:1;min-height:0;display:flex}
 main{flex:1;min-height:0;display:flex;flex-direction:column}
 .view{flex:1;min-height:0;display:none;flex-direction:column}
 .view.on{display:flex}
+/* sidebar: one entry per project, newest first */
+#side{width:212px;flex:none;border-right:1px solid var(--line);
+      display:flex;flex-direction:column;overflow:hidden}
+#side.hide{display:none}
+#side-head{padding:11px 13px 7px;font-size:11px;letter-spacing:.06em;
+           text-transform:uppercase;color:var(--dim);flex:none}
+#plist{flex:1;overflow-y:auto;padding:0 7px 10px;display:flex;
+       flex-direction:column;gap:2px}
+.proj{background:transparent;border:0;color:var(--dim);text-align:left;
+      border-radius:7px;padding:7px 9px;font:inherit;font-size:13px;
+      cursor:pointer;display:flex;flex-direction:column;gap:2px;width:100%}
+.proj:hover{background:var(--panel);color:var(--fg)}
+.proj.on{background:var(--panel);color:var(--fg)}
+.proj .nm{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+          display:flex;align-items:center;gap:6px}
+.proj .live{width:6px;height:6px;border-radius:50%;background:var(--ok);flex:none}
+.proj .sub{font-size:11px;color:var(--dim);overflow:hidden;
+           text-overflow:ellipsis;white-space:nowrap}
+.proj .cost{font-size:10.5px;color:var(--accent);opacity:.85}
+#pempty{color:var(--dim);font-size:12px;padding:6px 9px}
+#burger{background:transparent;border:1px solid var(--line);color:var(--dim);
+        border-radius:6px;width:30px;height:26px;font-size:13px;cursor:pointer;flex:none}
+#burger:hover{color:var(--fg)}
+/* shown while reading a project that is not the model Rhino has open */
+#viewing{display:flex;align-items:center;gap:10px;padding:8px 13px;flex:none;
+         background:var(--panel);border-bottom:1px solid var(--line);
+         font-size:12.5px;color:var(--dim)}
+#viewing b{color:var(--fg);font-weight:600}
+#backlive{background:transparent;border:1px solid var(--line);color:var(--accent);
+          border-radius:6px;padding:4px 10px;font:inherit;font-size:12px;
+          cursor:pointer;margin-left:auto;flex:none}
+/* attachment progress — the window must never look frozen while ffmpeg and
+   Whisper work through a clip */
+#prog{display:flex;flex-direction:column;gap:4px;padding:6px 14px 2px}
+#prog-track{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
+#prog-fill{height:100%;width:0%;background:var(--accent);border-radius:2px;
+           transition:width .25s ease}
+#prog-note{font-size:11.5px;color:var(--dim)}
+/* video frame previews, adjustable before sending */
+.fcard{position:relative;flex:none}
+.fcard img{width:96px;height:64px;object-fit:cover;border-radius:7px;
+           border:1px solid var(--line);display:block}
+.fcard .fat{position:absolute;left:4px;top:4px;background:rgba(0,0,0,.65);
+            color:#fff;font-size:10.5px;padding:1px 5px;border-radius:4px}
+.fcard .fbtns{position:absolute;inset:auto 0 0 0;display:flex;
+              justify-content:space-between;padding:2px;opacity:0;
+              transition:opacity .15s}
+.fcard:hover .fbtns{opacity:1}
+.fbtns button{background:rgba(0,0,0,.65);border:0;color:#fff;border-radius:4px;
+              width:24px;height:20px;font-size:11px;cursor:pointer;line-height:1}
+.fbtns button:hover{background:rgba(0,0,0,.85)}
+.fcard.working img{opacity:.4}
 #log{flex:1;overflow-y:auto;padding:18px 16px;display:flex;flex-direction:column;gap:14px}
 .msg{max-width:min(760px,92%);white-space:pre-wrap;word-break:break-word}
 .msg.you{align-self:flex-end;background:var(--accent);color:#0d2233;
@@ -761,8 +1386,22 @@ small{color:var(--dim);font-size:12px}
   <button class="tab on" id="t-chat">Chat</button>
   <button class="tab" id="t-set">Settings</button>
 </header>
+<div id="shell">
+<aside id="side">
+  <div id="side-head">Projects</div>
+  <div id="plist"><div id="pempty">No projects yet — save your model and
+    start asking.</div></div>
+</aside>
 <main>
   <div class="view on" id="v-chat">
+    <!-- Reading a project Rhino does not have open. Read-only on purpose:
+         this window runs code in the OPEN document, so continuing another
+         project's thread would build geometry in the wrong file. -->
+    <div id="viewing" hidden>
+      <span>You are reading <b id="v-name"></b>, but Rhino has
+        <b id="live-name"></b> open — this is history only.</span>
+      <button id="backlive" type="button">Back to open model</button>
+    </div>
     <div id="banner" hidden>
       <span class="spin" aria-hidden="true"></span>
       <button id="banner-stop" type="button" title="Cancel the running prompt">Stop</button>
@@ -772,11 +1411,17 @@ small{color:var(--dim);font-size:12px}
       <h2>Model by asking</h2>
       <p>“Make a 20&nbsp;cm cube on a new layer called Blocks”</p>
       <p>“What's in this document?”</p>
-      <p>Attach a photo or sketch and say “build this”</p>
+      <p>Attach a photo, sketch or video and say “build this”</p>
     </div></div>
+    <!-- ffmpeg and Whisper block the API thread for real seconds. Silence
+         there reads as a hang and the person kills a working attach. -->
+    <div id="prog" hidden>
+      <div id="prog-track"><div id="prog-fill"></div></div>
+      <span id="prog-note"></span>
+    </div>
     <div id="chips"></div>
     <form id="form">
-      <button type="button" id="clip" title="Attach files or photos">📎</button>
+      <button type="button" id="clip" title="Attach files, photos or videos">📎</button>
       <select id="model" title="Which model answers in this chat"></select>
       <select id="effort" title="How hard it thinks before answering"></select>
       <textarea id="box" rows="1" placeholder="Ask for something…"></textarea>
@@ -844,9 +1489,11 @@ small{color:var(--dim);font-size:12px}
     </div>
   </div>
 </main>
+</div>
 <script>
 const $ = (id) => document.getElementById(id);
 let busy = false, attached = [];
+let viewingKey = null, liveKey = null;
 
 function show(which){
   $("v-chat").classList.toggle("on", which === "chat");
@@ -906,14 +1553,66 @@ $("banner-stop").onclick = async () => {
 };
 
 /* ---- attachments ---- */
+window.onAttachProgress = (pct, note) => {
+  const bar = $("prog");
+  if (pct === null){ bar.hidden = true; return; }
+  bar.hidden = false;
+  $("prog-fill").style.width = pct + "%";
+  $("prog-note").textContent = note || "";
+};
+
+async function removeAttachment(a, i){
+  // Tell Python too. Removing it only from the page left the file still
+  // attached at send time, so a frame the person dropped was sent anyway.
+  attached.splice(i, 1); drawChips();
+  try { await window.pywebview.api.remove_attachment(a.path); } catch (e) {}
+}
+
+async function nudgeFrame(a, delta, card){
+  if (busy || card.classList.contains("working")) return;
+  card.classList.add("working");
+  try {
+    const r = await window.pywebview.api.reframe(a.path, delta);
+    if (!r.ok) { bubble("err", r.error); return; }
+    const idx = attached.findIndex(x => x.path === r.old_path);
+    if (idx >= 0) attached[idx] = Object.assign(attached[idx], r.item);
+    drawChips();
+  } finally { card.classList.remove("working"); }
+}
+
 function drawChips(){
   $("chips").innerHTML = "";
   attached.forEach((a, i) => {
+    if (a.thumb){
+      // A video frame: show the picture itself, with ‹ › to re-take it a
+      // couple of seconds either way and ✕ to drop it. The six evenly-spaced
+      // stills often miss the moment that matters by a second or two.
+      const card = document.createElement("div");
+      card.className = "fcard";
+      const img = document.createElement("img");
+      img.src = a.thumb; img.title = a.name;
+      const at = document.createElement("span");
+      at.className = "fat"; at.textContent = "@" + a.at + "s";
+      const btns = document.createElement("div");
+      btns.className = "fbtns";
+      [["‹", () => nudgeFrame(a, -2, card), "2s earlier"],
+       ["✕", () => removeAttachment(a, i), "remove this frame"],
+       ["›", () => nudgeFrame(a, 2, card), "2s later"]].forEach(([txt, fn, tip]) => {
+        const b = document.createElement("button");
+        b.type = "button"; b.textContent = txt; b.title = tip;
+        b.onclick = (ev) => { ev.stopPropagation(); fn(); };
+        btns.appendChild(b);
+      });
+      card.appendChild(img); card.appendChild(at); card.appendChild(btns);
+      $("chips").appendChild(card);
+      return;
+    }
     const c = document.createElement("span");
     c.className = "chip";
-    c.innerHTML = (a.is_image ? "🖼 " : "📄 ") + "<b></b> ✕";
+    c.innerHTML = (a.is_transcript ? "🎙 " : a.from_video ? "🎬 "
+                   : a.is_image ? "🖼 " : "📄 ") + "<b></b> ✕";
     c.querySelector("b").textContent = a.name;
-    c.onclick = () => { attached.splice(i,1); drawChips(); syncAttachments(); };
+    c.onclick = () => removeAttachment(a, i);
     $("chips").appendChild(c);
   });
 }
@@ -922,9 +1621,19 @@ async function syncAttachments(){
 }
 $("clip").onclick = async () => {
   if (busy) return;
-  const r = await window.pywebview.api.attach();
-  if (!r.ok) { bubble("err", r.error); return; }
-  attached = attached.concat(r.added || []); drawChips();
+  $("clip").disabled = true;
+  try {
+    const r = await window.pywebview.api.attach();
+    if (!r.ok) { bubble("err", r.error); return; }
+    attached = attached.concat(r.added || []); drawChips();
+    const spoken = (r.added || []).filter(a => a.is_transcript && a.text);
+    // Show the transcript before sending: it is the one attachment the
+    // person cannot check by looking at a thumbnail.
+    spoken.forEach(a => bubble("tool", "heard in " + a.from_video + ":\n" + a.text));
+  } finally {
+    $("clip").disabled = false;
+    window.onAttachProgress(null);   // belt and braces: never leave it stuck
+  }
 };
 
 /* ---- send ---- */
@@ -947,7 +1656,13 @@ $("form").onsubmit = async (e) => {
   try {
     const r = await window.pywebview.api.chat(text);
     if (stopping) stoppedBanner();
-    else if (r.ok) finished();
+    else if (r.ok) {
+      finished();
+      // What this turn cost, in the open. It runs on their own subscription,
+      // so the honest thing is to show the number rather than hide it.
+      if (r.cost > 0) bubble("tool", "$" + r.cost.toFixed(r.cost < 1 ? 3 : 2) + " this turn");
+      loadProjects();               // refresh the sidebar's running total
+    }
     else { bubble("err", r.error || "something went wrong"); clearBanner(); }
   } catch (e) { bubble("err", "the window failed: " + e); clearBanner(); }
   finally { busy = false; stopping = false;
@@ -1051,8 +1766,106 @@ async function refresh(){
   }[s.state] || ["err", "not ready"];
   dot.classList.add(m[0]); $("state").textContent = m[1];
 }
+/* ---- projects: one thread per model, listed in the sidebar ---- */
+let liveProject = null;      // what Rhino has open
+let viewing = null;          // what the log is currently showing
+let liveLabel = null;        // the open model's name, with its version
+const titles = {};           // key -> project name, for naming both sides
+
+function paint(messages){
+  $("log").innerHTML = "";
+  (messages || []).forEach(m => bubble(m.who === "you" ? "you" : "claude", m.text));
+}
+
+/* Reading another project is history-only: this window runs code in the model
+   Rhino has OPEN, so continuing a different thread would build geometry in the
+   wrong file. Both names are shown, because "you are in the wrong chat" only
+   helps if it says which one you are in and which one is live. */
+function setViewingBanner(){
+  const off = !!(viewing && liveProject && viewing !== liveProject);
+  $("viewing").hidden = !off;
+  if (off){
+    $("v-name").textContent = titles[viewing] || "another project";
+    $("live-name").textContent = titles[liveProject] || liveLabel || "the open model";
+    $("backlive").textContent = "Go to " + (titles[liveProject] || "the open model");
+  }
+  $("box").disabled = off;
+  $("send").disabled = off || busy;
+  $("box").placeholder = off
+    ? "You are reading " + (titles[viewing] || "another project") + " — switch to "
+      + (titles[liveProject] || "the open model") + " to work"
+    : "Ask for something…";
+}
+
+async function loadProjects(){
+  let r; try { r = await window.pywebview.api.list_projects(); } catch (e) { return; }
+  if (!r || !r.ok || !r.projects.length) return;
+  const list = $("plist");
+  list.innerHTML = "";
+  r.projects.forEach(p => {
+    titles[p.key] = p.title;
+    const b = document.createElement("button");
+    b.className = "proj" + (p.key === viewing ? " on" : "");
+    b.dataset.key = p.key;
+    const nm = document.createElement("span"); nm.className = "nm";
+    if (p.key === r.active){
+      const d = document.createElement("span"); d.className = "live";
+      d.title = "open in Rhino now"; nm.appendChild(d);
+    }
+    nm.appendChild(document.createTextNode(p.title));
+    const sub = document.createElement("span"); sub.className = "sub";
+    sub.textContent = p.last_seen + (p.versions > 1 ? " · " + p.versions + " versions" : "");
+    b.appendChild(nm); b.appendChild(sub);
+    if (p.cost_usd > 0){
+      const cost = document.createElement("span"); cost.className = "cost";
+      cost.textContent = "$" + p.cost_usd.toFixed(p.cost_usd < 1 ? 3 : 2);
+      b.appendChild(cost);
+    }
+    b.onclick = () => openProject(p.key);
+    list.appendChild(b);
+  });
+  setViewingBanner();
+}
+
+async function openProject(key){
+  if (busy) return;
+  let r; try { r = await window.pywebview.api.view_project(key); } catch (e) { return; }
+  if (!r || !r.ok) return;
+  viewing = key;
+  if (r.title) titles[key] = r.title;
+  paint(r.messages);
+  if (!(r.messages || []).length) bubble("tool", "no conversation saved for this one yet");
+  document.querySelectorAll(".proj").forEach(
+    el => el.classList.toggle("on", el.dataset.key === key));
+  setViewingBanner();
+}
+
+$("backlive").onclick = () => { if (liveProject) openProject(liveProject); };
+
+async function loadProject(initial){
+  let r;
+  try { r = await window.pywebview.api.open_project(initial === true); }
+  catch (e) { return; }
+  if (!r || !r.ok || !r.project) return;
+  const moved = r.changed;
+  liveProject = r.project;
+  liveLabel = r.title;
+  // messages is null when nothing changed — leave the screen alone, or the
+  // poll wipes a conversation somebody is reading.
+  if (r.messages !== null && r.messages !== undefined){
+    viewing = r.project;
+    paint(r.messages);
+    if (moved) bubble("tool", "switched to " + r.title + " — this model has its own thread");
+    else if (r.messages.length) bubble("tool", "picking up where you left off");
+  }
+  setViewingBanner();
+  loadProjects();
+}
+
 refresh(); setInterval(() => { if (!busy) refresh(); }, 5000);
-loadSetup(); $("box").focus();
+loadSetup(); loadProject(true);
+setInterval(() => { if (!busy) loadProject(false); }, 6000);
+$("box").focus();
 </script></body></html>
 """
 
