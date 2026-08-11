@@ -62,7 +62,7 @@ Two ways to get a change back upstream, in order of preference:
    of a diff.
 
 Either way: **run the test suite** (`tests/run.sh` in the repo) before saying it
-works. There are 854 assertions and they are quick.
+works. There are 895 assertions and they are quick.
 
 ---
 
@@ -92,6 +92,12 @@ These each cost hours to discover. They are not hypothetical.
 - **`os.chmod(0600)` does not restrict access.** It only toggles the read-only
   attribute; the file stays readable by every other account. Use
   `icacls <path> /inheritance:r /grant:r "%USERNAME%":F`.
+- **`(OI)(CI)` on a file breaks it, silently.** Those are inheritance flags —
+  what a *folder* passes to its children — and on a plain file icacls returns
+  SUCCESS while writing an ACL with no usable grantee. The next write fails
+  with `PermissionError`, for the very account that supposedly got Full
+  Control. Directory `(OI)(CI)F`, file plain `F`. Found on a Windows machine
+  after the settings file stopped persisting there while working on macOS.
 - **A process started from a shell dies with that shell.** Windows puts the
   session in a job object and kills the whole tree when it closes, so a broker
   launched with `Start-Process` goes with the terminal that started it. That is

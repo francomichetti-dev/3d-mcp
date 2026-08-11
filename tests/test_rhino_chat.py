@@ -182,7 +182,10 @@ truthy("with an absolute path",
 allowed = [t for t in module.RHINO_TOOLS]
 truthy("every allowed tool is namespaced to this server",
        all(t.startswith("mcp__rhino__") for t in allowed))
-check("three tools, matching the server", len(allowed), 3)
+check("five tools, matching the server", len(allowed), 5)
+truthy("including the memory pair, or the model is told to use tools the "
+       "window forbids",
+       {"mcp__rhino__rhino_remember", "mcp__rhino__rhino_recall"} <= set(allowed))
 
 
 # ----------------------------------------------------------- permissions ----

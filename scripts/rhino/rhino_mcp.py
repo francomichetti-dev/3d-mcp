@@ -24,6 +24,16 @@ import sys
 import urllib.error
 import urllib.request
 
+# Memory is optional on purpose. This server runs on Rhino's own interpreter
+# from whatever directory the MCP client launches it in, so the import is made
+# to work by path rather than assumed — and if it still fails, the modelling
+# tools carry on without it instead of the whole server refusing to start.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+try:
+    import rhino_memory
+except ImportError:
+    rhino_memory = None
+
 BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
 TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".fusion-mcp", "token")
 AUTH_HEADER = "X-Fusion-Bridge-Token"
@@ -142,7 +152,59 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "rhino_remember",
+        "description": (
+            "Save something worth knowing the next time this project is "
+            "opened — what they are building, a decision and why, a dimension "
+            "that matters, or what is still left to do.\n\n"
+            "Memory is per PROJECT, and Rhino's incremental saves "
+            "(chair.3dm, chair001.3dm, chair_v2.3dm) are treated as the same "
+            "project, so a note written on one version is there on the next.\n\n"
+            "Call this when something is decided or finished, not for every "
+            "message. One fact per call, written so it still makes sense in a "
+            "month. Do not save what reading the file would tell you."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "note": {"type": "string",
+                         "description": "One durable fact, in the person's language."},
+            },
+            "required": ["note"],
+        },
+    },
+    {
+        "name": "rhino_recall",
+        "description": (
+            "Look up what you know about a project. With no argument it "
+            "lists every project seen; with `project` it returns that "
+            "project's notes.\n\n"
+            "Use it when the person refers to a different model than the one "
+            "open — \"like the lamp I did\" — so you can answer from what was "
+            "actually recorded instead of guessing. The open project's memory "
+            "is already given to you each turn; you do not need this for that."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "project": {"type": "string",
+                            "description": "Project name to look up. Omit to list all."},
+            },
+        },
+    },
 ]
+
+
+def _current_project():
+    """Identify the open document. Returns an info dict, or None if unreachable."""
+    if rhino_memory is None:
+        return None
+    state = submit("state", {}, timeout=30)
+    if not state.get("ok"):
+        return None
+    return rhino_memory.describe(state.get("path") or "",
+                                 state.get("document") or "")
 
 
 def call_tool(name, arguments):
@@ -203,6 +265,49 @@ def call_tool(name, arguments):
                              "data": out["png_base64"],
                              "mimeType": "image/png"}],
                 "isError": False}
+
+    if name == "rhino_remember":
+        if rhino_memory is None:
+            return _text("memory is not available", error=True)
+        note = ((arguments or {}).get("note") or "").strip()
+        if not note:
+            return _text("nothing to remember", error=True)
+        info = _current_project()
+        if info is None:
+            return _text("cannot tell which project is open — is Rhino "
+                         "connected?", error=True)
+        rhino_memory.touch(info)
+        if not rhino_memory.add_note(info["key"], note, info.get("version")):
+            return _text("could not write the note", error=True)
+        return _text("remembered for %s" % info["title"])
+
+    if name == "rhino_recall":
+        if rhino_memory is None:
+            return _text("memory is not available", error=True)
+        wanted = ((arguments or {}).get("project") or "").strip()
+        index = rhino_memory.load_index()
+        if not wanted:
+            if not index:
+                return _text("no projects recorded yet")
+            rows = sorted(index.items(),
+                          key=lambda kv: kv[1].get("last_seen", ""), reverse=True)
+            return _text("\n".join(
+                "%s — last %s" % (meta.get("title", key), meta.get("last_seen", "?"))
+                for key, meta in rows))
+        lowered = wanted.lower()
+        # Match on the title people actually say, not the internal key.
+        for key, meta in index.items():
+            title = (meta.get("title") or "").lower()
+            if lowered == title or lowered in title or title in lowered:
+                notes = rhino_memory.read_notes(key)
+                head = "%s (last %s)" % (meta.get("title", key),
+                                         meta.get("last_seen", "?"))
+                versions = meta.get("versions") or []
+                if versions:
+                    head += "\nversions: %s" % ", ".join(versions[-8:])
+                return _text(head + ("\n\n" + notes if notes else
+                                     "\n\n(no notes saved for it)"))
+        return _text("nothing recorded for '%s'" % wanted)
 
     return _text(f"unknown tool '{name}'", error=True)
 

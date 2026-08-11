@@ -104,7 +104,8 @@ def write_settings(model=None, effort=None):
 
 
 RHINO_TOOLS = ["mcp__rhino__rhino_execute", "mcp__rhino__rhino_state",
-               "mcp__rhino__rhino_screenshot"]
+               "mcp__rhino__rhino_screenshot", "mcp__rhino__rhino_remember",
+               "mcp__rhino__rhino_recall"]
 
 MAX_ATTACH_BYTES = 20 * 1024 * 1024
 IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp")
@@ -225,14 +226,31 @@ def restrict(path):
     real machine earlier in this project: after chmod(0600) the ACL still listed
     SYSTEM, Administrators and the user, all inherited. icacls is what actually
     restricts it.
+
+    The inheritance flags belong ONLY on a directory. (OI)(CI) are
+    Object-Inherit/Container-Inherit: they say what a container passes to its
+    children, and they are meaningless on a plain file. This code granted
+    "(OI)(CI)F" unconditionally, and on a file that is not merely redundant --
+    reported from a Windows machine, reproduced directly: icacls returns
+    SUCCESS and writes an ACL with no usable grantee, then the very next write
+    fails with PermissionError, for the same account that supposedly received
+    Full Control. Two of the three call sites here are files, so the settings
+    file became unwritable the moment it was first secured and every later
+    save failed -- which is why a changed model or effort did not survive a
+    restart on Windows while working perfectly on macOS.
+
+    (The same report confirmed the grantee name is not the problem: USERNAME
+    alone resolves fine even where icacls DISPLAYS a domain-qualified name.
+    The flags were the cause.)
     """
     if os.name == "nt":
         user = os.environ.get("USERNAME")
         if not user:
             return False
+        grant = f"{user}:(OI)(CI)F" if os.path.isdir(path) else f"{user}:F"
         try:
             done = subprocess.run(
-                ["icacls", path, "/inheritance:r", "/grant:r", f"{user}:(OI)(CI)F"],
+                ["icacls", path, "/inheritance:r", "/grant:r", grant],
                 capture_output=True, text=True, timeout=15, creationflags=NO_WINDOW)
             return done.returncode == 0
         except (OSError, subprocess.SubprocessError):
@@ -312,6 +330,8 @@ def _describe(tool):
         "mcp__rhino__rhino_execute": "running code in Rhino",
         "mcp__rhino__rhino_state": "reading the document",
         "mcp__rhino__rhino_screenshot": "looking at the viewport",
+        "mcp__rhino__rhino_remember": "saving that for next time",
+        "mcp__rhino__rhino_recall": "checking what it knows",
         "Read": "reading your attachment",
     }.get(tool)
 

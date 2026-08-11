@@ -173,8 +173,9 @@ check("ping returns an empty result", reply["result"], {})
 
 reply = s.send({"jsonrpc": "2.0", "id": 3, "method": "tools/list"})
 tools = reply["result"]["tools"]
-check("three tools", sorted(t["name"] for t in tools),
-      ["rhino_execute", "rhino_screenshot", "rhino_state"])
+check("five tools", sorted(t["name"] for t in tools),
+      ["rhino_execute", "rhino_recall", "rhino_remember",
+       "rhino_screenshot", "rhino_state"])
 truthy("every tool has a schema", all("inputSchema" in t for t in tools))
 truthy("every tool has a description", all(len(t.get("description", "")) > 40 for t in tools))
 # The description is what Claude reads to decide whether to call it, so it must

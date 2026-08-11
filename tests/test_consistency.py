@@ -155,7 +155,9 @@ check("which are the documented ones", bounds[RHINO_POLLER], (64, 1920, 1440))
 print("Tool names")
 mcp_tools = set(re.findall(r'"name":\s*"(rhino_[a-z_]+)"', read(RHINO_MCP)))
 allowed = set(re.findall(r'"mcp__rhino__(rhino_[a-z_]+)"', read(RHINO_CHAT)))
-check("the MCP server exposes three tools", len(mcp_tools), 3)
+check("the MCP server exposes five tools", len(mcp_tools), 5)
+# The pairing is the point: a tool the server exposes but the window does not
+# allow is invisible from the chat, and the model is told to use it anyway.
 check("and the chat window allows exactly those", allowed, mcp_tools)
 
 handlers = set(re.findall(r'^HANDLERS\s*=|"(execute|state|screenshot)":', read(RHINO_POLLER),

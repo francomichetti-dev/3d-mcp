@@ -39,8 +39,13 @@ a cleanup).
    read-only attribute). The new code does it properly, but the EXISTING
    files need it once:
 
-       icacls "%USERPROFILE%\.fusion-mcp" /inheritance:r /grant:r "%USERNAME%":F
+       icacls "%USERPROFILE%\.fusion-mcp" /inheritance:r /grant:r "%USERNAME%":(OI)(CI)F
        icacls "%USERPROFILE%\.fusion-mcp\token" /inheritance:r /grant:r "%USERNAME%":F
+
+   The flags differ on purpose: `(OI)(CI)` is what a FOLDER passes to its
+   children, and on a plain FILE it produces an ACL with no usable grantee —
+   icacls still reports success, and the next write to that file fails with
+   PermissionError. Directory gets the flags, file does not.
 
 5. **Start everything again.** Broker task first; then, with Rhino open and
    `ScriptEditor` run once, the poller; then the chat window
