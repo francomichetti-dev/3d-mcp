@@ -13,6 +13,7 @@ test instead.
     python3 tests/test_docs.py
 """
 
+import functools
 import hashlib
 import re
 import subprocess
@@ -94,8 +95,34 @@ FORBIDDEN_DIGESTS = {
 }
 
 
+@functools.lru_cache(maxsize=None)
 def digest(text):
     return hashlib.sha256(text.encode()).hexdigest()[:32]
+
+
+@functools.lru_cache(maxsize=None)
+def line_is_named(line):
+    """Does this one line contain a forbidden name or filename?
+
+    Cached on the line itself, which is what makes the history scan cheap.
+    Every blob in the object store is a *version* of a file, so the same line
+    is re-scanned once per commit that left it untouched - overwhelmingly the
+    common case. Hashing it once instead collapses that: the digest work drops
+    to the number of distinct lines the project has ever had, not the number of
+    line-instances across all of history.
+    """
+    # Split on anything that is not a letter or digit. An earlier version
+    # kept apostrophes, so a possessive ("<name>'s machine") hashed to a
+    # different token and slipped straight through - found by planting it.
+    words = re.findall(r"[a-z0-9]+", line.lower())
+    shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
+    return any(digest(s) in FORBIDDEN_DIGESTS for s in shingles)
+
+
+def named_lines(text):
+    """Line numbers in `text` carrying a forbidden name."""
+    return [num for num, line in enumerate(text.splitlines(), 1)
+            if line_is_named(line)]
 
 
 # Every tracked file, not only the docs. The leak that actually happened was in
@@ -120,37 +147,96 @@ for args in (["git", "ls-files"],
             continue      # images and anything else not text
 truthy("there are tracked files to scan", len(TRACKED) >= 20)
 
-named = []
-for name, text in TRACKED:
-    for num, line in enumerate(text.splitlines(), 1):
-        # Split on anything that is not a letter or digit. An earlier version
-        # kept apostrophes, so a possessive ("<name>'s machine") hashed to a
-        # different token and slipped straight through - found by planting it.
-        words = re.findall(r"[a-z0-9]+", line.lower())
-        shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
-        if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
-            named.append(f"{name}:{num}")
+named = [f"{name}:{num}" for name, text in TRACKED for num in named_lines(text)]
 check("no collaborator name or private filename anywhere in the repo", named, [])
 
+# (regex, what it is, a lowercase literal every match must contain, a planted
+# example that must be caught).
+#
+# The last two columns are what keep this honest. The marker makes the scan
+# cheap - see private_hits - and the sample proves the regex and the marker
+# actually work, because a guard nobody has watched fail is a guard nobody
+# should trust. The samples are assembled from fragments at runtime so this
+# file never contains the literal shapes it forbids; spelling one out here
+# would trip the scan two functions down, which is the same mistake that put a
+# collaborator's name back into the repo inside the check written to keep it
+# out.
 PRIVATE = [
     # Private mesh-VPN hostnames and addresses. These are not part of the
     # project - they came from a development machine and leaked once, which is
     # the whole reason the pattern exists. An earlier version required six hex
     # characters and missed the real hostname, which had five; found by
     # planting the leak rather than by reading the regex.
-    (r"[\w-]+\.ts\.net", "a private VPN hostname"),
-    (r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b", "a private VPN address"),
-    (r"sk-ant-[A-Za-z0-9_-]{20,}", "an API key"),
-    (r"/Users/(?!<)[a-z]+/(?:Documents|Desktop|Downloads)/", "someone's home path"),
-    (r"C:\\\\Users\\\\(?!<)[A-Z][a-z]+\\\\", "someone's Windows path"),
+    (r"[\w-]+\.ts\.net", "a private VPN hostname", ".ts.net",
+     "some-box" + ".ts" + ".net"),
+    (r"\b100\.(?:6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+\b", "a private VPN address",
+     "100.", "100." + "101.4.7"),
+    (r"sk-ant-[A-Za-z0-9_-]{20,}", "an API key",
+     "sk-ant-", "sk-" + "ant-" + "A" * 24),
+    (r"/Users/(?!<)[a-z]+/(?:Documents|Desktop|Downloads)/", "someone's home path",
+     "/users/", "/Users/" + "someone" + "/Documents/"),
+    # One or two backslashes, because both forms turn up: a path pasted into a
+    # doc has single ones, the same path inside a JSON or Python string literal
+    # has doubled ones. This required doubled ones only, so for as long as it
+    # existed it could not match a Windows path as anybody actually writes it -
+    # on a project whose entire Rhino half runs on Windows. Nothing in the tree
+    # or in history matches the corrected form; it was simply never doing its
+    # job. The planted sample below is why it is not still like that.
+    # ...and (?-i:) on the name, because the whole alternation runs case-blind
+    # for the drive letter, which quietly turned [A-Z][a-z]+ into "any word".
+    # That matched an already-anonymised `C:\Users\the tester\...` in two commit
+    # messages - the guard firing on the word "the". Case-sensitive here is the
+    # difference between "a capitalised account name" and "a word".
+    (r"C:\\{1,2}Users\\{1,2}(?!<)(?-i:[A-Z][a-z]+)", "someone's Windows path",
+     "c:\\users", "C:" + "\\Users\\" + "Someone" + "\\Desktop"),
+    # A tailnet auth key is a live credential: it enrols a machine onto the
+    # network. The setup script that used to live here printed the shape of one
+    # as a prompt ("It looks like: tskey-auth-xxxx..."), so the placeholder has
+    # to survive while a real key does not - hence the lookahead for a run of
+    # x's that reaches the end of the token.
+    (r"tskey-[a-z]+-(?!x+(?![\w-]))[\w-]{10,}", "a Tailscale auth key",
+     "tskey-", "tskey-" + "auth-" + "k1B2c3D4e5F6g7"),
 ]
-for pattern, what in PRIVATE:
-    hits = []
-    for name, text in TRACKED:
-        for num, line in enumerate(text.splitlines(), 1):
-            if re.search(pattern, line, re.I):
-                hits.append(f"{name}:{num}")
-    check(f"no {what} anywhere in the repo", hits, [])
+
+# One alternation instead of six passes, in front of it a plain substring test.
+# The regexes are the expensive part - `[\w-]+\.ts\.net` backtracks over every
+# run of word characters in the file - and almost no blob contains any of this,
+# so the cheap test is the one that should run on almost every blob. It skips
+# 459 of the 487 blobs in this repo's history outright, and the whole structural
+# scan of every version of every file ever committed costs about a tenth of a
+# second. A marker MUST be a literal that every match of its regex contains, or
+# the scan will skip a real leak; the planted samples below are what enforces
+# that, since a wrong marker makes its own sample undetectable.
+MARKERS = tuple(marker for _, _, marker, _ in PRIVATE)
+WHAT = {f"g{i}": what for i, (_, what, _, _) in enumerate(PRIVATE)}
+PRIVATE_RE = re.compile(
+    "|".join(f"(?P<g{i}>{entry[0]})" for i, entry in enumerate(PRIVATE)),
+    re.I,
+)
+
+
+def private_hits(text, where):
+    """[(what, "location")] for every structural leak in `text`."""
+    low = text.lower()
+    if not any(marker in low for marker in MARKERS):
+        return []           # the overwhelmingly common case, at one memchr
+    found = []
+    for num, line in enumerate(text.splitlines(), 1):
+        for match in PRIVATE_RE.finditer(line):
+            found.append((WHAT[match.lastgroup], f"{where}:{num}"))
+    return found
+
+
+for _, what, _, sample in PRIVATE:
+    caught = [kind for kind, _ in private_hits(sample, "planted")]
+    truthy(f"the guard for {what} catches a planted one", what in caught)
+
+by_kind = {what: [] for _, what, _, _ in PRIVATE}
+for name, text in TRACKED:
+    for what, where in private_hits(text, name):
+        by_kind[what].append(where)
+for _, what, _, _ in PRIVATE:
+    check(f"no {what} anywhere in the repo", by_kind[what], [])
 
 # ------------------------------------------------------- history ----------
 # Everything above scans the files that are checked out. That is not where the
@@ -216,27 +302,37 @@ commit_count = subprocess.run(["git", "rev-list", "--count", "--all"], cwd=REPO,
 truthy(f"and has real history to scan (saw {commit_count} commits)",
        commit_count.isdigit() and int(commit_count) > 10)
 
-history_hits = []
+# Both kinds of leak, over the same single pass. An earlier version ran only
+# the name digests here and left the structural patterns - VPN address, API
+# key, home path - scanning the working tree alone. That is exactly backwards
+# for the thing they guard against: a name is typed once and noticed, while a
+# pasted tailnet address or an absolute home path tends to arrive in a commit,
+# get tidied out of the tree a day later, and stay in the object store forever.
+# The tree scan would then be green while the leak was still one `git log -p`
+# away. Found by planting a tailnet address in a file and deleting the file.
+history_hits, history_private = [], []
 for sha, name, text in history_blobs():
-    for num, line in enumerate(text.splitlines(), 1):
-        words = re.findall(r"[a-z0-9]+", line.lower())
-        shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
-        if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
-            history_hits.append(f"{name} ({sha[:8]}):{num}")
-            break
+    named = named_lines(text)
+    if named:
+        history_hits.append(f"{name} ({sha[:8]}):{named[0]}")
+    for what, where in private_hits(text, f"{name} ({sha[:8]})"):
+        history_private.append(f"{what} at {where}")
 
 check("no new personal data anywhere in git history", history_hits, [])
+check("no private address, key or path anywhere in git history",
+      history_private, [])
 
 # Commit messages are their own store, and the original leak was in one.
-messages = subprocess.run(["git", "log", "--format=%B"], cwd=REPO,
+#
+# --all, not the current branch: a message is just as public on a pushed side
+# branch, and this repo has had work sitting on one for weeks at a time.
+messages = subprocess.run(["git", "log", "--all", "--format=%B"], cwd=REPO,
                           capture_output=True, text=True).stdout
-message_hits = []
-for num, line in enumerate(messages.splitlines(), 1):
-    words = re.findall(r"[a-z0-9]+", line.lower())
-    shingles = words + [" ".join(pair) for pair in zip(words, words[1:])]
-    if any(digest(s) in FORBIDDEN_DIGESTS for s in shingles):
-        message_hits.append(line.strip()[:60])
+message_hits = [line.strip()[:60] for line in messages.splitlines()
+                if line_is_named(line)]
 check("no personal data in any commit message", message_hits, [])
+check("no private address, key or path in any commit message",
+      [what for what, _ in private_hits(messages, "message")], [])
 
 
 # The repo owner's own username is fine - it is the URL everyone clones from.
