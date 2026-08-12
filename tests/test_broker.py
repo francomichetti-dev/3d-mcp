@@ -267,11 +267,11 @@ bk.ALLOWED_HOSTS = frozenset((f"127.0.0.1:{_PORT}", f"localhost:{_PORT}"))
 _server, _broker = bk.serve(bk.Broker(), port=_PORT)
 
 
-def call(method, path, body=None, token=_token, host=None):
+def call(method, path, body=None, token=_token, host=None, header=None):
     conn = http.client.HTTPConnection("127.0.0.1", _PORT, timeout=15)
     headers = {"Host": host or f"127.0.0.1:{_PORT}"}
     if token is not None:
-        headers[bk.AUTH_HEADER] = token
+        headers[header or bk.AUTH_HEADER] = token
     payload = None
     if body is not None:
         payload = _json.dumps(body)
@@ -297,6 +297,16 @@ try:
     check("no token -> 401", call("GET", "/health", token=None)[0], 401)
     check("wrong token -> 401", call("GET", "/health", token="d" * 64)[0], 401)
     check("token prefix -> 401", call("GET", "/health", token=_token[:32])[0], 401)
+    # The rename's compatibility layer, from the server side. The Rhino half is
+    # deployed by unzipping a folder, so a machine can easily run an updated
+    # broker against a poller that still sends only the pre-rename header. That
+    # would fail as 401 "invalid token" — the message that sends you looking at
+    # the token rather than at the header — which is exactly the hour this
+    # exists to save. Delete it with the rest of the layer, not before.
+    check("the pre-rename header still authenticates",
+          call("GET", "/health", header=bk.LEGACY_AUTH_HEADER)[0], 200)
+    check("and a bad token in it is still refused",
+          call("GET", "/health", token="d" * 64, header=bk.LEGACY_AUTH_HEADER)[0], 401)
     check("bad Host -> 403", call("GET", "/health", host="evil.example")[0], 403)
     check("unknown endpoint -> 404", call("GET", "/nope")[0], 404)
     check("malformed JSON -> 400",

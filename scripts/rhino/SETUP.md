@@ -77,9 +77,15 @@ stdout except protocol, so a traceback on stderr is the real error.
 
 ## 2. Make sure a bridge token exists
 
-Both halves authenticate with a shared secret at `~/.fusion-mcp/token`
-(`%USERPROFILE%\.fusion-mcp\token` on Windows). If it is missing, create it with
-64 random hex characters and lock it down:
+Both halves authenticate with a shared secret at `~/.arges/token`
+(`%USERPROFILE%\.arges\token` on Windows).
+
+**Check for `.fusion-mcp` first.** That was this directory's name before the
+project was renamed to `arges`, and an install made earlier still uses it.
+Everything here reads `.arges` first and falls back to `.fusion-mcp` when that
+is the only one present, so an existing machine works untouched — leave it
+where it is rather than moving it, and use the token already in it. Create a
+new one only when neither directory exists:
 
 - Windows: `icacls "<path>" /inheritance:r /grant:r "%USERNAME%":F`
   **`os.chmod(0600)` does nothing for access control on Windows** — it only
@@ -99,7 +105,7 @@ It must outlive the shell that starts it.
   running.
 
 Check it: `GET http://127.0.0.1:7656/health` with the header
-`X-Fusion-Bridge-Token: <token>` should return JSON.
+`X-Arges-Bridge-Token: <token>` should return JSON.
 
 ## 4. Start the poller inside Rhino
 

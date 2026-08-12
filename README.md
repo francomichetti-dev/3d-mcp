@@ -86,7 +86,7 @@ than queued.
 | --- | --- |
 | `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls, and `screenshot="iso"` returns the viewport with the result — one round trip per modeling step instead of two. |
 | `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
-| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/fusion-mcp-exports/`. |
+| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/arges-exports/`. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
 
 Four tools, deliberately. `fusion_execute` is the product; the others exist because they are
@@ -142,7 +142,7 @@ call, and because they land in the session itself, a resumed conversation can st
 
 The panel downscales before uploading (longest edge 1568 px, Anthropic's efficient maximum), so a
 multi-megapixel phone photo does not cost tokens for detail the model cannot use. The service keeps
-the bytes on disk under `~/.fusion-mcp/attachments/` (0700, files 0600) and stores only a reference
+the bytes on disk under `~/.arges/attachments/` (0700, files 0600) and stores only a reference
 in the transcript, so `chats.json` stays small and the panel can redraw a conversation later.
 Attachments are deleted when their design's chat is compressed or pruned.
 
@@ -188,7 +188,7 @@ that the conversation survives the switch either way.</em></p>
 
 ### Memory, and what happens when a design closes
 
-Conversations survive restarts. `~/.fusion-mcp/chats.json` (0600) stores a pointer to the SDK's own
+Conversations survive restarts. `~/.arges/chats.json` (0600) stores a pointer to the SDK's own
 session plus what the panel needs to redraw; reopening resumes the real context, so the model still
 remembers what you were doing.
 
@@ -398,7 +398,7 @@ Other clients have their own location — the shape is the same.
 > symlinks the add-in from it. Moving or renaming the directory afterwards breaks both —
 > re-run `scripts/install.sh` from the new location if you do.
 
-The installer creates `~/.fusion-mcp/` (0700) with a random 64-hex-char token (0600), symlinks
+The installer creates `~/.arges/` (0700) with a random 64-hex-char token (0600), symlinks
 the add-in into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
 builds the server **and agent** venvs with `uv sync`, registers the MCP server with Claude Code at
 user scope, and generates the `/fusion-chat` command in `~/.claude/commands/`. Everything is
@@ -422,7 +422,7 @@ It auto-starts on later launches — `runOnStartup` is set in the manifest.
 ### Verify
 
 ```sh
-curl -sS -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" http://127.0.0.1:7654/health
+curl -sS -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" http://127.0.0.1:7654/health
 # {"ok": true, "app_version": "...", "bridge_version": "1", "document": "...", "busy": null}
 
 claude mcp list   # from any directory — 'fusion' should be listed and connected
@@ -453,7 +453,7 @@ happened.
 the entire point, so the channel is gated tightly instead:
 
 - **Loopback only.** Binds `127.0.0.1:7654`, never `0.0.0.0`. No remote or LAN access, ever.
-- **Token on every request**, including `/health`, in the `X-Fusion-Bridge-Token` header, compared
+- **Token on every request**, including `/health`, in the `X-Arges-Bridge-Token` header, compared
   with `hmac.compare_digest` *before* the body is read. Being a non-safelisted header, a web page
   cannot reach the bridge: the browser must preflight, and the bridge answers no CORS.
 - **Fail closed.** No readable token file → the listener does not start, and says why in `addin.log`.
@@ -462,9 +462,9 @@ the entire point, so the channel is gated tightly instead:
 - **Bounded.** 5 MB request cap; 64 KB caps on stdout and result; screenshot dimensions bounded to
   64..1920 × 64..1440 and *rejected* outside that range, never silently clamped; at most 8
   concurrent connections; one execution at a time.
-- `~/.fusion-mcp` is 0700 and its files 0600; the token is never logged.
+- `~/.arges` is 0700 and its files 0600; the token is never logged.
 
-Exports are confined to `~/Documents/fusion-mcp-exports/`, attachments to `~/.fusion-mcp/attachments/`.
+Exports are confined to `~/Documents/arges-exports/`, attachments to `~/.arges/attachments/`.
 Nothing third-party executes inside Fusion, and the bridge, MCP server and chat service make no
 outbound calls — the deliberate exceptions are `uv sync` at install time, and the chat panel's own
 calls to Anthropic, which is what makes it a chat.
@@ -477,7 +477,7 @@ The full threat model, including what does and does not count as a vulnerability
 
 ## Troubleshooting
 
-Two logs, both in `~/.fusion-mcp/`, and they are the only window into failures — Fusion swallows
+Two logs, both in `~/.arges/`, and they are the only window into failures — Fusion swallows
 add-in exceptions silently.
 
 - **`addin.log`** — the add-in: startup, bind errors, every request, full tracebacks.
@@ -490,7 +490,7 @@ add-in exceptions silently.
 | Arges isn't in the Add-Ins list | Fusion scans that folder at launch only — **restart Fusion**. |
 | `Fusion not running or Arges add-in not enabled` | Fusion closed, or the add-in was never run — see the manual step. |
 | Health check returns 401 | Token mismatch. Re-run `scripts/install.sh` (preserves the token) or `--rotate-token`. |
-| Add-in never starts, `addin.log` says no token | `~/.fusion-mcp/token` missing or empty. The listener fails closed by design. |
+| Add-in never starts, `addin.log` says no token | `~/.arges/token` missing or empty. The listener fails closed by design. |
 | Add-in loaded but port bind failed | Something else holds 127.0.0.1:7654 — the reason is in `addin.log`. |
 | `version mismatch` from a tool | You edited the add-in. Stop/Run it in Fusion, or reload it (below). |
 | `fusion` missing from `claude mcp list` | Re-run `scripts/install.sh`; it removes and re-adds the registration. |
@@ -533,7 +533,7 @@ so make the change with Fusion closed, or verify it survived a restart.
 ### Reloading after an edit
 
 ```sh
-curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" \
+curl -sS -X POST -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" \
      http://127.0.0.1:7654/reload
 ```
 
@@ -546,10 +546,10 @@ when the add-in is stopped, and 400 on a syntax error — with the running bridg
 ```sh
 scripts/uninstall.sh            # add-in symlink, skill link, MCP registration,
                                 # /fusion-chat command, and the agent service
-scripts/uninstall.sh --purge    # also deletes ~/.fusion-mcp (token, logs, chats)
+scripts/uninstall.sh --purge    # also deletes ~/.arges (token, logs, chats)
 ```
 
-Exports in `~/Documents/fusion-mcp-exports/` are never touched.
+Exports in `~/Documents/arges-exports/` are never touched.
 
 ## Status
 
@@ -581,7 +581,7 @@ macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**915 assertions across thirteen suites**, none of which need Fusion, Rhino, or an internet connection.
+**935 assertions across thirteen suites**, none of which need Fusion, Rhino, or an internet connection.
 That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

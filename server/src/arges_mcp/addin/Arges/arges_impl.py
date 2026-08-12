@@ -53,10 +53,17 @@ BIND_HOST = "127.0.0.1"
 # Overridable only so tests can run against a scratch dir and a free port.
 # Monkeypatching these after import does not work: /reload re-executes the
 # module body and silently reverts them, which would point a test at the real
-# ~/.fusion-mcp and the production port mid-run.
-BIND_PORT = int(os.environ.get("FUSION_BRIDGE_PORT") or 7654)
+# ~/.arges and the production port mid-run.
+BIND_PORT = int(os.environ.get("ARGES_BRIDGE_PORT")
+                or os.environ.get("FUSION_BRIDGE_PORT") or 7654)
 ALLOWED_HOSTS = frozenset(("127.0.0.1:%d" % BIND_PORT, "localhost:%d" % BIND_PORT))
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# This is a server, so it accepts the pre-rename header too. The add-in is
+# copied into Fusion's add-ins folder and only changes when someone re-runs
+# `arges install`; the MCP server updates with the package. Refusing the old
+# name would make an ordinary upgrade order fail as "invalid token" — the one
+# error message that sends you looking at the token instead of the header.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 VERSION_HEADER = "X-Bridge-Version"
 
 EVENT_ID = "ArgesMarshalEvent"
@@ -81,9 +88,26 @@ SCREENSHOT_MAX_HEIGHT = 1440
 SCREENSHOT_MIN_PIXELS = 64
 SCREENSHOT_VIEWS = ("front", "top", "right", "iso", "fit")
 
-STATE_DIR = os.environ.get("FUSION_BRIDGE_STATE_DIR") or os.path.join(
-    os.path.expanduser("~"), ".fusion-mcp"
-)
+STATE_DIR_NAME = ".arges"
+# See server.py: readers prefer the new name and fall back rather than migrate,
+# because the add-in and the MCP server are upgraded by different commands.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir():
+    override = (os.environ.get("ARGES_BRIDGE_STATE_DIR")
+                or os.environ.get("FUSION_BRIDGE_STATE_DIR"))
+    if override:
+        return override
+    home = os.path.expanduser("~")
+    current = os.path.join(home, STATE_DIR_NAME)
+    legacy = os.path.join(home, LEGACY_STATE_DIR_NAME)
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+STATE_DIR = _state_dir()
 TOKEN_PATH = os.path.join(STATE_DIR, "token")
 LOG_PATH = os.path.join(STATE_DIR, "addin.log")
 LOG_ROTATE_BYTES = 5 * 1024 * 1024
@@ -252,7 +276,7 @@ def _rotate_log_if_needed():
 
 
 def _log(message, level="INFO"):
-    """Append one line to ~/.fusion-mcp/addin.log.
+    """Append one line to ~/.arges/addin.log.
 
     The log is the only debugging window into the add-in (Fusion swallows
     exceptions silently), so this must never raise.  The token and raw request
@@ -296,7 +320,7 @@ def _alert_once(message):
 
 
 class _TokenCache:
-    """Reads ~/.fusion-mcp/token, re-reading only when its stat signature changes."""
+    """Reads ~/.arges/token, re-reading only when its stat signature changes."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -1057,8 +1081,11 @@ class _BridgeHandler(BaseHTTPRequestHandler):
     def _check_token(self):
         expected = _tokens.get()
         if not expected:
-            raise _HttpError(401, "bridge token unavailable — see ~/.fusion-mcp/addin.log")
-        presented = self.headers.get(AUTH_HEADER, "")
+            raise _HttpError(401, "bridge token unavailable — see ~/.arges/addin.log")
+        # Which header carried it is not a secret; only the comparison of the
+        # value itself has to be constant-time.
+        presented = (self.headers.get(AUTH_HEADER)
+                     or self.headers.get(LEGACY_AUTH_HEADER) or "")
         if not hmac.compare_digest(presented.encode("utf-8"), expected.encode("utf-8")):
             raise _HttpError(401, "invalid or missing %s" % AUTH_HEADER)
 
@@ -1512,7 +1539,7 @@ def _start_locked(register_event):
     if not _tokens.get():
         _log("refusing to start: %s is missing, empty or unreadable" % TOKEN_PATH, "ERROR")
         _alert_once(
-            "Arges did not start: no token found at ~/.fusion-mcp/token.\n"
+            "Arges did not start: no token found at ~/.arges/token.\n"
             "Run scripts/install.sh, then restart the add-in "
             "(Utilities → Add-Ins → stop/run)."
         )
@@ -1537,7 +1564,7 @@ def _start_locked(register_event):
         _log("could not bind %s:%d — %s" % (BIND_HOST, BIND_PORT, err), "ERROR")
         _alert_once(
             "Arges could not bind 127.0.0.1:%d (%s).\n"
-            "Another instance may still hold the port — see ~/.fusion-mcp/addin.log."
+            "Another instance may still hold the port — see ~/.arges/addin.log."
             % (BIND_PORT, err)
         )
         if register_event:
@@ -1578,7 +1605,7 @@ def _register_event():
         _log("could not register the marshal custom event:\n%s" % traceback.format_exc(), "ERROR")
         _alert_once(
             "Arges could not register its main-thread event — see "
-            "~/.fusion-mcp/addin.log."
+            "~/.arges/addin.log."
         )
         return False
 

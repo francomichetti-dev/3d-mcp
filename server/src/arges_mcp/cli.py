@@ -37,7 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     uninstall = sub.add_parser("uninstall", help="remove the add-in")
     uninstall.add_argument(
         "--purge", action="store_true",
-        help="also delete ~/.fusion-mcp (token, logs, saved chats)",
+        help="also delete ~/.arges (token, logs, saved chats)",
     )
 
     sub.add_parser("status", help="report whether the add-in and bridge are up")

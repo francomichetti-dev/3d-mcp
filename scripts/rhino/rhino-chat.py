@@ -39,7 +39,24 @@ except ImportError:
     rhino_memory = None
 
 HOME = os.path.expanduser("~")
-CONFIG_DIR = os.path.join(HOME, ".fusion-mcp")
+
+STATE_DIR_NAME = ".arges"
+# Pre-rename directory. Preferred order is new-then-old and nothing here moves
+# anything: the Rhino half ships as a zip and updates on its own schedule, so a
+# machine routinely runs one half newer than the other. Only `arges install`
+# migrates. See server/src/arges_mcp/server.py.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir():
+    current = os.path.join(HOME, STATE_DIR_NAME)
+    legacy = os.path.join(HOME, LEGACY_STATE_DIR_NAME)
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+CONFIG_DIR = _state_dir()
 CONFIG_PATH = os.path.join(CONFIG_DIR, "chat.json")
 TOKEN_PATH = os.path.join(CONFIG_DIR, "token")
 ATTACH_DIR = os.path.join(CONFIG_DIR, "attachments")
@@ -48,8 +65,12 @@ MCP_CONFIG_PATH = os.path.join(CONFIG_DIR, "rhino-mcp.json")
 HERE = os.path.dirname(os.path.abspath(__file__))
 MCP_SERVER = os.path.join(HERE, "rhino_mcp.py")
 
-BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+BROKER = (os.environ.get("ARGES_BROKER_URL")
+          or os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656")
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# Sent alongside the current one, same value, so this works against a broker
+# that has not been updated yet. Servers accept either; clients send both.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 
 # The same list the Fusion panel offers, duplicated because this file runs on
 # Rhino's own Python and cannot import from the package. tests/test_consistency
@@ -380,9 +401,14 @@ def find_claude():
 
 
 def _server_env():
-    env = {"FUSION_BROKER_URL": BROKER}
-    token = os.environ.get("FUSION_BRIDGE_TOKEN")
+    # Both spellings: this spawns rhino_mcp.py out of the same folder, so it
+    # understands ARGES_*, but a hand-written launcher may still be setting
+    # the old names and passing them straight through costs nothing.
+    env = {"ARGES_BROKER_URL": BROKER, "FUSION_BROKER_URL": BROKER}
+    token = (os.environ.get("ARGES_BRIDGE_TOKEN")
+             or os.environ.get("FUSION_BRIDGE_TOKEN"))
     if token:
+        env["ARGES_BRIDGE_TOKEN"] = token
         env["FUSION_BRIDGE_TOKEN"] = token
     return env
 
@@ -480,7 +506,8 @@ def save_config(config):
 
 
 def _token():
-    from_env = os.environ.get("FUSION_BRIDGE_TOKEN")
+    from_env = (os.environ.get("ARGES_BRIDGE_TOKEN")
+                or os.environ.get("FUSION_BRIDGE_TOKEN"))
     if from_env:
         return from_env.strip()
     try:
@@ -541,7 +568,9 @@ def submit_state(timeout=20):
     """Ask Rhino which document is open. The state dict, or None."""
     body = json.dumps({"kind": "state", "payload": {}}).encode()
     request = urllib.request.Request(BROKER + "/submit", data=body, method="POST")
-    request.add_header(AUTH_HEADER, _token())
+    token = _token()
+    request.add_header(AUTH_HEADER, token)
+    request.add_header(LEGACY_AUTH_HEADER, token)
     request.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
@@ -552,7 +581,9 @@ def submit_state(timeout=20):
 
 def broker_health(timeout=5):
     request = urllib.request.Request(BROKER + "/health")
-    request.add_header(AUTH_HEADER, _token())
+    token = _token()
+    request.add_header(AUTH_HEADER, token)
+    request.add_header(LEGACY_AUTH_HEADER, token)
     with urllib.request.urlopen(request, timeout=timeout) as response:
         return json.loads(response.read())
 

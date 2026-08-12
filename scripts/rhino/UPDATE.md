@@ -12,6 +12,15 @@ a cleanup).
 - `%USERPROFILE%\.fusion-mcp\` — the token and `rhino-chat.json` settings.
   Do NOT regenerate the token: the broker and the poller share it, and a new
   one would orphan whichever side you did not restart.
+
+  **This folder keeps its old name, and that is correct.** The project was
+  renamed to `arges`, and a fresh install now uses `%USERPROFILE%\.arges\`.
+  Every part of the new code looks for `.arges` first and falls back to
+  `.fusion-mcp` when that is the only one present, so this machine keeps
+  working untouched. The one thing that migrates is `arges install`, which is
+  the macOS Fusion installer and does not run here. **Do not move or rename
+  this folder** to tidy it up: nothing requires it, and doing it while the
+  broker is running separates the two halves from their shared token.
 - The conversation history and any exports. Nothing here touches them; keep it
   that way.
 
@@ -80,7 +89,8 @@ transcript of anything spoken. **Both are optional** — see the table in
 install command and everything else works exactly as before; without
 `faster-whisper`, frames still attach and only the transcript is missing.
 
-Memory lives in `%USERPROFILE%\.fusion-mcp\memory\`. It is restricted to the
+Memory lives in `%USERPROFILE%\.fusion-mcp\memory\` on this machine (see
+above — the folder keeps its old name). It is restricted to the
 account like the token is, and it holds project names, file paths and notes —
 if the person shares that machine, it is worth telling them it exists.
 

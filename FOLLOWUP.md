@@ -50,15 +50,34 @@ install.sh and the documented checkout flow.
 `runOnStartup`; removed by hand, backup
 `JSLoadedScriptsinfo.backup-crash-fix-20260808`.)
 
-## The rename is half-landed (branch `rename/arges`)
+## The rename: landed, with a compatibility layer to remove later
 
-Done: the server package (`server/src/arges_mcp`), the add-in folder
-(`addin/Arges`, manifest id preserved), spawn sites pointing at `arges`.
-Not yet: the agent/chat package name, the `FUSION_*` environment variables,
-the `X-Fusion-Bridge-Token` header name, the skill directory, CI references,
-and the `~/.fusion-mcp` → `~/.arges` state migration (migrate-on-startup, its
-own commit). The half-done state is deliberate — each rename lands with its
-tests — but do not cut a release from this branch until the set is complete.
+All of it is in: the server package, the add-in folder, the agent package
+(`arges-chat`), the `ARGES_*` environment variables, the
+`X-Arges-Bridge-Token` header, and `~/.fusion-mcp` → `~/.arges`.
+
+**The skill directory stayed `skill/fusion-360` deliberately.** It names the
+CAD application it drives, not this product — the same way a Rhino skill would
+be called `rhino`. Renaming it would have said something untrue.
+
+**What is still open is the compatibility layer, and it is load-bearing until
+every install has moved.** The pieces upgrade by different commands — the
+add-in by `arges install`, the MCP server with the package, the Rhino half by
+unzipping a new copy — so no upgrade order can be assumed. Therefore:
+
+- every client sends **both** header names, every server accepts **either**
+- every reader prefers `~/.arges` and falls back to `~/.fusion-mcp` when that
+  is the only one present
+- every `ARGES_*` variable falls back to its `FUSION_*` spelling
+- exactly one thing migrates, `arges install`, and it refuses unless the two
+  directories are siblings — without that check, redirecting `STATE_DIR` at a
+  temp directory (which the token test does) would move the operator's live
+  `~/.fusion-mcp` there and delete it on cleanup
+
+`tests/test_consistency.py` holds all of this: dropping the fallback from one
+file fails by file name. Remove the layer in one commit once no pre-rename
+install can still be out there — after the Rhino machine confirms its update,
+at the earliest. Until then it is not dead code.
 
 ## §2.3 of the rebrand handoff: the geometry-operation domain model
 

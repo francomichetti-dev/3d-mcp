@@ -21,9 +21,15 @@ import shutil
 import sys
 from pathlib import Path
 
-FUSION_DIR = Path("~/.fusion-mcp").expanduser()
-TOKEN_PATH = FUSION_DIR / "token"
-EXPORT_DIR = Path("~/Documents/fusion-mcp-exports").expanduser()
+STATE_DIR_NAME = ".arges"
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+EXPORT_DIR_NAME = "arges-exports"
+LEGACY_EXPORT_DIR_NAME = "fusion-mcp-exports"
+
+STATE_DIR = Path("~").expanduser() / STATE_DIR_NAME
+LEGACY_STATE_DIR = Path("~").expanduser() / LEGACY_STATE_DIR_NAME
+TOKEN_PATH = STATE_DIR / "token"
+EXPORT_DIR = Path("~/Documents").expanduser() / EXPORT_DIR_NAME
 
 ADDIN_NAME = "Arges"
 # Fusion's per-user add-in directory. macOS only for now; the add-in itself is
@@ -58,10 +64,52 @@ def addins_dir() -> Path:
     return MACOS_ADDINS_DIR
 
 
+def migrate_state_dir() -> bool:
+    """Move a pre-rename ~/.fusion-mcp to ~/.arges. True if it moved.
+
+    This is the only place in the project that moves anything. Every other
+    component reads the old directory as a fallback instead, because they run on
+    their own upgrade schedules — the Rhino half ships as a zip, the add-in is
+    copied by this installer, the MCP server comes from the package — and moving
+    a token out from under a running process is how you turn a rename into an
+    outage. `arges install` is a deliberate act by the operator, which makes it
+    the one moment when moving is safe.
+
+    A rename, not a copy: atomic, so it cannot half-succeed and leave the token
+    in two places. If both directories already exist the old one is left alone.
+    Two state directories is untidy but recoverable; picking a winner
+    automatically would silently discard whichever held the real token.
+    """
+    # Both names must be siblings, or this is not a rename and must not run.
+    # Without this, a caller that redirects STATE_DIR alone — a test pointing it
+    # at a temp dir is the obvious one — would move the *real* ~/.fusion-mcp
+    # somewhere else entirely and delete it on cleanup, taking the token, the
+    # saved chats and the attachments with it. Refusing is always safe here:
+    # every reader falls back to the old directory anyway, so a skipped
+    # migration costs nothing.
+    if STATE_DIR.parent != LEGACY_STATE_DIR.parent:
+        return False
+    if STATE_DIR.exists() or not LEGACY_STATE_DIR.is_dir():
+        return False
+    try:
+        os.rename(LEGACY_STATE_DIR, STATE_DIR)
+    except OSError:
+        # Another process created the new directory between the check and the
+        # rename, or something is holding the old one. Falling back to a fresh
+        # directory is correct: every reader still finds the old one.
+        return False
+    return True
+
+
 def ensure_token(rotate: bool = False) -> tuple[Path, bool]:
-    """Create the shared secret if absent. Returns (path, created)."""
-    FUSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(FUSION_DIR, 0o700)
+    """Create the shared secret if absent. Returns (path, created).
+
+    Deliberately does not migrate: this is the function callers redirect at a
+    scratch directory, and a function that both writes where you point it and
+    moves a directory you did not mention is a trap. run_install() migrates.
+    """
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
 
     existing = ""
     if TOKEN_PATH.is_file() and not rotate:
@@ -139,6 +187,12 @@ def run_install(rotate_token: bool = False) -> int:
         return 1
     print(f"  add-in {action}: {target}")
 
+    # The only place this runs. `arges install` is a deliberate act by the
+    # operator, which is what makes moving a live directory safe here and
+    # nowhere else.
+    if migrate_state_dir():
+        print(f"  moved {LEGACY_STATE_DIR} -> {STATE_DIR} (token, logs, chats)")
+
     token_path, created = ensure_token(rotate=rotate_token)
     print(f"  token {'created' if created else 'kept'}: {token_path} (0600)")
     if created and not rotate_token:
@@ -174,7 +228,7 @@ def run_uninstall(purge: bool = False) -> int:
     if purge:
         # Guarded because this is the one destructive path here, and an empty
         # HOME would otherwise aim it at the filesystem root.
-        resolved = FUSION_DIR.resolve()
+        resolved = STATE_DIR.resolve()
         home = Path.home().resolve()
         if resolved == home or home not in resolved.parents:
             print(f"  REFUSING to delete {resolved} — not inside {home}", file=sys.stderr)
@@ -183,7 +237,7 @@ def run_uninstall(purge: bool = False) -> int:
             shutil.rmtree(resolved)
             print(f"  deleted {resolved} (token, logs, saved chats)")
     else:
-        print(f"  kept {FUSION_DIR} (token, logs, chats) — pass --purge to delete it")
+        print(f"  kept {STATE_DIR} (token, logs, chats) — pass --purge to delete it")
 
     print(f"\nExports in {EXPORT_DIR} were not touched.")
     return 0
@@ -194,7 +248,7 @@ def run_status() -> int:
     import urllib.error
     import urllib.request
 
-    print("Fusion MCP status\n")
+    print("Arges status\n")
 
     target = MACOS_ADDINS_DIR / ADDIN_NAME
     if target.is_symlink():
@@ -216,7 +270,8 @@ def run_status() -> int:
         return 1
 
     request = urllib.request.Request(
-        "http://127.0.0.1:7654/health", headers={"X-Fusion-Bridge-Token": token}
+        "http://127.0.0.1:7654/health",
+        headers={"X-Arges-Bridge-Token": token, "X-Fusion-Bridge-Token": token},
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:

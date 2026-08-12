@@ -36,7 +36,8 @@ from typing import Any
 from urllib.parse import parse_qs, urlsplit
 
 BROKER_HOST = "127.0.0.1"
-BROKER_PORT = int(os.environ.get("FUSION_BROKER_PORT") or 7656)
+BROKER_PORT = int(os.environ.get("ARGES_BROKER_PORT")
+                  or os.environ.get("FUSION_BROKER_PORT") or 7656)
 
 # How long a submitter waits for the CAD to finish. Matches the bridge's
 # marshal timeout so behaviour is the same whichever transport is in use.
@@ -228,8 +229,25 @@ def encode(payload: dict[str, Any]) -> bytes:
 # a body cap. Fails closed when there is no token.
 # --------------------------------------------------------------------------
 
-TOKEN_PATH = Path("~/.fusion-mcp/token").expanduser()
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+STATE_DIR_NAME = ".arges"
+# See server.py: prefer the new directory, fall back to the pre-rename one when
+# only it exists. The broker is often the oldest process on a machine — it runs
+# as a service and survives every other component's upgrade.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir() -> Path:
+    home = Path("~").expanduser()
+    if not (home / STATE_DIR_NAME).is_dir() and (home / LEGACY_STATE_DIR_NAME).is_dir():
+        return home / LEGACY_STATE_DIR_NAME
+    return home / STATE_DIR_NAME
+
+
+TOKEN_PATH = _state_dir() / "token"
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# A server: it accepts the pre-rename header as well, so a Rhino half that has
+# not been re-zipped yet still authenticates against an updated broker.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 ALLOWED_HOSTS = frozenset((
     f"127.0.0.1:{BROKER_PORT}", f"localhost:{BROKER_PORT}",
 ))
@@ -278,7 +296,10 @@ def make_handler(broker: Broker):
             expected = read_token()
             if not expected:
                 raise _HttpError(503, "no broker token — run the installer")
-            presented = self.headers.get(AUTH_HEADER, "")
+            # Which header carried it is not a secret; only the comparison of
+            # the value itself has to be constant-time.
+            presented = (self.headers.get(AUTH_HEADER)
+                         or self.headers.get(LEGACY_AUTH_HEADER) or "")
             if not hmac.compare_digest(presented.encode(), expected.encode()):
                 raise _HttpError(401, f"invalid or missing {AUTH_HEADER}")
 

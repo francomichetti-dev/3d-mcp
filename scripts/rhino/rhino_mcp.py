@@ -34,9 +34,31 @@ try:
 except ImportError:
     rhino_memory = None
 
-BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
-TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".fusion-mcp", "token")
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+BROKER = (os.environ.get("ARGES_BROKER_URL")
+          or os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656")
+
+HOME = os.path.expanduser("~")
+STATE_DIR_NAME = ".arges"
+# Pre-rename directory. Preferred order is new-then-old and nothing here moves
+# anything: the Rhino half ships as a zip and updates on its own schedule, so a
+# machine routinely runs one half newer than the other. Only `arges install`
+# migrates. See server/src/arges_mcp/server.py.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir():
+    current = os.path.join(HOME, STATE_DIR_NAME)
+    legacy = os.path.join(HOME, LEGACY_STATE_DIR_NAME)
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+TOKEN_PATH = os.path.join(_state_dir(), "token")
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# Sent alongside the current one, same value, so this works against a broker
+# that has not been updated yet. Servers accept either; clients send both.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 
 PROTOCOL_VERSION = "2025-06-18"
 SERVER_INFO = {"name": "rhino", "version": "0.1.0"}
@@ -48,10 +70,11 @@ SERVER_INFO = {"name": "rhino", "version": "0.1.0"}
 
 
 def _token():
-    # Env first, mirroring FUSION_BROKER_URL. Lets the server be pointed at a
+    # Env first, mirroring ARGES_BROKER_URL. Lets the server be pointed at a
     # test broker without touching the real token file, and covers installs
     # where the token does not live under HOME.
-    from_env = os.environ.get("FUSION_BRIDGE_TOKEN")
+    from_env = (os.environ.get("ARGES_BRIDGE_TOKEN")
+                or os.environ.get("FUSION_BRIDGE_TOKEN"))
     if from_env:
         return from_env.strip()
     try:
@@ -65,7 +88,9 @@ def submit(kind, payload, timeout=120):
     """Hand a job to Rhino through the broker. Never raises."""
     body = json.dumps({"kind": kind, "payload": payload}).encode()
     request = urllib.request.Request(BROKER + "/submit", data=body, method="POST")
-    request.add_header(AUTH_HEADER, _token())
+    token = _token()
+    request.add_header(AUTH_HEADER, token)
+    request.add_header(LEGACY_AUTH_HEADER, token)
     request.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:

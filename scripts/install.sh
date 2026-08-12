@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# fusion-mcp installer — 100% local, no network calls.
+# arges installer — 100% local, no network calls.
 #
 #   scripts/install.sh                 install / repair
 #   scripts/install.sh --rotate-token  install and replace the bridge token
@@ -36,9 +36,18 @@ SKILL_SOURCE="${REPO_DIR}/skill/fusion-360"
 SKILLS_DIR="${HOME}/.claude/skills"
 SKILL_LINK="${SKILLS_DIR}/fusion-360"
 
-CONFIG_DIR="${HOME}/.fusion-mcp"
+# ~/.arges, or the pre-rename ~/.fusion-mcp when that is the only one there.
+# A half-updated machine (the Rhino half ships as its own zip) must keep
+# working; `arges install` is the only thing that migrates.
+CONFIG_DIR="${HOME}/.arges"
+if [[ ! -d "${CONFIG_DIR}" && -d "${HOME}/.fusion-mcp" ]]; then
+  CONFIG_DIR="${HOME}/.fusion-mcp"
+fi
+EXPORTS_DIR="${HOME}/Documents/arges-exports"
+if [[ ! -d "${EXPORTS_DIR}" && -d "${HOME}/Documents/fusion-mcp-exports" ]]; then
+  EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
+fi
 TOKEN_FILE="${CONFIG_DIR}/token"
-EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
 
 MCP_NAME="fusion"
 BRIDGE_URL="http://127.0.0.1:7654/health"
@@ -340,7 +349,7 @@ Files are in place. One manual step is left, inside Fusion:
 
 The verification command, if you ever need it by hand:
 
-  curl -fsS -H "X-Fusion-Bridge-Token: \$(cat ${TOKEN_FILE})" ${BRIDGE_URL}
+  curl -fsS -H "X-Arges-Bridge-Token: \$(cat ${TOKEN_FILE})" ${BRIDGE_URL}
 
 A healthy bridge replies with JSON containing "ok": true and "bridge_version": "1".
 EOF
@@ -359,7 +368,7 @@ else
     attempt=0
     while [ "${attempt}" -lt 30 ]; do
         attempt=$((attempt + 1))
-        if reply="$(curl -fsS --max-time 5 -H "X-Fusion-Bridge-Token: ${token}" "${BRIDGE_URL}" 2>/dev/null)"; then
+        if reply="$(curl -fsS --max-time 5 -H "X-Arges-Bridge-Token: ${token}" "${BRIDGE_URL}" 2>/dev/null)"; then
             case "${reply}" in
                 *'"bridge_version": "1"'*|*'"bridge_version":"1"'*|\
                 *'"bridge_version": 1'*|*'"bridge_version":1'*)

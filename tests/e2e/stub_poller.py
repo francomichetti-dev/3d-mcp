@@ -6,8 +6,8 @@ RhinoCommon itself; everything between Claude and Rhino's front door it can.
 """
 import json, os, threading, time, urllib.request
 
-BROKER = os.environ.get("FUSION_BROKER_URL", "http://127.0.0.1:7699")
-TOKEN = os.environ["FUSION_BRIDGE_TOKEN"]   # no relative path to break
+BROKER = os.environ.get("ARGES_BROKER_URL", "http://127.0.0.1:7699")
+TOKEN = os.environ["ARGES_BRIDGE_TOKEN"]   # no relative path to break
 
 # a 1x1 transparent png, so screenshot returns a real decodable image
 PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
@@ -16,7 +16,7 @@ PNG = ("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk"
 def call(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     r = urllib.request.Request(BROKER + path, data=data, method=method)
-    r.add_header("X-Fusion-Bridge-Token", TOKEN)
+    r.add_header("X-Arges-Bridge-Token", TOKEN)
     if data: r.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(r, timeout=30) as resp:
         raw = resp.read()

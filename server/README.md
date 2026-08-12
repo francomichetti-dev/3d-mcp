@@ -26,7 +26,7 @@ package cannot reach into another application, so installing the add-in is an ex
 uvx arges install
 ```
 
-That copies the add-in into Fusion's add-ins folder and creates a bridge token at `~/.fusion-mcp/`
+That copies the add-in into Fusion's add-ins folder and creates a bridge token at `~/.arges/`
 (`0600`, inside a `0700` directory). Then, once, in Fusion:
 
 > **Utilities → Add-Ins → select Arges → Run**
@@ -65,7 +65,7 @@ claude mcp add fusion -- uvx arges-mcp
 | --- | --- |
 | `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls. |
 | `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
-| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/fusion-mcp-exports/`. |
+| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/arges-exports/`. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
 
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so the

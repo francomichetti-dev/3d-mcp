@@ -12,7 +12,17 @@ import sys
 import traceback
 from datetime import datetime
 
-_STATE_DIR = os.path.join(os.path.expanduser("~"), ".fusion-mcp")
+def _state_dir():
+    """~/.arges, or the pre-rename ~/.fusion-mcp when only that one exists."""
+    home = os.path.expanduser("~")
+    current = os.path.join(home, ".arges")
+    legacy = os.path.join(home, ".fusion-mcp")
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+_STATE_DIR = _state_dir()
 _LOG_PATH = os.path.join(_STATE_DIR, "addin.log")
 
 # All Fusion add-ins share one interpreter and one sys.modules, so the impl is
@@ -26,7 +36,7 @@ _alert_shown = False
 
 
 def _log(message):
-    """Append to ~/.fusion-mcp/addin.log without importing anything fallible."""
+    """Append to ~/.arges/addin.log without importing anything fallible."""
     line = "%s %-5s %s\n" % (datetime.now().isoformat(timespec="seconds"), "ERROR", message)
     try:
         os.makedirs(_STATE_DIR, mode=0o700, exist_ok=True)
@@ -54,7 +64,7 @@ def _bootstrap_failure(stage, detail):
         if app is not None and app.userInterface is not None:
             app.userInterface.messageBox(
                 "Arges failed to start (%s).\n"
-                "Details: ~/.fusion-mcp/addin.log" % stage,
+                "Details: ~/.arges/addin.log" % stage,
                 "Arges",
             )
     except Exception:

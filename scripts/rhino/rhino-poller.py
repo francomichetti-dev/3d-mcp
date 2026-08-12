@@ -34,9 +34,31 @@ import scriptcontext
 HERE = os.path.dirname(os.path.abspath(__file__))
 LOG = os.path.join(HERE, "rhino-poller.log")
 
-BROKER = os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656"
-TOKEN_PATH = os.path.join(os.path.expanduser("~"), ".fusion-mcp", "token")
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+BROKER = (os.environ.get("ARGES_BROKER_URL")
+          or os.environ.get("FUSION_BROKER_URL") or "http://127.0.0.1:7656")
+
+HOME = os.path.expanduser("~")
+STATE_DIR_NAME = ".arges"
+# Pre-rename directory. Preferred order is new-then-old and nothing here moves
+# anything: the Rhino half ships as a zip and updates on its own schedule, so a
+# machine routinely runs one half newer than the other. Only `arges install`
+# migrates. See server/src/arges_mcp/server.py.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir():
+    current = os.path.join(HOME, STATE_DIR_NAME)
+    legacy = os.path.join(HOME, LEGACY_STATE_DIR_NAME)
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+TOKEN_PATH = os.path.join(_state_dir(), "token")
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# Sent alongside the current one, same value, so this works against a broker
+# that has not been updated yet. Servers accept either; clients send both.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 
 # The timer runs on the UI thread, so every request it makes blocks Rhino for
 # its duration. Both of these are therefore deliberately tiny: a claim that
@@ -66,7 +88,9 @@ def _token():
 def _request(method, path, body=None):
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(BROKER + path, data=data, method=method)
-    request.add_header(AUTH_HEADER, _token())
+    token = _token()
+    request.add_header(AUTH_HEADER, token)
+    request.add_header(LEGACY_AUTH_HEADER, token)
     if data is not None:
         request.add_header("Content-Type", "application/json")
     with urllib.request.urlopen(request, timeout=HTTP_TIMEOUT) as response:

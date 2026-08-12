@@ -59,7 +59,7 @@ _mode = {"reply": "ok"}
 
 class _Handler(BaseHTTPRequestHandler):
     def do_POST(self):                                       # noqa: N802
-        _seen["tokens"].append(self.headers.get("X-Fusion-Bridge-Token"))
+        _seen["tokens"].append(self.headers.get("X-Arges-Bridge-Token"))
         body = json.loads(self.rfile.read(int(self.headers["Content-Length"])))
         _seen["jobs"].append(body)
 
@@ -119,8 +119,8 @@ time.sleep(0.2)
 class Server:
     def __init__(self, token=TOKEN):
         env = dict(os.environ)
-        env["FUSION_BROKER_URL"] = f"http://127.0.0.1:{PORT}"
-        env["FUSION_BRIDGE_TOKEN"] = token
+        env["ARGES_BROKER_URL"] = f"http://127.0.0.1:{PORT}"
+        env["ARGES_BRIDGE_TOKEN"] = token
         # HOME is redirected so a token file on the developer's machine can
         # never leak into a test run and make a failure look like a pass.
         env["HOME"] = str(REPO / "tests" / "_nonexistent_home")
@@ -299,8 +299,8 @@ check("clean exit", s.close(), 0)
 # ------------------------------------------------------- broker unreachable --
 print("With no broker at all")
 env = dict(os.environ)
-env["FUSION_BROKER_URL"] = "http://127.0.0.1:1"          # nothing listens here
-env["FUSION_BRIDGE_TOKEN"] = TOKEN
+env["ARGES_BROKER_URL"] = "http://127.0.0.1:1"          # nothing listens here
+env["ARGES_BRIDGE_TOKEN"] = TOKEN
 proc = subprocess.Popen([sys.executable, str(SERVER)], stdin=subprocess.PIPE,
                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
 proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize",

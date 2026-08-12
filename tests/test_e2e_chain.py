@@ -65,8 +65,8 @@ BROKER_URL = f"http://127.0.0.1:{PORT}"
 server, broker = bk.serve(bk.Broker(), port=PORT)
 
 env = dict(os.environ)
-env["FUSION_BROKER_URL"] = BROKER_URL
-env["FUSION_BRIDGE_TOKEN"] = TOKEN
+env["ARGES_BROKER_URL"] = BROKER_URL
+env["ARGES_BRIDGE_TOKEN"] = TOKEN
 
 poller = subprocess.Popen([sys.executable, str(REPO / "tests" / "e2e" / "stub_poller.py")],
                           env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE)

@@ -44,7 +44,7 @@ than by hand, cover here.
 `arges_impl.py` hot-reloads, so you do not need to restart Fusion:
 
 ```sh
-curl -sS -X POST -H "X-Fusion-Bridge-Token: $(cat ~/.fusion-mcp/token)" \
+curl -sS -X POST -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" \
   http://127.0.0.1:7654/reload
 ```
 
@@ -66,7 +66,7 @@ On the Rhino side there is no hot reload, and what you restart depends on the fi
 
 `rhinocode script` prints nothing at all — not even tracebacks — so a script that failed looks
 exactly like one that did nothing. The poller writes `rhino-poller.log` **next to itself** in
-`scripts/rhino/`, not under `~/.fusion-mcp`; that file is usually the only evidence you get.
+`scripts/rhino/`, not under `~/.arges`; that file is usually the only evidence you get.
 
 ## What good looks like here
 
@@ -138,7 +138,7 @@ tokens are stored in the repository.
 Say which CAD, what you asked for, and include the log — in both halves the log is usually the only
 record that anything failed at all.
 
-- **Fusion**: your version (`Help → About`), plus the relevant part of `~/.fusion-mcp/addin.log`,
+- **Fusion**: your version (`Help → About`), plus the relevant part of `~/.arges/addin.log`,
   `server.log` or `agent.log`. Fusion swallows add-in exceptions silently.
 - **Rhino**: your version and OS, plus `scripts/rhino/rhino-poller.log`. `rhinocode` prints nothing,
   so a traceback exists only in that file.

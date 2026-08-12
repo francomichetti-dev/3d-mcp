@@ -18,11 +18,16 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(cd -- "${SCRIPT_DIR}/.." && pwd)"
 
 AGENT_DIR="${REPO_DIR}/agent"
-TOKEN_FILE="${HOME}/.fusion-mcp/token"
+# ~/.arges, or the pre-rename ~/.fusion-mcp when only that exists.
+STATE_DIR="${HOME}/.arges"
+if [[ ! -d "${STATE_DIR}" && -d "${HOME}/.fusion-mcp" ]]; then
+  STATE_DIR="${HOME}/.fusion-mcp"
+fi
+TOKEN_FILE="${STATE_DIR}/token"
 BRIDGE="http://127.0.0.1:7654"
-PORT="${FUSION_CHAT_PORT:-7655}"
+PORT="${ARGES_CHAT_PORT:-${FUSION_CHAT_PORT:-7655}}"
 SERVICE="http://127.0.0.1:${PORT}"
-LOG="${HOME}/.fusion-mcp/agent.log"
+LOG="${STATE_DIR}/agent.log"
 
 PALETTE_ID="FusionChatPalette"
 
@@ -38,7 +43,7 @@ bridge_exec() {
     token="$(cat "${TOKEN_FILE}")"
     payload="$(TARGET_CODE="$1" python3 -c 'import json,os; print(json.dumps({"code": os.environ["TARGET_CODE"]}))')"
     curl -fsS --max-time 70 \
-        -H "X-Fusion-Bridge-Token: ${token}" \
+        -H "X-Arges-Bridge-Token: ${token}" \
         -H "Content-Type: application/json" \
         -d "${payload}" "${BRIDGE}/execute"
 }
@@ -112,10 +117,10 @@ esac
 [ -f "${TOKEN_FILE}" ] || die "no bridge token at ${TOKEN_FILE} — run scripts/install.sh first."
 [ -d "${AGENT_DIR}" ] || die "no agent/ directory at ${AGENT_DIR}."
 
-if ! curl -fsS --max-time 3 -H "X-Fusion-Bridge-Token: $(cat "${TOKEN_FILE}")" "${BRIDGE}/health" >/dev/null 2>&1; then
+if ! curl -fsS --max-time 3 -H "X-Arges-Bridge-Token: $(cat "${TOKEN_FILE}")" "${BRIDGE}/health" >/dev/null 2>&1; then
     die "Fusion's bridge is not answering on ${BRIDGE}.
   Open Fusion, then Utilities → Add-Ins → Arges → Run.
-  If it was already running, check ${HOME}/.fusion-mcp/addin.log."
+  If it was already running, check ${STATE_DIR}/addin.log."
 fi
 
 # --- agent service -----------------------------------------------------------
@@ -141,7 +146,7 @@ fi
 # --- panel -------------------------------------------------------------------
 
 step "Opening the panel in Fusion"
-show_palette >/dev/null || die "could not open the palette — see ${HOME}/.fusion-mcp/addin.log"
+show_palette >/dev/null || die "could not open the palette — see ${STATE_DIR}/addin.log"
 info "Fusion Chat is docked on the right of the Fusion window."
 
 # The service binds its port before the agent client finishes connecting, so a

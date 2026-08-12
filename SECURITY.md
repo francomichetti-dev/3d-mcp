@@ -34,7 +34,7 @@ There is exactly one, and it is the reason the above is tolerable:
 | --- | --- |
 | Bind address | `127.0.0.1` only, never `0.0.0.0`. Not reachable from your LAN. Both the Fusion listener (`7654`) and the Rhino broker (`7656`). |
 | Host header | Requests must carry a `Host` matching the service's own loopback address and port, so a browser on another site cannot drive it via DNS rebinding. On all three listeners: the Fusion bridge (`7654`), the chat service (`7655`) and the Rhino broker (`7656`). The chat service matters most and had it last — it holds the token and forwards to the bridge, so anything reaching it gets authenticated code execution without needing the token at all. |
-| Token | 64 hex chars generated at install, sent as `X-Fusion-Bridge-Token`, compared with `hmac.compare_digest`. Stored `0600` in `~/.fusion-mcp/`, which is `0700`. |
+| Token | 64 hex chars generated at install, sent as `X-Arges-Bridge-Token`, compared with `hmac.compare_digest`. Stored `0600` in `~/.arges/`, which is `0700`. |
 | Fail closed | No token file, an empty one, or one that is only whitespace, and nothing is served. The Fusion add-in refuses to start and says so; the broker starts but answers every request `503`. Emptiness is checked explicitly, because `compare_digest(b"", b"")` is true — a truncated token file must not authorise a caller who presents nothing. |
 | Request cap | Body limited to 5 MB and at most 8 concurrent connections — on the Fusion listener and the Rhino broker alike, a connection past the cap is refused with `503` rather than given a thread. One job runs in the CAD at a time on both sides. |
 | Rhino direction | Rhino is never listened to *on*. The poller inside Rhino makes outbound requests to the broker and nothing accepts connections inside the CAD process. |
@@ -65,8 +65,8 @@ can normally do — writing files, running shell commands, fetching URLs — is 
 a non-interactive run an unapproved tool is refused rather than queued for a prompt that no one will
 answer.
 
-Chats are stored locally in `~/.fusion-mcp/chats.json` and attachments in
-`~/.fusion-mcp/attachments/` — files `0600` inside a `0700` directory, and each copied attachment
+Chats are stored locally in `~/.arges/chats.json` and attachments in
+`~/.arges/attachments/` — files `0600` inside a `0700` directory, and each copied attachment
 re-restricted after copying, since `copy2` preserves whatever mode the original had.
 
 On Windows that is done with an explicit ACL (`icacls /inheritance:r /grant:r`), not `chmod`.

@@ -51,36 +51,72 @@ RHINO_MCP = "scripts/rhino/rhino_mcp.py"
 RHINO_POLLER = "scripts/rhino/rhino-poller.py"
 RHINO_CHAT = "scripts/rhino/rhino-chat.py"
 
-ALL_SPEAKERS = [FUSION_SERVER, FUSION_ADDIN, BROKER, RHINO_MCP, RHINO_POLLER, RHINO_CHAT]
+AGENT_SERVICE = "agent/agent_service.py"
+
+# The chat service belongs here: it POSTs to the add-in with the same token and
+# the same header as everyone else. It was missing only because it used to spell
+# the header inline instead of declaring a constant, so the sweep never saw it.
+ALL_SPEAKERS = [FUSION_SERVER, FUSION_ADDIN, BROKER, RHINO_MCP, RHINO_POLLER,
+                RHINO_CHAT, AGENT_SERVICE]
 
 
 # ------------------------------------------------------------ auth header --
 # A mismatch here means every request is rejected as unauthenticated, with
 # nothing in any log saying the header name is the reason.
 print("The auth header")
-headers = {}
-for rel in ALL_SPEAKERS:
-    found = re.search(r'AUTH_HEADER\s*=\s*["\']([^"\']+)["\']', read(rel))
-    if found:
-        headers[rel] = found.group(1)
+
+
+def declared(rel, name):
+    """The string a module assigns to `name` at module level.
+
+    Anchored: LEGACY_AUTH_HEADER *contains* AUTH_HEADER, so an unanchored
+    search finds whichever happens to come first in the file and would pass
+    while reading the wrong constant.
+    """
+    found = re.search(r'^' + name + r'\s*=\s*["\']([^"\']+)["\']', read(rel), re.M)
+    return found.group(1) if found else None
+
+
+headers = {rel: declared(rel, "AUTH_HEADER") for rel in ALL_SPEAKERS}
+headers = {rel: value for rel, value in headers.items() if value}
+legacy_headers = {rel: declared(rel, "LEGACY_AUTH_HEADER") for rel in ALL_SPEAKERS}
+legacy_headers = {rel: value for rel, value in legacy_headers.items() if value}
 
 check("every component declares one", len(headers), len(ALL_SPEAKERS))
 check("and they are all the same", len(set(headers.values())), 1)
-check("it is the documented name", set(headers.values()), {"X-Fusion-Bridge-Token"})
+check("it is the documented name", set(headers.values()), {"X-Arges-Bridge-Token"})
+
+# The rename survives any upgrade order only because everyone still knows the
+# old name: clients send both headers, servers accept either. The pieces are
+# upgraded by different commands — the add-in by `arges install`, the MCP server
+# with the package, the Rhino half by unzipping — so there is no order to
+# assume. Letting this rot away one file at a time reintroduces a 401 that
+# reads as a bad token and sends you looking at the wrong thing entirely.
+# Removing it is a deliberate later step, once no pre-rename install can remain.
+check("every component still knows the pre-rename name",
+      len(legacy_headers), len(ALL_SPEAKERS))
+check("and agrees on what it was", set(legacy_headers.values()),
+      {"X-Fusion-Bridge-Token"})
 
 
 # ------------------------------------------------------------- token path --
 # One half writing the token where the other never reads it fails as "invalid
 # token", which sends you looking at the token rather than at the path.
 print("Where the token lives")
-dirs = set()
-for rel in ALL_SPEAKERS:
-    text = read(rel)
-    if ".fusion-mcp" in text:
-        dirs.add(".fusion-mcp")
-    other = re.findall(r'["\']\.([a-z0-9-]+)["\']\s*,\s*["\']token["\']', text)
-    dirs.update("." + o for o in other)
-check("everyone agrees on the directory", dirs, {".fusion-mcp"})
+state_dirs = {rel: declared(rel, "STATE_DIR_NAME") for rel in ALL_SPEAKERS}
+state_dirs = {rel: value for rel, value in state_dirs.items() if value}
+legacy_dirs = {rel: declared(rel, "LEGACY_STATE_DIR_NAME") for rel in ALL_SPEAKERS}
+legacy_dirs = {rel: value for rel, value in legacy_dirs.items() if value}
+
+check("every component declares one", len(state_dirs), len(ALL_SPEAKERS))
+check("everyone agrees on the directory", set(state_dirs.values()), {".arges"})
+
+# Same reasoning as the header: every reader falls back to the pre-rename
+# directory when it is the only one present, so a machine that has updated one
+# half and not the other still finds its token. Only `arges install` migrates.
+check("every component still knows the pre-rename one",
+      len(legacy_dirs), len(ALL_SPEAKERS))
+check("and agrees on what it was", set(legacy_dirs.values()), {".fusion-mcp"})
 
 # The file is named either as its own path segment or inside a joined path,
 # so match the name rather than one spelling of it.
@@ -97,11 +133,35 @@ for rel in [BROKER, RHINO_MCP, RHINO_POLLER, RHINO_CHAT]:
 print("Ports")
 
 
+def assignment(text, name):
+    """The right-hand side of `name = ...`, however many lines it spans.
+
+    Bracket-counted rather than line-based. These defaults sit behind two
+    chained environment lookups now and wrap across lines, which a regex over a
+    single line silently stops matching — reporting "no port declared" for a
+    file that declares one perfectly well.
+    """
+    found = re.search(r"^" + name + r"\s*=\s*", text, re.M)
+    if not found:
+        return ""
+    depth, out = 0, []
+    for char in text[found.end():]:
+        if char == "\n" and depth == 0:
+            break
+        depth += char in "([{"
+        depth -= char in ")]}"
+        out.append(char)
+    return "".join(out)
+
+
 def port_of(rel, name):
-    found = re.search(name + r'\s*=\s*(?:int\([^)]*\)\s*or\s*)?(\d{4})', read(rel))
-    if found:
-        return int(found.group(1))
-    found = re.search(r'127\.0\.0\.1:(\d{4})', read(rel))
+    text = read(rel)
+    # The last literal in the expression is the default: the env lookups in
+    # front of it carry no number of their own.
+    numbers = re.findall(r"\b(\d{4})\b", assignment(text, name))
+    if numbers:
+        return int(numbers[-1])
+    found = re.search(r'127\.0\.0\.1:(\d{4})', text)
     return int(found.group(1)) if found else None
 
 
@@ -499,10 +559,18 @@ truthy("the chat agent spawns an installed script",
 # The sweep: any arges-ish token in the installer or the user-facing docs must
 # be an installed script. Module and folder names use underscores or capitals
 # (arges_mcp, Arges) and are excluded by construction.
+# Directory names are arges-ish too and are not commands. Read from the module
+# that declares them rather than listed here, so renaming one cannot leave a
+# stale exemption behind that quietly swallows a real broken binary name.
+NOT_BINARIES = set(re.findall(
+    r'^(?:EXPORT_DIR_NAME|LEGACY_EXPORT_DIR_NAME)\s*=\s*"([^"]+)"',
+    read("server/src/arges_mcp/bootstrap.py"), re.M))
+truthy("the export directory names are discoverable", NOT_BINARIES)
+
 for rel in ["scripts/install.sh", "README.md", "server/README.md"]:
     tokens = {t for t in re.findall(r"\barges[a-z0-9-]*\b", read(rel))
               if "_" not in t}
-    unknown = sorted(tokens - SCRIPTS)
+    unknown = sorted(tokens - SCRIPTS - NOT_BINARIES)
     check(f"{rel} names only installed binaries", unknown, [])
 
 print()

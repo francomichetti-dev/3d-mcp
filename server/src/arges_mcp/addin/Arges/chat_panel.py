@@ -23,7 +23,8 @@ CMD_ID = "FusionChatShow"
 CMD_NAME = "Fusion Chat"
 CMD_TOOLTIP = "Model by prompting — opens the Fusion Chat panel"
 
-SERVICE_URL = "http://127.0.0.1:%d/" % int(os.environ.get("FUSION_CHAT_PORT") or 7655)
+SERVICE_URL = "http://127.0.0.1:%d/" % int(
+    os.environ.get("ARGES_CHAT_PORT") or os.environ.get("FUSION_CHAT_PORT") or 7655)
 HEALTH_URL = SERVICE_URL + "health"
 
 # Populated by install(); torn down by uninstall().
@@ -105,7 +106,11 @@ def _start_service(repo_dir):
     env = {k: v for k, v in os.environ.items() if not k.startswith("PYTHON")}
     env["PATH"] = _EXTRA_PATH + ":" + env.get("PATH", "")
 
-    log_path = os.path.join(os.path.expanduser("~/.fusion-mcp"), "agent.log")
+    home = os.path.expanduser("~")
+    state = os.path.join(home, ".arges")
+    if not os.path.isdir(state) and os.path.isdir(os.path.join(home, ".fusion-mcp")):
+        state = os.path.join(home, ".fusion-mcp")   # pre-rename install
+    log_path = os.path.join(state, "agent.log")
     try:
         handle = open(log_path, "ab")
     except OSError:

@@ -25,7 +25,7 @@ screenshot, and no amount of protocol testing substitutes for it.
 
 ```sh
 # 1. broker on a test port
-cd server && FUSION_BROKER_PORT=7699 uv run --frozen --no-sync python -c "
+cd server && ARGES_BROKER_PORT=7699 uv run --frozen --no-sync python -c "
 import sys, time, pathlib; sys.path.insert(0, 'src')
 from arges_mcp import broker
 broker.TOKEN_PATH = pathlib.Path('<token file>')

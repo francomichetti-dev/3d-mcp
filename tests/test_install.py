@@ -126,9 +126,9 @@ for required in ("Arges.py", "Arges.manifest", "arges_impl.py"):
 
 with tempfile.TemporaryDirectory() as tmp:
     tmp = Path(tmp)
-    original_dir, original_token = bootstrap.FUSION_DIR, bootstrap.TOKEN_PATH
-    bootstrap.FUSION_DIR = tmp / "state"
-    bootstrap.TOKEN_PATH = bootstrap.FUSION_DIR / "token"
+    original_dir, original_token = bootstrap.STATE_DIR, bootstrap.TOKEN_PATH
+    bootstrap.STATE_DIR = tmp / "state"
+    bootstrap.TOKEN_PATH = bootstrap.STATE_DIR / "token"
     try:
         path, created = bootstrap.ensure_token()
         truthy("creates a token", created)
@@ -137,7 +137,7 @@ with tempfile.TemporaryDirectory() as tmp:
         truthy("token is hex", all(c in "0123456789abcdef" for c in token))
         check("token file is 0600", oct(stat.S_IMODE(os.stat(path).st_mode)), "0o600")
         check("state dir is 0700",
-              oct(stat.S_IMODE(os.stat(bootstrap.FUSION_DIR).st_mode)), "0o700")
+              oct(stat.S_IMODE(os.stat(bootstrap.STATE_DIR).st_mode)), "0o700")
 
         path, created = bootstrap.ensure_token()
         check("an existing token is kept", created, False)
@@ -148,7 +148,63 @@ with tempfile.TemporaryDirectory() as tmp:
         check("rotated token still 0600",
               oct(stat.S_IMODE(os.stat(path).st_mode)), "0o600")
     finally:
-        bootstrap.FUSION_DIR, bootstrap.TOKEN_PATH = original_dir, original_token
+        bootstrap.STATE_DIR, bootstrap.TOKEN_PATH = original_dir, original_token
+
+
+# ------------------------------------------------- the ~/.arges migration ---
+# The state directory was ~/.fusion-mcp before the rename. Everything that
+# reads it falls back to the old name; exactly one thing moves it, and that is
+# `arges install`. What is asserted here is mostly what it must NOT do.
+print("Migrating the pre-rename state directory")
+
+with tempfile.TemporaryDirectory() as tmp:
+    home = Path(tmp)
+    saved = (bootstrap.STATE_DIR, bootstrap.LEGACY_STATE_DIR, bootstrap.TOKEN_PATH)
+    try:
+        bootstrap.STATE_DIR = home / ".arges"
+        bootstrap.LEGACY_STATE_DIR = home / ".fusion-mcp"
+        bootstrap.TOKEN_PATH = bootstrap.STATE_DIR / "token"
+
+        check("nothing to migrate is not an error", bootstrap.migrate_state_dir(), False)
+
+        bootstrap.LEGACY_STATE_DIR.mkdir(mode=0o700)
+        (bootstrap.LEGACY_STATE_DIR / "token").write_text("deadbeef\n")
+        (bootstrap.LEGACY_STATE_DIR / "chats.json").write_text("{}")
+
+        truthy("an old directory alone is moved", bootstrap.migrate_state_dir())
+        truthy("the old name is gone", not bootstrap.LEGACY_STATE_DIR.exists())
+        check("the token came with it",
+              (bootstrap.STATE_DIR / "token").read_text().strip(), "deadbeef")
+        truthy("and so did the saved chats",
+               (bootstrap.STATE_DIR / "chats.json").is_file())
+        check("running it again does nothing", bootstrap.migrate_state_dir(), False)
+
+        # Two directories is untidy; choosing between them is destructive, since
+        # whichever loses holds a token something is still authenticating with.
+        bootstrap.LEGACY_STATE_DIR.mkdir(mode=0o700)
+        (bootstrap.LEGACY_STATE_DIR / "token").write_text("a different one\n")
+        check("with both present it refuses", bootstrap.migrate_state_dir(), False)
+        truthy("and leaves both alone",
+               bootstrap.STATE_DIR.is_dir() and bootstrap.LEGACY_STATE_DIR.is_dir())
+    finally:
+        bootstrap.STATE_DIR, bootstrap.LEGACY_STATE_DIR, bootstrap.TOKEN_PATH = saved
+
+# The one that matters. Redirecting STATE_DIR alone - which is exactly what the
+# token test above does - used to leave LEGACY_STATE_DIR pointing at the real
+# home, so the migration would move the operator's live ~/.fusion-mcp into a
+# temp directory and delete it on cleanup: token, saved chats, attachments and
+# all. The sibling check is what stops it, and this is what stops the sibling
+# check being removed as redundant.
+with tempfile.TemporaryDirectory() as tmp:
+    saved = bootstrap.STATE_DIR
+    try:
+        bootstrap.STATE_DIR = Path(tmp) / "state"
+        check("it refuses to move a directory from somewhere else entirely",
+              bootstrap.migrate_state_dir(), False)
+        truthy("so a redirected STATE_DIR cannot eat the real one",
+               bootstrap.LEGACY_STATE_DIR.parent != bootstrap.STATE_DIR.parent)
+    finally:
+        bootstrap.STATE_DIR = saved
 
 # install_addin() refuses to run anywhere but macOS, because it knows only
 # where Fusion keeps add-ins there. That guard fires before anything else, so
@@ -274,7 +330,7 @@ if _guard:
     sandbox = _tf.mkdtemp(prefix="uninstall-guard-")
     try:
         # The ordinary case: a real config dir inside HOME goes.
-        target = os.path.join(sandbox, ".fusion-mcp")
+        target = os.path.join(sandbox, ".arges")
         os.makedirs(target)
         open(os.path.join(target, "token"), "w").close()
         check("a config dir inside HOME is deleted", purge(target, sandbox), (0, False))

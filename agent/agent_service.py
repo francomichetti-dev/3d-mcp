@@ -60,22 +60,43 @@ REPO = Path(__file__).resolve().parent.parent
 SERVER_DIR = REPO / "server"
 
 BIND_HOST = "127.0.0.1"
-BIND_PORT = int(os.environ.get("FUSION_CHAT_PORT") or 7655)
+BIND_PORT = int(os.environ.get("ARGES_CHAT_PORT")
+                or os.environ.get("FUSION_CHAT_PORT") or 7655)
 
 BRIDGE_URL = "http://127.0.0.1:7654"
-TOKEN_PATH = Path("~/.fusion-mcp/token").expanduser()
+
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# Sent alongside the current one, same value: the add-in on the other end is
+# only replaced when someone re-runs `arges install`, so it may still be a
+# pre-rename build. See server.py for the full reasoning.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
+
+STATE_DIR_NAME = ".arges"
+# Pre-rename directory, still read when it is the only one present.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir() -> Path:
+    home = Path("~").expanduser()
+    if not (home / STATE_DIR_NAME).is_dir() and (home / LEGACY_STATE_DIR_NAME).is_dir():
+        return home / LEGACY_STATE_DIR_NAME
+    return home / STATE_DIR_NAME
+
+
+STATE_DIR = _state_dir()
+TOKEN_PATH = STATE_DIR / "token"
 
 STATIC = Path(__file__).resolve().parent / "static"
 
 # One chat per design, persisted so reopening a design tomorrow reopens its
 # conversation. Only a pointer to the SDK's own session plus what the panel
 # needs to redraw — the model's real context lives in the SDK session store.
-CHATS_PATH = Path("~/.fusion-mcp/chats.json").expanduser()
+CHATS_PATH = STATE_DIR / "chats.json"
 
 # Attached images are kept on disk, not in chats.json: the transcript stores a
 # reference so the panel can redraw a conversation, while the bytes themselves
 # stay out of a file that is read and rewritten constantly.
-ATTACH_DIR = Path("~/.fusion-mcp/attachments").expanduser()
+ATTACH_DIR = STATE_DIR / "attachments"
 ALLOWED_IMAGE_TYPES = {
     "image/png": ".png",
     "image/jpeg": ".jpg",
@@ -1055,7 +1076,7 @@ class Registry:
         try:
             reply = await self.http.request(
                 method, f"{BRIDGE_URL}{path}",
-                headers={"X-Fusion-Bridge-Token": token}, **kw)
+                headers={AUTH_HEADER: token, LEGACY_AUTH_HEADER: token}, **kw)
         except httpx.HTTPError:
             return None
         if reply.status_code != 200:
@@ -1601,7 +1622,7 @@ async def handle_viewport(request: web.Request) -> web.Response:
         async with httpx.AsyncClient(trust_env=False, timeout=30.0) as client:
             reply = await client.post(
                 f"{BRIDGE_URL}/screenshot",
-                headers={"X-Fusion-Bridge-Token": token},
+                headers={AUTH_HEADER: token, LEGACY_AUTH_HEADER: token},
                 json={"view": view, "width": 900, "height": 620},
             )
     except httpx.HTTPError as exc:

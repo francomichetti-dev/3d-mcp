@@ -1,11 +1,11 @@
-"""fusion-mcp — MCP server (stdio) bridging Claude Code to the Arges add-in.
+"""arges — MCP server (stdio) bridging Claude Code to the Arges add-in.
 
 Transport: MCP over stdio. Everything this process talks to is on loopback:
 POST/GET against http://127.0.0.1:7654 with a shared token, nothing else.
 
 STDIO DISCIPLINE: stdout belongs to the JSON-RPC framing. Nothing in this file
 may write to it — no print(), no banner. All diagnostics go to stderr and to
-~/.fusion-mcp/server.log.
+~/.arges/server.log.
 
 HTTP client choice: httpx. It is already in the dependency closure (fastmcp
 ships a client built on it), it lets us split connect and read timeouts, and its
@@ -41,7 +41,15 @@ BRIDGE_PROTOCOL_VERSION = "1"
 BRIDGE_HOST = "127.0.0.1"
 BRIDGE_PORT = 7654
 BRIDGE_BASE_URL = f"http://{BRIDGE_HOST}:{BRIDGE_PORT}"
-AUTH_HEADER = "X-Fusion-Bridge-Token"
+AUTH_HEADER = "X-Arges-Bridge-Token"
+# Sent alongside the current one, same value, for as long as a pre-rename
+# add-in might be installed. Clients send both and servers accept either, which
+# is what makes the rename safe in any upgrade order: the add-in is copied into
+# Fusion's folder by `arges install` and this package upgrades independently, so
+# there is no order we get to assume. Sending one header and guessing wrong
+# fails as "invalid token" — the message that sends you looking at the token
+# rather than at the header. Drop this once no old add-in can still be out there.
+LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 VERSION_HEADER = "X-Bridge-Version"
 
 # 75 s: longer than the add-in's 60 s marshal wait and its 70 s socket timeout,
@@ -50,10 +58,30 @@ VERSION_HEADER = "X-Bridge-Version"
 HTTP_READ_TIMEOUT = 75.0
 HTTP_CONNECT_TIMEOUT = 10.0
 
-FUSION_DIR = Path("~/.fusion-mcp").expanduser()
-TOKEN_PATH = FUSION_DIR / "token"
-SERVER_LOG = FUSION_DIR / "server.log"
-EXPORT_DIR = Path("~/Documents/fusion-mcp-exports").expanduser()
+STATE_DIR_NAME = ".arges"
+# What installs made before the rename from fusion-mcp. Nothing here ever moves
+# a directory: the Rhino half ships as a zip and updates on its own schedule, so
+# the two halves of a live install are routinely different versions. A reader
+# that insisted on the new name would turn that ordinary state into "invalid
+# token", which sends you looking at the token rather than at the path.
+# `arges install` is the one place that migrates — see bootstrap.py.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+EXPORT_DIR_NAME = "arges-exports"
+LEGACY_EXPORT_DIR_NAME = "fusion-mcp-exports"
+
+
+def _preferred(parent: Path, current: str, legacy: str) -> Path:
+    """`parent/current`, unless only the pre-rename name is there."""
+    if not (parent / current).is_dir() and (parent / legacy).is_dir():
+        return parent / legacy
+    return parent / current
+
+
+STATE_DIR = _preferred(Path("~").expanduser(), STATE_DIR_NAME, LEGACY_STATE_DIR_NAME)
+TOKEN_PATH = STATE_DIR / "token"
+SERVER_LOG = STATE_DIR / "server.log"
+EXPORT_DIR = _preferred(Path("~/Documents").expanduser(),
+                        EXPORT_DIR_NAME, LEGACY_EXPORT_DIR_NAME)
 
 SCREENSHOT_MAX_WIDTH = 1920
 SCREENSHOT_MAX_HEIGHT = 1440
@@ -97,7 +125,7 @@ MSG_BAD_TOKEN = (
     f"Bridge rejected the token (401). The add-in re-reads {TOKEN_PATH} on every "
     "request, so restarting it changes nothing: either that file is unreadable "
     "from Fusion's process, or this server is holding an older cached value. "
-    "Check ~/.fusion-mcp/addin.log, then re-run 'arges install "
+    "Check ~/.arges/addin.log, then re-run 'arges install "
     "--rotate-token' (or scripts/install.sh --rotate-token) and retry."
 )
 MSG_TOO_LARGE = (
@@ -110,7 +138,7 @@ MSG_NOT_BRIDGE = (
     f"{BRIDGE_PORT}. Free the port and restart the add-in."
 )
 
-log = logging.getLogger("fusion-mcp")
+log = logging.getLogger("arges")
 log.addHandler(logging.NullHandler())
 
 mcp = FastMCP(
@@ -277,7 +305,9 @@ def _bridge_request(
             )
             raise ToolError(MSG_TOO_LARGE)
 
-    headers = {AUTH_HEADER: _read_token(), "Accept": "application/json"}
+    token = _read_token()
+    headers = {AUTH_HEADER: token, LEGACY_AUTH_HEADER: token,
+               "Accept": "application/json"}
     client = _get_client()
     started = time.monotonic()
     try:
@@ -764,7 +794,7 @@ def fusion_export(
       - A name that matches more than one thing returns an error listing the
         candidates — retry with an exact occurrence name.
 
-    Where it goes: `path` is optional and confined to ~/Documents/fusion-mcp-exports/
+    Where it goes: `path` is optional and confined to ~/Documents/arges-exports/
     (relative paths resolve inside it). Leave it empty for a timestamped
     filename. The extension is added to match the format.
 
@@ -833,11 +863,11 @@ class _SecureRotatingFileHandler(RotatingFileHandler):
 
 
 def _configure_logging() -> None:
-    """Log to stderr always, and to ~/.fusion-mcp/server.log when possible.
+    """Log to stderr always, and to ~/.arges/server.log when possible.
 
     Never to stdout: that stream carries the JSON-RPC framing.
     """
-    level = logging.DEBUG if os.environ.get("FUSION_MCP_DEBUG") else logging.INFO
+    level = logging.DEBUG if os.environ.get("ARGES_MCP_DEBUG") or os.environ.get("FUSION_MCP_DEBUG") else logging.INFO
     log.setLevel(level)
     formatter = logging.Formatter(
         "%(asctime)s %(levelname)s %(name)s %(message)s", "%Y-%m-%d %H:%M:%S"
@@ -848,10 +878,10 @@ def _configure_logging() -> None:
     log.addHandler(stderr_handler)
 
     try:
-        FUSION_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+        STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
         # mkdir(mode=...) is a no-op on a directory that already exists, so
         # repair the mode unconditionally.
-        os.chmod(FUSION_DIR, 0o700)
+        os.chmod(STATE_DIR, 0o700)
         file_handler = _SecureRotatingFileHandler(
             SERVER_LOG, maxBytes=LOG_MAX_BYTES, backupCount=2, encoding="utf-8"
         )
@@ -867,7 +897,7 @@ def main() -> None:
         EXPORT_DIR.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
         log.warning("could not create export directory %s: %s", EXPORT_DIR, exc)
-    log.info("fusion-mcp server starting (bridge protocol v%s)", BRIDGE_PROTOCOL_VERSION)
+    log.info("arges server starting (bridge protocol v%s)", BRIDGE_PROTOCOL_VERSION)
     # show_banner=False keeps startup chatter out of the transport entirely.
     mcp.run(transport="stdio", show_banner=False)
 

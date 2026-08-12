@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
 #
-# fusion-mcp uninstaller.
+# arges uninstaller.
 #
-#   scripts/uninstall.sh           remove add-in link + MCP registration, ask about ~/.fusion-mcp
-#   scripts/uninstall.sh --purge   also delete ~/.fusion-mcp without asking
+#   scripts/uninstall.sh           remove add-in link + MCP registration, ask about ~/.arges
+#   scripts/uninstall.sh --purge   also delete ~/.arges without asking
 #
-# Exported models in ~/Documents/fusion-mcp-exports/ are never touched.
+# Exported models in ~/Documents/arges-exports/ are never touched.
 #
 set -euo pipefail
 
 # set -u catches an unset HOME but not an empty one — and an empty HOME would
-# collapse every path below to the filesystem root (rm -rf /.fusion-mcp, and an
+# collapse every path below to the filesystem root (rm -rf /.arges, and an
 # ADDIN_LINK under /Library outside this user's account).
 : "${HOME:?HOME must be set to a non-empty path}"
 [ -d "${HOME}" ] || { printf 'ERROR: HOME (%s) is not a directory\n' "${HOME}" >&2; exit 1; }
@@ -24,8 +24,17 @@ ADDIN_LINK="${ADDINS_DIR}/Arges"
 
 SKILL_LINK="${HOME}/.claude/skills/fusion-360"
 
-CONFIG_DIR="${HOME}/.fusion-mcp"
-EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
+# ~/.arges, or the pre-rename ~/.fusion-mcp when that is the only one there.
+# A half-updated machine (the Rhino half ships as its own zip) must keep
+# working; `arges install` is the only thing that migrates.
+CONFIG_DIR="${HOME}/.arges"
+if [[ ! -d "${CONFIG_DIR}" && -d "${HOME}/.fusion-mcp" ]]; then
+  CONFIG_DIR="${HOME}/.fusion-mcp"
+fi
+EXPORTS_DIR="${HOME}/Documents/arges-exports"
+if [[ ! -d "${EXPORTS_DIR}" && -d "${HOME}/Documents/fusion-mcp-exports" ]]; then
+  EXPORTS_DIR="${HOME}/Documents/fusion-mcp-exports"
+fi
 
 MCP_NAME="fusion"
 
@@ -38,7 +47,7 @@ usage() {
     cat <<'EOF'
 Usage: uninstall.sh [--purge]
 
-  --purge      Delete ~/.fusion-mcp (token + logs) without prompting.
+  --purge      Delete ~/.arges (token + logs) without prompting.
   -h, --help   Show this help.
 EOF
 }

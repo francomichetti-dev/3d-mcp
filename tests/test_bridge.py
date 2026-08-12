@@ -54,8 +54,8 @@ def free_port():
 
 # ---------------------------------------------------------------- load ----
 PORT = free_port()
-os.environ["FUSION_BRIDGE_PORT"] = str(PORT)
-os.environ["FUSION_BRIDGE_STATE_DIR"] = str(STATE)
+os.environ["ARGES_BRIDGE_PORT"] = str(PORT)
+os.environ["ARGES_BRIDGE_STATE_DIR"] = str(STATE)
 STATE.mkdir(parents=True, exist_ok=True)
 (STATE / "token").write_text(TOKEN, encoding="utf-8")
 os.chmod(STATE / "token", 0o600)
@@ -68,7 +68,8 @@ spec.loader.exec_module(impl)
 print(f"loaded the real add-in from {IMPL.relative_to(REPO)}")
 check("state dir redirected", impl.STATE_DIR, str(STATE))
 check("port redirected", impl.BIND_PORT, PORT)
-truthy("never touches the real ~/.fusion-mcp", "/.fusion-mcp" not in str(STATE))
+truthy("never touches a real state directory",
+       "/.fusion-mcp" not in str(STATE) and "/.arges" not in str(STATE))
 
 
 # -------------------------------------------------------- fake Fusion ----
@@ -202,11 +203,11 @@ impl.adsk.core.Application._set(APP)
 
 # ------------------------------------------------------------- client ----
 def request(method, path, body=None, token=TOKEN, host=None, headers=None,
-            timeout=10):
+            timeout=10, auth_header="X-Arges-Bridge-Token"):
     conn = http.client.HTTPConnection("127.0.0.1", PORT, timeout=timeout)
     head = dict(headers or {})
     if token is not None:
-        head["X-Fusion-Bridge-Token"] = token
+        head[auth_header] = token
     head["Host"] = host or f"127.0.0.1:{PORT}"
     payload = None
     if body is not None:
@@ -243,6 +244,16 @@ try:
     # A prefix of the real token must not pass: compare_digest, not startswith
     check("token prefix -> 401", request("GET", "/health", token=TOKEN[:32])[0], 401)
     check("token + suffix -> 401", request("GET", "/health", token=TOKEN + "x")[0], 401)
+
+    # The rename's compatibility layer. The add-in is only replaced when someone
+    # re-runs `arges install`, while the MCP server updates with the package, so
+    # an installed add-in is routinely older than the server talking to it. Both
+    # header names have to work until that can no longer be true.
+    check("the pre-rename header still authenticates",
+          request("GET", "/health", auth_header="X-Fusion-Bridge-Token")[0], 200)
+    check("and a bad token in it is still refused",
+          request("GET", "/health", token="b" * 64,
+                  auth_header="X-Fusion-Bridge-Token")[0], 401)
 
     print("Host pinning (DNS rebinding)")
     check("evil host -> 403", request("GET", "/health", host="evil.example")[0], 403)

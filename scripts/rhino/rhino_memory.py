@@ -10,7 +10,7 @@ same piece of work at different points, not different projects, so they must
 share a thread. `project_key` strips those suffixes; `version_label` keeps what
 was stripped, so Claude can still say "you were on v2, this is v3".
 
-    ~/.fusion-mcp/memory/
+    ~/.arges/memory/
         index.json          every project seen: key, title, path, last opened
         <key>/session       the Claude Code session id for this project
         <key>/notes.md      what the person is doing — injected every turn
@@ -29,7 +29,24 @@ import time
 import uuid
 
 HOME = os.path.expanduser("~")
-CONFIG_DIR = os.path.join(HOME, ".fusion-mcp")
+
+STATE_DIR_NAME = ".arges"
+# Pre-rename directory. Preferred order is new-then-old and nothing here moves
+# anything: the Rhino half ships as a zip and updates on its own schedule, so a
+# machine routinely runs one half newer than the other. Only `arges install`
+# migrates. See server/src/arges_mcp/server.py.
+LEGACY_STATE_DIR_NAME = ".fusion-mcp"
+
+
+def _state_dir():
+    current = os.path.join(HOME, STATE_DIR_NAME)
+    legacy = os.path.join(HOME, LEGACY_STATE_DIR_NAME)
+    if not os.path.isdir(current) and os.path.isdir(legacy):
+        return legacy
+    return current
+
+
+CONFIG_DIR = _state_dir()
 MEMORY_DIR = os.path.join(CONFIG_DIR, "memory")
 INDEX_PATH = os.path.join(MEMORY_DIR, "index.json")
 
