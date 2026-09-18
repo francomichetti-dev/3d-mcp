@@ -52,6 +52,8 @@ RHINO_POLLER = "scripts/rhino/rhino-poller.py"
 RHINO_CHAT = "scripts/rhino/rhino-chat.py"
 
 AGENT_SERVICE = "agent/agent_service.py"
+FUSION_COMMON = "server/src/arges_mcp/common.py"
+ORB_ENGINE = "agent/static/thinking-orb-engine.js"
 
 # The chat service belongs here: it POSTs to the add-in with the same token and
 # the same header as everyone else. It was missing only because it used to spell
@@ -572,6 +574,82 @@ for rel in ["scripts/install.sh", "README.md", "server/README.md"]:
               if "_" not in t}
     unknown = sorted(tokens - SCRIPTS - NOT_BINARIES)
     check(f"{rel} names only installed binaries", unknown, [])
+
+# ------------------------------------------------ one copy of the export code --
+# The MCP server and the chat service both write Fusion files now — the server
+# for the model's tool calls, the service for the panel's Save and Download
+# buttons — and they are separate processes with separate virtual environments.
+# The Fusion-side code is shared through common.py rather than copied, which
+# holds only as long as two things stay true.
+print("The shared export code")
+
+common_text = read(FUSION_COMMON)
+truthy("there is a shared module at all", len(common_text) > 500)
+
+# 1. It must import nothing but the standard library. The chat service's
+#    environment has no fastmcp, so a third-party import here does not fail a
+#    test — it stops the panel from starting, with a traceback about a package
+#    nobody was thinking about.
+STDLIB_OK = {"json", "os", "re", "time", "pathlib", "typing", "dataclasses",
+             "shutil", "tempfile", "hashlib", "datetime", "math"}
+imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z_][\w.]*)", common_text, re.M))
+outside = {name for name in imported if name.split(".")[0] not in STDLIB_OK}
+check("the shared module imports nothing but the standard library", outside, set())
+
+# 2. Neither half may keep its own copy. A second copy would drift, and the
+#    symptom is the panel exporting differently from the model.
+truthy("the Fusion-side export code lives in the shared module",
+       "createSTLExportOptions" in common_text)
+for rel in [FUSION_SERVER, AGENT_SERVICE]:
+    text = read(rel)
+    name = Path(rel).name
+    check(f"{name} keeps no second copy of it",
+          "createSTLExportOptions" in text, False)
+    truthy(f"{name} imports the shared module", "common" in text)
+
+# 3. The format list is shared too, or the panel offers a format the exporter
+#    cannot produce.
+check("the MCP server does not redeclare the formats",
+      bool(re.search(r'^FORMATS\s*=\s*\("', read(FUSION_SERVER), re.M)), False)
+truthy("and the panel asks the service for them",
+       "formats" in read("agent/static/index.html"))
+
+
+# ---------------------------------------------------- the vendored orb engine --
+# The banner's orb animation is somebody else's code, vendored as a file rather
+# than depended on: the panel has no build step and the service makes no
+# outbound calls. Two things have to stay true about that.
+print("The vendored orb engine")
+
+engine = read(ORB_ENGINE)
+truthy("the engine is vendored in the repo", len(engine) > 5000)
+
+# 1. Its licence travels with it. MIT requires the notice be kept, and a
+#    vendored file is exactly where that is easy to lose.
+truthy("it carries the MIT notice", "MIT License" in engine)
+truthy("and names the copyright holder", "Jakub Antalik" in engine)
+truthy("and says where it came from and at what version",
+       "Libraries.dev" in engine and "thinking-orbs 0.3.1" in engine)
+
+# 2. Every orb state the service names must be one the engine implements. This
+#    is the drift the vendoring invites: upstream renames a state, the file is
+#    re-vendored, and the banner quietly falls back to the default forever.
+service = read(AGENT_SERVICE)
+# Only the mapping's own block — a regex over the whole file collects every
+# other dict in it and reports half the module as a missing orb state.
+block = re.search(r"^ORB_STATES: dict\[str, str\] = \{(.*?)^\}", service, re.S | re.M)
+truthy("the orb mapping is where this test expects it", block)
+states = set(re.findall(r':\s*"(\w+)"', block.group(1) if block else ""))
+states |= set(re.findall(r'^ORB_(?:DEFAULT|THINKING) = "(\w+)"', service, re.M))
+truthy("the service names some orb states", len(states) >= 5)
+# The engine is minified, so its states are bare object keys, not quoted
+# strings: match the word rather than a spelling of it.
+missing = sorted(s for s in states
+                 if not re.search(r"\b%s\b" % re.escape(s), engine))
+check("every orb state the service names exists in the engine", missing, [])
+# And the check has to be able to fail, or it is decoration.
+truthy("a state the engine does not have would be caught",
+       not re.search(r"\bhovering\b", engine))
 
 print()
 print(f"{PASS} passed, {FAIL} failed")

@@ -31,6 +31,8 @@ from typing import Any, Literal
 import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
+
+from . import common
 from fastmcp.utilities.types import Image
 
 # --------------------------------------------------------------------------
@@ -83,6 +85,7 @@ SERVER_LOG = STATE_DIR / "server.log"
 EXPORT_DIR = _preferred(Path("~/Documents").expanduser(),
                         EXPORT_DIR_NAME, LEGACY_EXPORT_DIR_NAME)
 
+
 SCREENSHOT_MAX_WIDTH = 1920
 SCREENSHOT_MAX_HEIGHT = 1440
 # Ceiling on one capture's PNG bytes. Base64 inflates this by 4/3, so 512 KB
@@ -101,7 +104,9 @@ LOG_MAX_BYTES = 5 * 1024 * 1024
 MAX_BODY_BYTES = 5 * 1024 * 1024
 
 VIEWS = ("front", "top", "right", "iso", "fit")
-FORMATS = ("stl", "step", "3mf", "usd")
+# Including "f3d", the Fusion archive — see common.py for why saving goes
+# through an export rather than through Fusion's own save.
+FORMATS = common.FORMATS
 
 # --------------------------------------------------------------------------
 # Operator-facing messages (kept in one place so they stay consistent).
@@ -147,7 +152,12 @@ mcp = FastMCP(
         "Drive Autodesk Fusion 360 running on this Mac. fusion_execute runs "
         "Python inside the live Fusion session, fusion_screenshot shows you the "
         "viewport, fusion_state reports what is open, fusion_export writes "
-        "print-ready files. Check fusion_state before assuming anything about "
+        "print-ready files into the exports folder, and fusion_download writes "
+        "one into the person's own save folder when they want the file in hand. "
+        "The design saves itself to that folder after every successful "
+        "fusion_execute, so never save by hand and never ask whether to save; "
+        "fusion_save is only for an explicit \"save it now\". "
+        "Check fusion_state before assuming anything about "
         "the document, and verify every geometry change visually: "
         "fusion_execute(screenshot=\"iso\") returns the picture together with "
         "the result in one call; fusion_screenshot is the standalone look."
@@ -365,9 +375,7 @@ def _execute(
 # --------------------------------------------------------------------------
 
 
-def _snippet(body: str, params: dict[str, Any]) -> str:
-    literal = json.dumps(json.dumps(params, ensure_ascii=True))
-    return f"import json as _fx_json\n_fx_params = _fx_json.loads({literal})\n{body}"
+_snippet = common.snippet
 
 
 def _run_snippet(body: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -383,104 +391,9 @@ def _run_snippet(body: str, params: dict[str, Any]) -> dict[str, Any]:
     return payload
 
 
-_EXPORT_BODY = '''
-def _fx_export(_p):
-    import os
-
-    fmt = _p["format"]
-    name = _p["name"]
-    out_path = _p["path"]
-
-    des = adsk.fusion.Design.cast(app.activeProduct)
-    if des is None:
-        return {"ok": False, "error": "no active Fusion design — open or create one and switch to the Design workspace"}
-
-    root = des.rootComponent
-
-    if not name:
-        geom = root
-        target = "whole design (root component)"
-    else:
-        bodies = []
-        components = []
-        occurrences = []
-        for comp in des.allComponents:
-            if comp.name == name:
-                components.append((comp, "component '" + comp.name + "'"))
-            for body in comp.bRepBodies:
-                if body.name == name:
-                    bodies.append((body, "body '" + body.name + "' in component '" + comp.name + "'"))
-        for occ in root.allOccurrences:
-            if occ.name == name:
-                occurrences.append((occ, "occurrence '" + occ.name + "'"))
-
-        if fmt in ("stl", "3mf"):
-            pool = bodies + occurrences + components
-        else:
-            pool = occurrences + components
-            if not pool and bodies:
-                return {
-                    "ok": False,
-                    "error": fmt.upper() + " export is component-only; '" + name + "' is a body. Export the component or occurrence containing it, or use stl/3mf to export a single body.",
-                    "candidates": [entry[1] for entry in bodies],
-                }
-        if not pool:
-            return {"ok": False, "error": "nothing named '" + name + "' in this design — call fusion_state to see what exists"}
-        if len(pool) > 1:
-            return {
-                "ok": False,
-                "error": "'" + name + "' is ambiguous — pass an exact occurrence name such as 'Housing:1', or rename to something unique",
-                "candidates": [entry[1] for entry in pool],
-            }
-        geom, target = pool[0]
-
-    em = des.exportManager
-    if fmt == "stl":
-        opts = em.createSTLExportOptions(geom, out_path)
-    elif fmt == "3mf":
-        opts = em.createC3MFExportOptions(geom, out_path)
-    elif fmt == "step":
-        opts = em.createSTEPExportOptions(out_path, geom)
-    else:
-        # createUSDExportOptions has taken its arguments in both orders across
-        # Fusion releases; try one, fall back to the other rather than pinning
-        # to a signature that a Fusion update can invalidate.
-        try:
-            opts = em.createUSDExportOptions(out_path, geom)
-        except (TypeError, RuntimeError):
-            opts = em.createUSDExportOptions(geom, out_path)
-
-    try:
-        opts.meshRefinement = adsk.fusion.MeshRefinementSettings.MeshRefinementHigh
-    except (AttributeError, RuntimeError):
-        pass
-    try:
-        opts.filename = out_path
-    except (AttributeError, RuntimeError):
-        pass
-
-    if not em.execute(opts):
-        return {"ok": False, "error": "exportManager.execute() returned False for the " + fmt + " export of " + target}
-
-    # Fusion may append its own extension rather than honouring the filename it
-    # was given: a USD export to "part.usd" is actually written as
-    # "part.usd.usdz" (a zip holding a .usdc). Checking only the requested path
-    # would report a false failure for an export that succeeded.
-    written = out_path
-    if not os.path.exists(written):
-        for suffix in (".usdz", ".usd", ".usdc", ".stl", ".step", ".stp", ".3mf"):
-            if os.path.exists(out_path + suffix):
-                written = out_path + suffix
-                break
-
-    size = os.path.getsize(written) if os.path.exists(written) else 0
-    if size == 0:
-        return {"ok": False, "error": "export reported success but no file was written to " + out_path}
-    return {"ok": True, "format": fmt, "path": written, "bytes": size, "target": target}
+_EXPORT_BODY = common.EXPORT_BODY
 
 
-result = _fx_export(_fx_params)
-'''
 
 
 _STATE_BODY = '''
@@ -553,13 +466,10 @@ result = _fx_state(_fx_params)
 # Export path handling.
 # --------------------------------------------------------------------------
 
-_SLUG_RE = re.compile(r"[^A-Za-z0-9_-]+")
-
-
-def _slug(name: str) -> str:
-    """Turn a component name into a safe filename stem (dots included in the
-    unsafe set, so no generated stem can read as a path component)."""
-    return _SLUG_RE.sub("_", name).strip("_-")[:60]
+# Both live in common.py now, because the chat service needs them too. Aliased
+# rather than renamed at every call site: these names are what the tests and the
+# rest of this file already say.
+_slug = common.slug
 
 
 def _export_root() -> Path:
@@ -598,6 +508,93 @@ def _resolve_export_path(path: str, fmt: str, name: str) -> Path:
     except OSError as exc:
         raise ToolError(f"Cannot create export directory {target.parent}: {exc}") from None
     return target
+
+
+
+
+# --------------------------------------------------------------------------
+# Saving the state.
+#
+# Not through Fusion's own save. An expired subscription puts Fusion in
+# read-only mode, and there Document.save() returns True and saves nothing —
+# verified live on a real document: no new version, the document still dirty,
+# the window title reading "Read Only". A save that silently does nothing is
+# worse than no save, so what "save" means here is a Fusion archive (.f3d)
+# written to a folder you choose: the whole parametric design, in one local
+# file, produced by the export manager, which keeps working when saving does
+# not. Fusion's own ⌘S is untouched and still yours to use.
+# --------------------------------------------------------------------------
+
+
+def _autosave_enabled() -> bool:
+    """Whether to save after every successful change. On unless turned off.
+
+    Read per call rather than captured at import, so the operator's answer does
+    not need a restart to change. Anything unrecognised counts as on: the
+    failure that matters here is losing work, not saving too often.
+    """
+    raw = (os.environ.get("ARGES_AUTOSAVE")
+           or os.environ.get("FUSION_AUTOSAVE") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def _document_name() -> str:
+    """The open document's name, or "" if the bridge cannot say.
+
+    From /health, which answers off Fusion's main thread, so asking costs
+    nothing worth counting. It is asked at all because in this codebase the
+    host resolves every path and the Fusion-side snippet only writes to the one
+    it is handed — which needs the document's name here rather than there.
+    """
+    try:
+        health = _bridge_request("GET", "/health")
+    except Exception:                                     # noqa: BLE001
+        return ""
+    name = health.get("document")
+    return name if isinstance(name, str) else ""
+
+
+def _write_state_file() -> dict[str, Any]:
+    """Write the whole design to the configured folder as one .f3d.
+
+    One file per document, overwritten. This is a mirror of the current state,
+    not a pile of snapshots — Fusion's own version history is the place for
+    those, and a new 3 MB archive per modelling step would fill a disk by
+    lunchtime.
+    """
+    folder = common.save_dir_from()
+    target = common.output_path(folder, "", _document_name() or "design",
+                                common.SAVE_FORMAT, overwrite=True)
+    outcome = _run_snippet(
+        _EXPORT_BODY,
+        {"format": common.SAVE_FORMAT, "name": "", "path": str(target)},
+    )
+    if outcome.get("ok"):
+        outcome["saved"] = True
+    return outcome
+
+
+def _autosave(result: dict[str, Any]) -> None:
+    """Save the state after a successful change. Never raises.
+
+    Here rather than left to the model: "and save it" after every step is the
+    one instruction nobody wants to have to repeat, and a model that forgets
+    loses work without saying so.
+
+    A failed save must not turn a change that worked into a tool error. The
+    geometry is already in the document; an error raised here would read as
+    "the script failed" and push the model into running the same code twice.
+    The outcome rides along under "autosave" instead, exactly as a failed
+    screenshot does.
+    """
+    if not _autosave_enabled():
+        return
+    try:
+        outcome = _write_state_file()
+    except Exception as exc:                              # noqa: BLE001
+        outcome = {"ok": False, "saved": False, "error": (
+            f"the change succeeded, but saving the state failed: {exc}")}
+    result["autosave"] = outcome
 
 
 # --------------------------------------------------------------------------
@@ -648,6 +645,15 @@ def fusion_execute(
     Always check `error` when `traceback` is absent. With screenshot set, that
     same JSON is the first content block and the image is the second.
 
+    SAVING IS AUTOMATIC: after every successful call the design is written to
+    the person's save folder as a Fusion archive, and the result carries
+    "autosave" — {"saved": true, "path": ..., "bytes": ...} — saying where it
+    went. Do NOT call doc.save() yourself and do not ask whether to save; it is
+    done. (Fusion's own save is deliberately not used: on an expired
+    subscription it reports success and saves nothing.) A save that fails leaves
+    "autosave" with an `error` and does NOT make the call fail — your geometry
+    is still there, so never re-run the code because of it.
+
     NO DOCUMENT OPEN: pass allow_no_design=true to run anyway, with `design`
     injected as None, and create one yourself — this is the only way out of that
     state, since the guard would otherwise block the very call that fixes it:
@@ -671,6 +677,11 @@ def fusion_execute(
     )
     log.debug("fusion_execute code: %s", code[:2000])
     result = _execute(code, reset=reset, allow_no_design=allow_no_design)
+    # Before the screenshot, so both return shapes carry the outcome, and so a
+    # slow cloud save cannot leave a window where the picture is newer than the
+    # saved document.
+    if result.get("ok"):
+        _autosave(result)
     if screenshot is None or not result.get("ok"):
         # A failed script wants its traceback read, not photographed; the
         # geometry may be half-changed and the next step is fixing the code.
@@ -776,7 +787,7 @@ def _capture(view: str, width: int, height: int) -> bytes:
 
 @mcp.tool
 def fusion_export(
-    format: Literal["stl", "step", "3mf", "usd"],
+    format: Literal["stl", "step", "3mf", "usd", "f3d"],
     body_or_component: str = "",
     path: str = "",
 ) -> dict[str, Any]:
@@ -791,6 +802,9 @@ def fusion_export(
         the components that contain it. Export the component instead.
       - "usd" is component-only too (it is the interchange format for
         rendering and DCC tools).
+      - "f3d" is the Fusion archive: the whole parametric design in one file,
+        component-level, and the only format that keeps the history. It is what
+        fusion_save writes.
       - A name that matches more than one thing returns an error listing the
         candidates — retry with an exact occurrence name.
 
@@ -811,6 +825,86 @@ def fusion_export(
     return _run_snippet(
         _EXPORT_BODY, {"format": format, "name": name, "path": str(target)}
     )
+
+
+@mcp.tool
+def fusion_download(
+    format: str = "",
+    body_or_component: str = "",
+    filename: str = "",
+) -> dict[str, Any]:
+    """Write a file of the open design into the person's own download folder.
+
+    Use this when they want the file itself — "download the STL", "give me the
+    STEP", "send it to my printer software". It goes to the folder configured in
+    the chat panel (Downloads unless they changed it), so the file lands where
+    they already look for files rather than in a directory they have to be told
+    about. fusion_export is the other one: it keeps a copy in
+    ~/Documents/arges-exports/ instead.
+
+    `format` defaults to whatever they configured (stl unless changed), so
+    leaving it empty does the expected thing. Pass one of stl, step, 3mf, usd,
+    f3d to override for this file only.
+
+    What gets exported:
+      - Leave `body_or_component` empty for the whole design (root component).
+      - stl and 3mf accept a body name, an occurrence name ("Housing:1") or a
+        component name; step, usd and f3d are component-level and refuse a body,
+        naming the components that contain it.
+      - A name matching more than one thing returns an error listing the
+        candidates; retry with an exact occurrence name.
+
+    `filename` is a NAME, not a path: the folder is configuration, not something
+    a caller picks, and the extension is added to match the format. Leave it
+    empty to name the file after the document. Nothing is ever overwritten — a
+    name already in the folder gets -1, -2, … appended.
+
+    Returns {"ok": true, "path", "bytes", "target"} — `path` is the real file on
+    disk, ready to hand to the person — or {"ok": false, "error", "candidates"}.
+    """
+    config = common.load_config()
+    fmt = (format or "").strip().lower() or common.format_from(config)
+    if fmt not in FORMATS:
+        raise ToolError(f"Unknown format {fmt!r} — valid: {', '.join(FORMATS)}.")
+
+    name = body_or_component.strip()
+    try:
+        target = common.output_path(common.save_dir_from(config), filename,
+                                    name or _document_name() or "design", fmt)
+    except (OSError, ValueError) as exc:
+        raise ToolError(str(exc)) from None
+    log.info("fusion_download: format=%s name=%r -> %s", fmt, name, target)
+
+    # The same Fusion-side export the exports folder gets; only the destination
+    # differs. Two copies of the body/occurrence/component lookup would be two
+    # things to keep in step.
+    return _run_snippet(
+        _EXPORT_BODY, {"format": fmt, "name": name, "path": str(target)}
+    )
+
+
+@mcp.tool
+def fusion_save() -> dict[str, Any]:
+    """Save the current state of the design to a file you keep.
+
+    Call it when the person says "save" — and note that it is normally already
+    done: every successful fusion_execute saves automatically, so this is for an
+    explicit ask, or after something the automatic save reported as failed.
+
+    It writes the whole design as a Fusion archive (.f3d) into the configured
+    folder, one file per document, overwritten each time — a mirror of the
+    current state. That is deliberately NOT Fusion's own save: on an expired
+    subscription Fusion goes read-only, where Document.save() reports success
+    and saves nothing, while this keeps working. It does not replace Fusion's
+    cloud version history when that is available.
+
+    Returns {"ok": true, "saved": true, "path", "bytes"} or
+    {"ok": false, "error"}.
+    """
+    try:
+        return _write_state_file()
+    except (OSError, ValueError) as exc:
+        raise ToolError(f"Cannot write the state file: {exc}") from None
 
 
 @mcp.tool

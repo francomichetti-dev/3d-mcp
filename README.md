@@ -5,9 +5,174 @@
 [![Fusion](https://img.shields.io/badge/Fusion%202704%2B-macOS-lightgrey.svg)](#requirements)
 [![Rhino 8](https://img.shields.io/badge/Rhino%208-Windows%20%7C%20macOS-lightgrey.svg)](#requirements)
 
-**Model in CAD by prompting.** MCP servers that let Claude write CAD API Python, run it inside
-a live **Autodesk Fusion** or **Rhino 8** session, *look at the result through viewport
-screenshots*, correct itself, and export print-ready files.
+**Model in CAD by prompting.** Claude writes real CAD API Python, runs it inside your live
+**Autodesk Fusion** or **Rhino 8** session, *looks at the result through viewport screenshots*,
+corrects itself, and hands you print-ready files.
+
+<p align="center">
+  <img src="docs/images/chat-panel-lego-tower.png" alt="The Fusion Chat panel docked on the right of Fusion. The prompt reads 'generate a lego mediaval tower'; Claude's reply plans a studded baseplate, round tower, battlements, arched door and arrow slits, followed by a stream of fusion_execute and fusion_state tool calls. The viewport shows the finished tower on a LEGO baseplate." width="880">
+</p>
+
+<p align="center"><em>Six words in. Every line underneath is real Fusion API Python — nothing here is
+a preset, and the chat is docked inside Fusion, not a separate app.</em></p>
+
+The screenshot loop is the point. A fixed set of "create box / create hole" tools can never cover a
+CAD API, and a model writing CAD code blind gets things subtly wrong — an extrude in the wrong
+direction, a profile that grabbed the wrong region — with no exception raised. Arbitrary API access
+**plus eyes** turns that into a design → look → correct loop.
+
+> [!WARNING]
+> `fusion_execute` runs **arbitrary Python inside your CAD session** with your privileges — not a
+> sandbox, and not trying to be one. The only boundary is that both listeners bind `127.0.0.1` and
+> require a token generated at install. **Never expose either to a network.** Work in a scratch
+> document while you get a feel for it. Read [SECURITY.md](SECURITY.md) before installing.
+
+---
+
+## Install
+
+macOS + Fusion, three steps. (For Rhino, skip to [Rhino 8](#rhino-8) — it installs differently and
+needs no `uv`.)
+
+### 1. Clone and run the installer
+
+```sh
+git clone https://github.com/francomichetti-dev/3d-mcp.git
+cd 3d-mcp
+scripts/install.sh
+```
+
+That is the whole install: the MCP tools, the docked chat panel and the Fusion knowledge skill. It
+is **100% local** — no network calls. Specifically, it
+
+- creates `~/.arges/` (mode 0700) with a random 64-hex-character token (0600),
+- symlinks the add-in into Fusion's AddIns folder, so your edits are live,
+- links the knowledge skill into `~/.claude/skills/`,
+- builds the server and agent virtualenvs with `uv sync`,
+- registers the MCP server with Claude Code at user scope, and writes the `/fusion-chat` command.
+
+Everything is registered with **absolute paths**, so it works from any directory and any project.
+Re-running is safe and preserves your token; `--rotate-token` replaces it. It refuses to run
+anywhere but macOS, naming the platform rather than failing obscurely.
+
+> `install.sh` bakes this checkout's absolute path into the registration. Moving or renaming the
+> directory afterwards breaks it — re-run the script from the new location.
+
+### 2. Enable the add-in, once
+
+Fusion cannot enable an add-in from outside, so once, inside Fusion:
+
+> **Utilities → Add-Ins → select `Arges` → Run**
+> (older builds put this under **Tools**; `Shift+S` works either way)
+
+It auto-starts on every later launch. **If `Arges` isn't in the list, restart Fusion** — it scans
+that folder only at launch.
+
+### 3. Open the chat panel
+
+Either way works, both are idempotent, and each starts the service if it isn't running:
+
+- **In Fusion:** the **Fusion Chat** button under **UTILITIES → ADD-INS**
+- **In any Claude Code session, in any project:** `/fusion-chat`
+
+`/fusion-chat --status` reports what is up; `--stop` closes the panel and stops the service.
+
+### Verify
+
+```sh
+curl -sS -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" http://127.0.0.1:7654/health
+# {"ok": true, "app_version": "...", "bridge_version": "1", "document": "...", "busy": null}
+
+scripts/fusion-chat.sh --status
+```
+
+Set your client's tool timeout above 75 s or it will give up while Fusion is still working — for
+Claude Code, `MCP_TOOL_TIMEOUT` (ms) at `120000` or more in `~/.claude/settings.json`:
+
+```json
+{ "env": { "MCP_TOOL_TIMEOUT": "120000" } }
+```
+
+### Using it without the `claude` CLI
+
+The server imports nothing Claude-specific, so any MCP client works. `install.sh` prints a
+ready-to-paste config with the path already filled in:
+
+```json
+"mcpServers": {
+  "fusion": {
+    "command": "uv",
+    "args": ["run", "--frozen", "--no-sync",
+             "--directory", "/absolute/path/to/3d-mcp/server", "arges-mcp"]
+  }
+}
+```
+
+Claude Desktop keeps that in `~/Library/Application Support/Claude/claude_desktop_config.json`.
+
+Something not working? [`docs/troubleshooting.md`](docs/troubleshooting.md) has the symptom table.
+
+---
+
+## Using it
+
+### The panel
+
+Describe what you want. The header carries the three things you need while it works:
+
+- **Save** — the whole design to your save folder as one `.f3d`, overwritten each press.
+- **Download `<FORMAT>`** — one file in the format you picked. The button names the format, so you
+  never press it to find out.
+- **⚙** — the save folder and the download format. The folder box shows the resolved path rather
+  than a blank meaning "the default", because *where did my file go* is the question these buttons
+  answer. A folder that cannot be written is refused while the dialog is still open.
+
+Both buttons report the file, its size and its folder as a line in the conversation, and a failure
+says so rather than reading as success. Neither needs the model's cooperation — they go straight to
+the same bridge and the same export code the tools use.
+
+A **thinking orb** spins in the working banner while a turn runs, and its animation follows what is
+actually happening: a dotted outline morphing for sketching, a scan sweep for looking, a scramble
+that clicks back for fillets and holes. Stop sits beside it, because the indicator says "running"
+and the button is the answer to it.
+
+Three ways to attach a reference photo or a sketch, because a webview inside Fusion may not be
+allowed to open a native file picker: the **＋** button, **drag and drop** anywhere on the panel, or
+**paste** from the clipboard.
+
+### One chat per design
+
+Each design gets its own conversation, keyed to the document — not one chat that forgets which part
+you meant. Switch designs and the transcript switches with it. Switch *mid-turn* and the turn stops
+rather than editing the wrong document:
+
+<p align="center">
+  <img src="docs/images/chat-design-switch-stops-turn.png" alt="The Fusion Chat panel mid-conversation. An amber line reads 'Stopped — you switched to another design while this was running.' The user then types 'continue', and Claude replies 'Back on the tower design. Finishing the tube bores.' before resuming its fusion_execute calls." width="880">
+</p>
+
+Close a design and its chat is compressed to the core context a future conversation would need —
+what it is for, the decisions and why — instead of being lost or kept whole:
+
+<p align="center">
+  <img src="docs/images/chat-closed-design-core-context.png" alt="Fusion showing a blocky orange robot model named claude-bot-3d. Its chat panel holds a single collapsed entry, 'CORE CONTEXT FROM BEFORE THIS DESIGN WAS CLOSED', under an amber note reading 'Design closed — this conversation was compressed to core context.'" width="880">
+</p>
+
+### From Claude Code
+
+Six tools. `fusion_execute` is the product; the rest exist because every session needs them and
+they shouldn't require bespoke code each time.
+
+| Tool | What it does |
+| --- | --- |
+| `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls, and `screenshot="iso"` returns the viewport *with* the result — one round trip per modelling step instead of two. |
+| `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
+| `fusion_export` | STL / STEP / 3MF / USD / F3D into `~/Documents/arges-exports/`. |
+| `fusion_download` | The same, into **your** save folder, in your configured format. |
+| `fusion_save` | The whole design as one `.f3d` — and it already ran, see below. |
+| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
+
+A failing script is a **normal result**, not a tool error: the traceback comes back verbatim so
+Claude can read it and fix its own code.
 
 <p align="center">
   <img src="docs/images/enclosure-iso.png" alt="A 40x30x15 mm enclosure with 2 mm walls, filleted corners and four M3 screw bosses, modelled in Fusion by Claude" width="720">
@@ -16,43 +181,75 @@ screenshots*, correct itself, and export print-ready files.
 <p align="center"><em>A 40 × 30 × 15 mm enclosure — 2 mm walls, filleted corners, four M3 bosses with
 blind pilot bores — built by prompt, verified by measurement, exported to STL.</em></p>
 
-The screenshot loop is the point. A fixed set of "create box / create hole" tools can never cover
-the Fusion API, and a model writing CAD code blind gets things subtly wrong — an extrude in the
-wrong direction, a profile that grabbed the wrong region — with no exception raised. Giving Claude
-**arbitrary API access plus eyes** turns that into a design → look → correct loop.
+### Saving happens by itself
 
-> [!WARNING]
-> That last sentence is literal. `fusion_execute` runs **arbitrary Python inside your Fusion
-> session** with your privileges, and `rhino_execute` does the same inside Rhino — not a sandbox,
-> and not trying to be one. The only boundary is that both listeners bind `127.0.0.1` and require a
-> token generated at install. **Never expose either to a network.** Generated code can also mangle
-> an open document, so work in a scratch project while you get a feel for it — on Rhino especially,
-> where nothing stops to ask before a destructive operation. Read [SECURITY.md](SECURITY.md) before
-> installing.
+**Every successful `fusion_execute` saves the design**, with no prompt and nothing for the model to
+remember. `ARGES_AUTOSAVE=0` turns it off.
+
+What a save *is* here is deliberate:
+
+> Fusion's own `Document.save()` **returns `True` and saves nothing** when Fusion is in read-only
+> mode — which is what an expired subscription does to it. Verified live: no new version, the
+> document still dirty, the window title reading *(Expired Subscription — Read Only)*, and `save()`
+> reporting success every time. A save that silently does nothing is worse than no save.
+
+So a save here is a **Fusion archive** (`.f3d`) written to your save folder by the export manager —
+the whole parametric design in one local file, from a code path that keeps working when saving does
+not. One file per document, overwritten: a mirror of the current state, not a pile of snapshots.
+Fusion's own ⌘S is untouched and still yours when it works.
 
 ---
 
-## Which half do you want
+## Rhino 8
 
-Two CADs, two bridges, one idea. They share the security model, the knowledge layer and the
-test suite, but they are independent — installing one does not involve the other, and neither
-needs the other present.
+Same four ideas — arbitrary API access, eyes on the viewport, a chat window, no API key. What
+differs is *how the code reaches the CAD*.
 
-| | Fusion | Rhino 8 |
+| | Fusion | Rhino |
 | --- | --- | --- |
-| Platform | macOS | Windows, macOS |
-| Chat lives | [docked inside Fusion](#the-fusion-chat-panel) | [in its own window](#rhino-8) |
-| Set-up | [`scripts/install.sh`](#fusion) | [ask Claude Code](#rhino) |
-| Everything about it | the next four sections | [Rhino 8](#rhino-8) |
+| Reaching the CAD | an add-in **pushes** work onto the main thread | a timer inside Rhino **pulls** work |
+| Mechanism | `registerCustomEvent` / `fireCustomEvent` | `Eto.Forms.UITimer` polling a broker |
+| Interface | MCP server + docked palette | MCP server + a separate window |
+| Engine | Claude Agent SDK | the `claude` CLI |
 
-**If you are here for Rhino, skip to [Rhino 8](#rhino-8).** Everything between here and there is
-Fusion-specific — the architecture differs enough that describing both at once helps nobody.
+**Why Rhino pulls.** Rhino's `InvokeOnUiThread` is *synchronous*, and a `rhinocode` script already
+runs on the UI thread — calling it deadlocks against itself. A listener on a background thread
+crashes Rhino outright (a thread outliving the script context aborts the embedded CPython). So a
+timer inside Rhino asks a loopback broker for jobs and posts results back; being on the UI thread
+already, whatever it runs is on the right thread by construction. The marshalling problem
+disappears rather than being solved.
 
-**If you just want it running,** go straight to [Install](#install): three lines for Fusion, and for
-Rhino a single sentence you hand to Claude Code. Everything before that section explains what you
-are installing and why it is built the way it is — worth reading, but not first.
+```
+claude ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker (127.0.0.1:7656) ──▶ poller inside Rhino
+```
 
-## How it works: Fusion
+<p align="center">
+  <img src="docs/images/rhino-mcp-cube.png" alt="A plain grey box sitting on the origin in a Rhino viewport, captured through the bridge." width="620">
+</p>
+
+<p align="center"><em>The first thing that came back through that chain. A dull picture and the right
+test: the prompt reached Rhino, RhinoCommon built real geometry, and the capture travelled back as
+an image Claude could look at.</em></p>
+
+**Install it** by asking Claude Code, after cloning and opening Rhino:
+
+```
+Set up the Rhino bridge in "<path>/scripts/rhino" — read SETUP.md there and do what it says.
+```
+
+`SETUP.md` is written for the agent, not for you: it finds Rhino's Python, registers the MCP server,
+starts the broker so it survives the shell, starts the poller, then *proves* it by reading your open
+document back to you. `rhino_mcp.py` has **no dependencies** — FastMCP needs Python 3.10+ and Rhino
+ships 3.9, so a framework would mean installing a second Python to forward four JSON messages.
+
+> [!WARNING]
+> `rhino_execute` runs arbitrary Python inside your Rhino session, exactly as `fusion_execute` does
+> for Fusion. Same boundary, same caution — and on Rhino nothing stops to ask before a destructive
+> operation.
+
+---
+
+## How it works
 
 ```
 Claude Code ──┐
@@ -67,252 +264,32 @@ chat panel ───┘                       │
                                Fusion API (adsk.core / adsk.fusion)
 ```
 
-The add-in lives at `server/src/arges_mcp/addin/Arges/` — inside the package rather than at
-the repo root, so a PyPI install ships it and `arges install` can put it where Fusion looks.
-A checkout symlinks it from there instead, so edits are live.
+Fusion has no external API — `adsk.*` exists only inside Fusion, and it is **main-thread-only**. So
+the add-in runs an HTTP listener on a background thread and marshals every request onto Fusion's main
+thread through a registered custom event, waiting on a per-request event for the reply. One job holds
+the main thread at a time; a second concurrent request is refused immediately rather than queued.
 
-Two front ends, one bridge: a Claude Code session, or the [chat panel](#the-fusion-chat-panel) docked
-inside Fusion. Both speak MCP to the same server.
-
-Fusion has no external API — `adsk.*` exists only inside Fusion, and it is **main-thread-only**.
-So the add-in runs an HTTP listener on a background thread and marshals every request onto Fusion's
-main thread through a registered custom event, waiting on a per-request event for the reply. One
-job occupies the main thread at a time; a second concurrent request is refused immediately rather
-than queued.
-
-## Fusion tools
-
-| Tool | What it does |
-| --- | --- |
-| `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls, and `screenshot="iso"` returns the viewport with the result — one round trip per modeling step instead of two. |
-| `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
-| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/arges-exports/`. |
-| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
-
-Four tools, deliberately. `fusion_execute` is the product; the others exist because they are
-needed on every single session and shouldn't require bespoke code each time.
-
-A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so
-Claude can read it and fix its own code.
-
-## The Fusion chat panel
-
-The MCP tools assume you are already in a Claude Code session. The panel removes that assumption:
-it docks a chat inside Fusion, so you describe what you want in the window where the model lives.
-
-<p align="center">
-  <img src="docs/images/chat-panel-lego-tower.png" alt="The Fusion Chat panel docked on the right of Fusion. The prompt reads 'generate a lego mediaval tower'; Claude's reply plans a studded baseplate, round tower, battlements, arched door and arrow slits, followed by a stream of fusion_execute and fusion_state tool calls. The viewport shows the finished tower on a LEGO baseplate." width="880">
-</p>
-
-<p align="center"><em>Six words in, and the tool calls streaming underneath. Every step is real Fusion
-API Python — nothing here is a preset.</em></p>
-
-Open it either way — both reach the same service, and both are idempotent:
-
-- **In Fusion:** the **Fusion Chat** button in **UTILITIES → ADD-INS**
-- **In any Claude Code session, in any project:** `/fusion-chat`
-
-Whichever you use, it starts the agent service if it isn't running and opens (or focuses) the
-docked palette. `/fusion-chat --status` reports what is up; `/fusion-chat --stop` closes the panel
-and stops the service.
-
-```
-palette (webview, docked in Fusion)
-   │  HTTP 127.0.0.1:7655
-   ▼
-agent/   ── Claude Agent SDK ──→  MCP (stdio) ──→ server/ ──→ bridge ──→ Fusion
-```
-
-The palette talks to the agent service **directly** rather than through the add-in. That is not an
+The panel talks to the agent service **directly** rather than through the add-in. That is not an
 implementation detail: the add-in's main thread is what serves bridge calls, so routing chat through
-it would deadlock on the agent's first Fusion tool call.
-
-### Attaching images
-
-Reference photos, sketches on paper, a screenshot of a part you want copied — three ways to get one
-in, because a webview embedded in Fusion may not be permitted to open a native file picker:
-
-- the **＋** button next to the input
-- **drag and drop** anywhere onto the panel
-- **paste** from the clipboard
-
-Images go into the conversation as real image content, not as a file the model has to open — no tool
-call, and because they land in the session itself, a resumed conversation can still see them. Up to
-8 per message.
-
-The panel downscales before uploading (longest edge 1568 px, Anthropic's efficient maximum), so a
-multi-megapixel phone photo does not cost tokens for detail the model cannot use. The service keeps
-the bytes on disk under `~/.arges/attachments/` (0700, files 0600) and stores only a reference
-in the transcript, so `chats.json` stays small and the panel can redraw a conversation later.
-Attachments are deleted when their design's chat is compressed or pruned.
-
-### One chat per design
-
-Every design gets its own conversation, with its own memory. Switch tabs in Fusion and the panel
-switches with you — three designs open means three separate chats, and nothing one knows leaks into
-another. The header names the design you are talking to.
-
-Identity is the hard part, because `document.name` cannot do it: **every unsaved document reports
-the name `Untitled`**. The `(1)`/`(3)` in Fusion's tab strip is decoration for display and never
-reaches the API, so two untitled designs are indistinguishable by name. Instead:
-
-| Document | Key | Cost |
-| --- | --- | --- |
-| Saved | its `dataFile.id` URN | free — chatting never marks a saved design modified |
-| Unsaved | a UUID stamped into `design.attributes` | marks it modified, on first message only |
-
-The attribute is checked **first**, so an unsaved design that you later save keeps its conversation
-instead of being renamed into a second identity by the `dataFile` that just appeared.
-
-Switching is event-driven: the add-in's `documentActivated` handler keeps a cached key that
-`GET /document` answers from the HTTP thread, so following your tabs never occupies Fusion's main
-thread or queues behind a long modelling job.
-
-**Switching mid-turn pauses the turn, it does not kill it.** `fusion_execute` always acts on
-whatever document is active, so a turn that kept running after a tab switch would start editing the
-design you just moved to. Rather than tearing it down, the turn is held at its next tool call: it
-keeps its context, its plan and its place, and carries on the moment you switch back. The design
-you moved to shows what is held and offers to cancel it, and its Send box is disabled meanwhile —
-starting a second build would only queue behind the first. The bridge independently refuses any
-pinned turn whose design is no longer active, which closes the gap where a tool call is already in
-flight.
-
-<p align="center">
-  <img src="docs/images/chat-design-switch-stops-turn.png" alt="The Fusion Chat panel mid-conversation. An amber line reads 'Stopped — you switched to another design while this was running.' The user then types 'continue', and Claude replies 'Back on the tower design. Finishing the tube bores.' before resuming its fusion_execute calls." width="880">
-</p>
-
-<p align="center"><em>Design-switching, caught in the act. This shot predates the change above —
-it shows the older behaviour, where the turn stopped and you typed <code>continue</code> to pick it
-back up. It now resumes on its own when you switch back; what the shot still shows accurately is
-that the conversation survives the switch either way.</em></p>
-
-### Memory, and what happens when a design closes
-
-Conversations survive restarts. `~/.arges/chats.json` (0600) stores a pointer to the SDK's own
-session plus what the panel needs to redraw; reopening resumes the real context, so the model still
-remembers what you were doing.
-
-**Closing a design compresses its chat.** The conversation is replayed once — forked, with no Fusion
-tools attached, since the design is gone — and reduced to core context: intent, key dimensions and
-parameters, meaningful entity names, decisions and rejected approaches, and anything left unfinished.
-Tool mechanics, code, retries and dead ends are dropped. The full session is then discarded, so a
-design worked on for months does not carry months of transcript. Reopening it seeds a fresh
-conversation with that summary, marked as something to verify rather than trust.
-
-<p align="center">
-  <img src="docs/images/chat-closed-design-core-context.png" alt="Fusion showing a blocky orange robot model named claude-bot-3d. Its chat panel holds a single collapsed entry, 'CORE CONTEXT FROM BEFORE THIS DESIGN WAS CLOSED', under an amber note reading 'Design closed — this conversation was compressed to core context.'" width="880">
-</p>
-
-<p align="center"><em>Reopened after being closed. The transcript is gone and what remains is one
-collapsed summary — intent, dimensions, decisions — which is all the next session needs.</em></p>
-
-The file is bounded at 50 designs, evicted least-recently-touched.
-
-Modelling runs automatically — being asked to confirm every extrude defeats the point, and modelling
-is subtractive, so cuts, combines and deletes are ordinary work. The line is drawn at
-**recoverability**, not at how destructive an operation sounds:
-
-| Operation | Recoverable via | Asks? |
-| --- | --- | --- |
-| `deleteMe()`, `.remove()`, `removeAll()` | timeline / undo | no |
-| `deleteAllAfterMarker`, `markerPosition =` | timeline | no |
-| `designType =` | undo | no |
-| `combineFeatures`, Cut / Intersect | timeline | no |
-| `save()`, `saveAs()` | **nothing** — overwrites the saved file | **yes** |
-| any `.close(` | **nothing** — discards everything unsaved | **yes** |
-
-Restoring the prompt for deletes is a matter of moving the patterns back into `DESTRUCTIVE_PATTERNS`
-in `agent/agent_service.py`; they are kept next to it, commented, for exactly that.
-
-The gate is a **PreToolUse hook**, not a permission callback. A permission callback only fires when
-the flow resolves to a prompt, so under `defaultMode: auto` it never ran — a body was deleted
-without asking during testing. The hook runs unconditionally, which is what makes the two rows
-above actually hold.
-
-> Work in a scratch Fusion project while iterating. With deletes ungated, the timeline is the safety
-> net, and it only covers what happened since the document was opened.
-
-> Still worth working in a scratch Fusion project while iterating. Generated code can mangle a
-> design in ways no pattern list anticipates.
-
-## Rhino 8
-
-Rhino is supported too, with the same four ideas — arbitrary API access, eyes on the viewport, a
-chat window, and no API key. What differs is *how the code reaches the CAD*, and the reason is
-worth knowing before reading the code.
-
-| | Fusion | Rhino |
-| --- | --- | --- |
-| Reaching the CAD | an add-in **pushes** work onto the main thread | a timer inside Rhino **pulls** work |
-| Mechanism | `registerCustomEvent` / `fireCustomEvent` | `Eto.Forms.UITimer` polling a broker |
-| Interface | MCP server + docked palette | MCP server + a separate window |
-| Engine | Claude Agent SDK | the `claude` CLI |
-
-**Why Rhino pulls.** Fusion lets an add-in hand work to its main thread. Rhino's equivalent,
-`InvokeOnUiThread`, is *synchronous* — and a `rhinocode` script already runs on the UI thread, so
-calling it deadlocks against itself. Running a listener on a background thread instead crashes
-Rhino outright: a thread outliving the script context aborts the embedded CPython
-(`ucrtbase.dll`, `0xc0000409`).
-
-So Rhino pulls. A timer inside Rhino asks a loopback broker for jobs, runs them, and posts the
-results back. Because that timer is already on the UI thread, whatever it runs is on the correct
-thread by construction — the marshaling problem disappears rather than being solved.
-
-```
-claude ──MCP──▶ rhino_mcp.py ──HTTP──▶ broker (127.0.0.1:7656) ──▶ poller inside Rhino
-```
-
-<p align="center">
-  <img src="docs/images/rhino-mcp-cube.png" alt="A plain grey box sitting on the origin in a Rhino viewport, captured through the bridge." width="620">
-</p>
-
-<p align="center"><em>The first thing that ever came back through that chain. A plain box is a dull
-picture and the right test: it means the prompt reached Rhino, RhinoCommon built real geometry, and
-the capture travelled back as an image Claude could look at.</em></p>
-
-`rhino_mcp.py` has **no dependencies**. FastMCP needs Python 3.10+ and Rhino ships 3.9, so a
-framework would mean installing a second Python to forward four JSON messages. Nothing to install
-also means setup is one line.
-
-### Setting it up
-
-The Rhino side runs on the Claude subscription you already have — there is no API key. After
-installing Claude Code, ask it to do the rest:
-
-```
-Set up the Rhino bridge in "<path>/scripts/rhino" — read SETUP.md there and do what it says.
-```
-
-`SETUP.md` is written for the agent, not for you: it finds Rhino's Python, registers the MCP
-server, starts the broker so it survives the shell, starts the poller, and then *proves* it by
-calling `rhino_state` rather than assuming success. The manual commands are in the chat window's
-Settings screen if you would rather run them yourself.
-
-> [!WARNING]
-> `rhino_execute` runs arbitrary Python inside your Rhino session, exactly as `fusion_execute`
-> does for Fusion. Same boundary, same caution: loopback only, token required, and work in a
-> scratch document while you get a feel for it.
+it would deadlock on the first Fusion tool call.
 
 ## The knowledge layer
 
 `skill/fusion-360/` is a Claude Code skill installed alongside the server, and it matters more than
-the bridge code. Getting a model to understand *where things go in 3D space* is the hard part, not
-executing the call.
+the bridge code. Getting a model to understand *where things go in 3D space* is the hard part.
 
 Every API pattern in it was checked against Autodesk's reference and carries its doc URL. Where a
-claim could not be verified, it says so and tells Claude to probe at runtime rather than asserting
-a rule — **a plausible-but-wrong pattern is worse than a missing one**, because it actively
-misleads mid-session.
-
-It uses progressive disclosure: `SKILL.md` (~6 KB) is always in context, and
+claim could not be verified it says so, and tells Claude to probe at runtime rather than asserting a
+rule — **a plausible-but-wrong pattern is worse than a missing one**. It uses progressive
+disclosure: `SKILL.md` (~6 KB) is always in context, and
 `references/{patterns,gotchas,spatial,printing,workflow}.md` load on demand.
 
-A sample of what it documents, all verified against a running Fusion 2704:
+A sample, all verified against a running Fusion 2704:
 
-- Internal length units are **centimetres** regardless of what the document displays, and angles
-  are radians. 20 mm is `2.0`. This is the single most common error.
-- `camera.viewOrientation` accepts a value on the camera copy, then is **silently reverted** when
-  the camera is assigned back to the viewport. Named views must be set via `eye`/`upVector`.
+- Internal length units are **centimetres** whatever the document displays, and angles are radians.
+  20 mm is `2.0`. This is the single most common error.
+- `camera.viewOrientation` accepts a value on the camera copy, then is **silently reverted** when the
+  camera is assigned back to the viewport. Named views must be set via `eye`/`upVector`.
 - Querying faces in the *same* call that created a feature returns **stale topology, and the stale
   read succeeds** — a shell operation silently hollowed a sealed void instead of removing the top
   face, with no exception.
@@ -321,131 +298,17 @@ A sample of what it documents, all verified against a running Fusion 2704:
 
 ## Requirements
 
-The two halves are independent — install whichever CAD you actually use, or both.
+The two halves are independent — install whichever CAD you use, or both.
 
-**Fusion** (macOS)
+**Fusion** (macOS): Fusion installed and launched once; [`uv`](https://docs.astral.sh/uv/) and
+`python3` on `PATH`; any MCP client (the `claude` CLI is optional — it only automates registration
+and the `/fusion-chat` command). The chat panel additionally needs Claude Agent SDK credentials: a
+signed-in `claude` CLI or an `ANTHROPIC_API_KEY`.
 
-- Autodesk Fusion installed and launched at least once
-- [`uv`](https://docs.astral.sh/uv/) and `python3` on `PATH`
-- **Any MCP client.** The server imports nothing Claude-specific, so Claude Desktop, Claude Code,
-  Cline, Zed and anything else that speaks MCP all work. The `claude` CLI is optional — it only
-  registers the server automatically and enables the `/fusion-chat` slash command.
-- **For the chat panel only:** credentials for the Claude Agent SDK — either a signed-in `claude`
-  CLI or an `ANTHROPIC_API_KEY`. The SDK ships its own CLI, so a separate Claude Code install is
-  not required.
-
-**Rhino 8** (Windows or macOS)
-
-- Rhino 8, opened once and the `ScriptEditor` command run — that is what builds Rhino's Python
-- [Claude Code](https://code.claude.com/docs/en/setup) with a Pro, Max or Team plan. **No API key
-  and no `uv`**: the Rhino half runs on Rhino's own Python and your existing subscription.
-- `pywebview`, for the chat window only — the launcher installs it on first run
-
-## Install
-
-### Fusion
-
-```sh
-git clone https://github.com/francomichetti-dev/3d-mcp.git
-cd 3d-mcp
-scripts/install.sh
-```
-
-That is the whole Fusion install: MCP tools, the docked chat panel, and the Fusion knowledge skill.
-`install.sh` knows only where Fusion keeps add-ins on **macOS** and refuses to run elsewhere,
-naming the platform rather than failing obscurely.
-
-### Rhino
-
-Nothing to build and no installer. After cloning, open Rhino, then ask Claude Code to do the rest:
-
-```
-Set up the Rhino bridge in "<path>/scripts/rhino" — read SETUP.md there and do what it says.
-```
-
-`SETUP.md` is written for the agent: it locates Rhino's Python, registers the MCP server, starts
-the broker and the poller, and then proves it worked by reading your open document back to you.
-The [Rhino 8](#rhino-8) section above explains what it is connecting and why the design differs
-from Fusion's; the chat window's Settings screen has the manual commands if you would rather run
-them yourself.
-
-> **Not yet on PyPI.** The package is built and its release pipeline is in place, but
-> `arges-mcp` has not been published — so `uvx arges-mcp` will not work until it is. Once
-> it is, `uvx arges install` gives you the MCP tools with no checkout. The two differ in
-> one way worth knowing: a checkout **symlinks** the add-in so your edits are live, while the
-> package **copies** it, because a `uvx` install lives in a disposable cache a symlink would
-> outlive.
-
-### Using it without the `claude` CLI
-
-`install.sh` finishes fine without it and prints a ready-to-paste config with the absolute path
-already filled in:
-
-```json
-"mcpServers": {
-  "fusion": {
-    "command": "uv",
-    "args": ["run", "--frozen", "--no-sync",
-             "--directory", "/absolute/path/to/3d-mcp/server", "arges-mcp"]
-  }
-}
-```
-
-Claude Desktop keeps that in `~/Library/Application Support/Claude/claude_desktop_config.json`.
-Other clients have their own location — the shape is the same.
-
-> `install.sh` bakes the **absolute** path of this checkout into the MCP registration and
-> symlinks the add-in from it. Moving or renaming the directory afterwards breaks both —
-> re-run `scripts/install.sh` from the new location if you do.
-
-The installer creates `~/.arges/` (0700) with a random 64-hex-char token (0600), symlinks
-the add-in into Fusion's AddIns folder, links the knowledge skill into `~/.claude/skills/`,
-builds the server **and agent** venvs with `uv sync`, registers the MCP server with Claude Code at
-user scope, and generates the `/fusion-chat` command in `~/.claude/commands/`. Everything is
-registered with absolute paths, so it works from any directory and in any project.
-
-Re-running is safe — an existing token is preserved. `--rotate-token` replaces it; the add-in
-re-reads the token per request, so Fusion does not need restarting.
-
-### The one manual step
-
-Fusion cannot enable an add-in from outside, so once, in Fusion:
-
-> **Utilities → Add-Ins → select Arges → Run**
-> (older builds put this under **Tools**; `Shift+S` works either way)
-
-It auto-starts on later launches — `runOnStartup` is set in the manifest.
-
-> **If Arges isn't in the list, restart Fusion.** It scans its add-ins folder only at
-> launch, so an add-in installed while Fusion was running will not appear until you relaunch.
-
-### Verify
-
-```sh
-curl -sS -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" http://127.0.0.1:7654/health
-# {"ok": true, "app_version": "...", "bridge_version": "1", "document": "...", "busy": null}
-
-claude mcp list   # from any directory — 'fusion' should be listed and connected
-
-scripts/fusion-chat.sh --status
-# bridge:  {"ok": true, ...}
-# agent:   {"ok": true, "agent": true, "agent_error": null, "bridge_token": true}
-```
-
-## Timeouts
-
-Modelling operations take time, and the layers are deliberately staggered: the add-in waits **60 s**
-on the main thread, the MCP server's HTTP client waits **75 s**. Claude Code's own tool timeout must
-exceed both or it gives up while Fusion is still working. Set `MCP_TOOL_TIMEOUT` (milliseconds) to at
-least `120000`, in your shell profile or in `~/.claude/settings.json`:
-
-```json
-{ "env": { "MCP_TOOL_TIMEOUT": "120000" } }
-```
-
-A 504 means the *wait* was abandoned, **not that the code was cancelled** — main-thread execution
-cannot be interrupted. Don't resend; check `fusion_state` or a screenshot to see what actually
-happened.
+**Rhino 8** (Windows or macOS): Rhino 8 opened once with the `ScriptEditor` command run — that is
+what builds Rhino's Python; [Claude Code](https://code.claude.com/docs/en/setup) on a Pro, Max or
+Team plan. **No API key and no `uv`.** `pywebview` for the chat window only, installed by the
+launcher on first run.
 
 ## Security
 
@@ -453,93 +316,38 @@ happened.
 the entire point, so the channel is gated tightly instead:
 
 - **Loopback only.** Binds `127.0.0.1:7654`, never `0.0.0.0`. No remote or LAN access, ever.
-- **Token on every request**, including `/health`, in the `X-Arges-Bridge-Token` header, compared
-  with `hmac.compare_digest` *before* the body is read. Being a non-safelisted header, a web page
-  cannot reach the bridge: the browser must preflight, and the bridge answers no CORS.
+- **Token on every request**, including `/health`, compared with `hmac.compare_digest` *before* the
+  body is read. Being a non-safelisted header it is unreachable from a web page: the browser must
+  preflight, and the bridge answers no CORS.
 - **Fail closed.** No readable token file → the listener does not start, and says why in `addin.log`.
-- **Host pinning.** Requests must carry `Host: 127.0.0.1:7654` or `localhost:7654`, defeating DNS
-  rebinding.
-- **Bounded.** 5 MB request cap; 64 KB caps on stdout and result; screenshot dimensions bounded to
-  64..1920 × 64..1440 and *rejected* outside that range, never silently clamped; at most 8
+- **Host pinning** against DNS rebinding; a 5 MB request cap; 64 KB caps on stdout and result;
+  screenshot dimensions *rejected* outside 64..1920 × 64..1440 rather than silently clamped; 8
   concurrent connections; one execution at a time.
 - `~/.arges` is 0700 and its files 0600; the token is never logged.
 
-Exports are confined to `~/Documents/arges-exports/`, attachments to `~/.arges/attachments/`.
-Nothing third-party executes inside Fusion, and the bridge, MCP server and chat service make no
-outbound calls — the deliberate exceptions are `uv sync` at install time, and the chat panel's own
-calls to Anthropic, which is what makes it a chat.
+Exports are confined to `~/Documents/arges-exports/`, attachments to `~/.arges/attachments/`. For
+saves and downloads the *folder* is configuration and the *name* is slugged, so a caller supplies a
+filename and never a path — `../../etc/passwd` becomes the inert name `.._.._etc_passwd` — and an
+existing file is never overwritten. Nothing third-party executes inside the CAD, and the bridge, MCP
+server and chat service make no outbound calls; the deliberate exceptions are `uv sync` at install
+time and the panel's own calls to Anthropic, which is what makes it a chat.
 
-**Work in a scratch Fusion document while iterating.** Generated code can mangle a design, and the
-timeline is the only safety net.
+The full threat model is in [SECURITY.md](SECURITY.md).
 
-The full threat model, including what does and does not count as a vulnerability, is in
-[SECURITY.md](SECURITY.md).
+## Status
 
-## Troubleshooting
+Verified end to end against **Fusion 2704** on macOS: parametric parts built and confirmed by
+measurement, STL validated, and every failure path exercised — bad code, wrong token, bad host,
+oversized requests, timeouts, reload edge cases.
 
-Two logs, both in `~/.arges/`, and they are the only window into failures — Fusion swallows
-add-in exceptions silently.
+**Rhino 8 is working and in real use** on Windows, and has been used to model real parts by someone
+other than its developer: `rhino_state` reads the live document, `rhino_execute` builds geometry,
+`rhino_screenshot` returns a real capture, and the chain carries non-ASCII intact — which cost two
+real bugs, since Windows pipes default to cp1252.
 
-- **`addin.log`** — the add-in: startup, bind errors, every request, full tracebacks.
-- **`server.log`** — the MCP server (it can never log to stdout; that would corrupt JSON-RPC).
-- **`agent.log`** — the chat service, including anything a Fusion-spawned start printed before it
-  could log for itself.
-
-| Symptom | Likely cause |
-| --- | --- |
-| Arges isn't in the Add-Ins list | Fusion scans that folder at launch only — **restart Fusion**. |
-| `Fusion not running or Arges add-in not enabled` | Fusion closed, or the add-in was never run — see the manual step. |
-| Health check returns 401 | Token mismatch. Re-run `scripts/install.sh` (preserves the token) or `--rotate-token`. |
-| Add-in never starts, `addin.log` says no token | `~/.arges/token` missing or empty. The listener fails closed by design. |
-| Add-in loaded but port bind failed | Something else holds 127.0.0.1:7654 — the reason is in `addin.log`. |
-| `version mismatch` from a tool | You edited the add-in. Stop/Run it in Fusion, or reload it (below). |
-| `fusion` missing from `claude mcp list` | Re-run `scripts/install.sh`; it removes and re-adds the registration. |
-| Tool call times out at the Claude Code layer | `MCP_TOOL_TIMEOUT` too low — see above. |
-| `no active Fusion design` | Open or create a document and switch to the Design workspace. |
-| A burst of parallel requests gets 503 | The connection cap (8) refused the excess so a flood cannot exhaust threads inside Fusion. Send requests serially. |
-| Panel opens but shows a connection error | The agent service isn't up. `scripts/fusion-chat.sh --status`, then check `agent.log`. |
-| Panel says "no design" with a design clearly open | It is not a Design document (drawing, or a non-Design workspace). The header names what the bridge sees. |
-| A design's chat looks empty after reopening it | Closing a design compresses its chat by design — expand "core context from before this design was closed" at the top. |
-| Two unsaved designs seem to share a chat | Neither has been messaged yet: identity is stamped on first message, so both correctly show an empty panel until then. |
-| `agent.log` says `uv not found` | Fusion launched from Finder inherits a minimal `PATH`. The panel probes absolute locations; if `uv` is elsewhere, start the service from a terminal with `scripts/fusion-chat.sh`. |
-| `agent.log` shows `ModuleNotFoundError: No module named 'encodings'` | Fusion's `PYTHONHOME`/`PYTHONPATH` leaked into the child. The spawn strips every `PYTHON*` variable — if you see this, the add-in is running stale code, so Stop/Run it. |
-
-### Two Arges entries in the add-in list
-
-If you install *and* also work on a checkout, Fusion can end up with the add-in
-registered twice — once at the checkout and once under `API/AddIns`. Both load,
-and which one wins is a load-order race.
-
-It does not usually break: the loader compares `realpath`, so the second
-registration finds the module already loaded and reuses it rather than raising
-`ImportError`. But the winner decides whether you are running the checkout or
-the installed copy, and a Fusion update can flip it silently.
-
-To see which one is actually live:
-
-```python
-# through fusion_execute
-import sys
-result = sys.modules["arges_impl"].__file__
-```
-
-Fusion's registry is `JSLoadedScriptsinfo`, under
-`~/Library/Application Support/Autodesk/Autodesk Fusion 360/<id>/`. Back it up
-before editing, and remove the registration you do not want along with its
-folder — a registration whose path no longer exists is the ghost entry that
-shows up as a dead row in the add-ins panel. Fusion rewrites this file on exit,
-so make the change with Fusion closed, or verify it survived a restart.
-
-### Reloading after an edit
-
-```sh
-curl -sS -X POST -H "X-Arges-Bridge-Token: $(cat ~/.arges/token)" \
-     http://127.0.0.1:7654/reload
-```
-
-Reloads `arges_impl.py` without restarting Fusion. A change to the manifest or to
-`Arges.py` still needs **Stop/Run**. Refused with 409 while an execution is in flight, 503
-when the add-in is stopped, and 400 on a syntax error — with the running bridge left untouched.
+The Fusion half is verified on macOS only. Both bridges are plain Python with nothing
+platform-specific in them, but `scripts/install.sh` knows only the macOS add-ins path, so
+Fusion-on-Windows needs that path adding and a look at the launcher.
 
 ## Uninstall
 
@@ -551,38 +359,14 @@ scripts/uninstall.sh --purge    # also deletes ~/.arges (token, logs, chats)
 
 Exports in `~/Documents/arges-exports/` are never touched.
 
-## Status
-
-Working and verified end to end against **Fusion 2704.1.36** on macOS: parametric part built and
-confirmed by measurement, STL validated, all failure paths (bad code, wrong token, bad host,
-oversized requests, timeouts, reload edge cases) exercised. The add-in's concurrency, timeout and
-reload behaviour is covered by an offline harness that stubs `adsk`.
-
-The chat panel is verified from a genuine cold start — no service, no palette — by firing the
-command definition rather than calling its handler, so the test takes the same path a click does.
-Per-design chats are verified against three real open documents: separate conversations, transcripts
-restored on switching back, a mid-turn switch stopping the turn, context surviving a service restart
-(the model still answers from the resumed session, not just the redrawn transcript), and a closed
-design compressing to core context.
-
-**Rhino 8 is working and in real use** on Windows, and has been used to model real parts by someone
-other than its developer. Verified end to end on real hardware: `rhino_state` reads the live
-document, `rhino_execute` builds geometry, `rhino_screenshot` returns a real capture, and the whole
-chain carries non-ASCII intact — accented layer names, an em-dash, a degree sign — which cost two
-real bugs to get right, since Windows pipes default to cp1252, not UTF-8.
-
-The Fusion half is verified on macOS only. Both bridges are plain Python with nothing
-platform-specific in them, but `scripts/install.sh` knows only where Fusion keeps its add-ins on
-macOS, so Fusion-on-Windows needs that path adding and a look at the launcher.
-
 ## Contributing
 
 ```sh
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**935 assertions across thirteen suites**, none of which need Fusion, Rhino, or an internet connection.
-That is a macOS run; on Linux the count is lower because the installer is macOS-only and
+**1099 assertions across thirteen suites**, none of which need Fusion, Rhino, or an internet
+connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
 | Suite | Covers |
@@ -591,34 +375,33 @@ That is a macOS run; on Linux the count is lower because the installer is macOS-
 | `test_broker.py` | the job queue: single-flight, expiry when a CAD dies mid-job, long-poll wake-up, HTTP auth |
 | `test_chat_registry.py` | per-design chats: isolation, resume, compression when a design closes |
 | `test_install.py` | the installer: idempotency, token permissions, uninstall |
-| `test_mcp_server.py` | the Fusion MCP tools |
+| `test_mcp_server.py` | the Fusion MCP tools, and where saves and downloads are allowed to land |
 | `test_rhino_mcp.py` | the Rhino MCP server: protocol conformance, every failure path, stream hygiene |
 | `test_rhino_chat.py` | the Rhino chat window: finding the `claude` CLI, the MCP config it writes, file permissions |
 | `test_rhino_memory.py` | per-project memory: one project across incremental saves, cost accumulation, and degrading rather than raising |
 | `test_rhino_poller.py` | the poller that runs inside Rhino, against a RhinoCommon stub — above all, that a tick never raises |
-| `test_consistency.py` | constants duplicated across the two halves, where a mismatch would fail silently |
+| `test_consistency.py` | constants and code duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
-| `test_panel.js` | the chat panel's own JavaScript, run against a stub DOM: the plan, the working banner, a dropped stream |
-
-`tests/e2e/` additionally stands in for Rhino, so the full `claude → MCP → broker → CAD` chain can
-be exercised on a machine with no CAD installed at all.
+| `test_panel.js` | the chat panel's own JavaScript against a stub DOM: the plan, the working banner, the file buttons, the orb |
 
 `arges_impl.py` hot-reloads, so the edit loop does not involve restarting Fusion. See
-[CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to.
+[CONTRIBUTING.md](CONTRIBUTING.md) for the reload endpoint and what review pays attention to, and
+[`docs/`](docs/README.md) for the background — the Rhino traps, and the four architectures tried
+before the one that worked.
 
-[`docs/`](docs/README.md) has the background: the Rhino traps worth knowing before you touch that
-half, the four architectures tried before the one that worked, and what disproved each.
+## Credits
 
-## Prior art
+The panel's thinking orb is [thinking-orbs](https://github.com/Jakubantalik/Libraries.dev) by Jakub
+Antalik (MIT), vendored as `agent/static/thinking-orb-engine.js` with its licence in the file.
 
 Built from scratch, but two projects informed the design and deserve credit:
 [ndoo/fusion360-mcp-bridge](https://github.com/ndoo/fusion360-mcp-bridge) (closest in shape —
 execute + screenshot, custom-event marshalling, token auth) and
 [rahayesj/ClaudeFusion360MCP](https://github.com/rahayesj/ClaudeFusion360MCP), whose most useful
 finding was that the *knowledge files* mattered more than the bridge code.
-[`docs/reference-notes.md`](docs/reference-notes.md) records exactly what was studied and when —
-mechanisms and design ideas only, with no code copied and nothing third-party running inside a CAD.
+[`docs/reference-notes.md`](docs/reference-notes.md) records what was studied and when — mechanisms
+and design ideas only, with no code copied and nothing third-party running inside a CAD.
 
 ## License
 

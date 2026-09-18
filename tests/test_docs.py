@@ -477,7 +477,8 @@ if front:
     truthy("it has a description", len(fields.get("description", "")) > 40)
     # The description is the ONLY thing Claude sees when deciding whether to
     # load it, so it has to name the tools it is about.
-    for tool in ("fusion_execute", "fusion_screenshot", "fusion_state", "fusion_export"):
+    for tool in ("fusion_execute", "fusion_screenshot", "fusion_state",
+                 "fusion_export", "fusion_download", "fusion_save"):
         truthy(f"the description mentions {tool}", tool in fields.get("description", ""))
 
 # The reference files are cited in backticks, not as markdown links, so the

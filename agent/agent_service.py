@@ -59,6 +59,15 @@ from claude_agent_sdk import (
 REPO = Path(__file__).resolve().parent.parent
 SERVER_DIR = REPO / "server"
 
+# The Fusion-side export code, the save folder and the format live in the server
+# package, and the panel's Save and Download buttons need exactly those. Imported
+# rather than reimplemented: two copies of a hundred lines of format handling
+# would drift, and the symptom would be the panel exporting differently from the
+# model for reasons invisible from either side. common.py imports nothing but the
+# standard library, which is what makes this safe across the two environments.
+sys.path.insert(0, str(SERVER_DIR / "src"))
+from arges_mcp import common as fusion_common        # noqa: E402
+
 BIND_HOST = "127.0.0.1"
 BIND_PORT = int(os.environ.get("ARGES_CHAT_PORT")
                 or os.environ.get("FUSION_CHAT_PORT") or 7655)
@@ -654,8 +663,9 @@ class Session:
                     ],
                 }
             },
-            # Only the read-only tools are pre-approved. fusion_execute and
-            # fusion_export are deliberately NOT listed: an allowed_tools entry
+            # Only the read-only tools are pre-approved. fusion_execute,
+            # fusion_export, fusion_download and fusion_save are deliberately
+            # NOT listed: an allowed_tools entry
             # auto-approves a call *before* can_use_tool runs, so listing them
             # would silently disable the destructive gate entirely (the SDK
             # warns about exactly this). Leaving them out makes every call fall
@@ -668,6 +678,8 @@ class Session:
                 "mcp__fusion__fusion_state",
                 "mcp__fusion__fusion_execute",
                 "mcp__fusion__fusion_export",
+                "mcp__fusion__fusion_download",
+                "mcp__fusion__fusion_save",
             ],
             # The hook is the gate — it runs before any allow rule or
             # permission mode is consulted, so pre-approving the tools above
@@ -932,6 +944,7 @@ def _render(message: Any) -> list[dict[str, Any]]:
             elif isinstance(block, ThinkingBlock):
                 events.append({"type": "thinking"})
             elif isinstance(block, ToolUseBlock):
+                verb = _activity_verb(block.name, block.input or {})
                 events.append({
                     "type": "tool",
                     "name": block.name.rsplit("__", 1)[-1],
@@ -939,7 +952,8 @@ def _render(message: Any) -> list[dict[str, Any]]:
                     # Drives the banner. Carried on the tool event rather than
                     # emitted separately, so a replayed transcript and a live
                     # turn stay identical.
-                    "verb": _activity_verb(block.name, block.input or {}),
+                    "verb": verb,
+                    "orb": _orb_state(verb),
                 })
     elif isinstance(message, ResultMessage):
         events.append({"type": "result", "text": getattr(message, "result", "") or ""})
@@ -970,6 +984,50 @@ _ACTIVITY_VERBS: list[tuple[str, str]] = [
 ]
 
 
+# Which orb the banner spins while that verb is on screen. The orb has nine
+# animations and the panel has a verb for each thing the model does, so the
+# mapping is made here, next to the verbs — the panel should not have to know
+# what "Chamfering" looks like.
+#
+# Chosen for how they read at 20px, which is the size the banner uses: `morph`
+# is a dotted outline changing shape (sketching), `rubik` scrambles and clicks
+# back (a solve: fillets, holes, threads), `braid` plaits strands (combining,
+# patterning), `globe` sweeps a scan line (looking, checking), `ribbon` is a
+# flowing sash (writing a file), `orbits` is the general one.
+ORB_STATES: dict[str, str] = {
+    "Sketching": "shaping",
+    "Filleting": "solving",
+    "Chamfering": "solving",
+    "Threading": "solving",
+    "Cutting holes": "solving",
+    "Shelling": "working",
+    "Revolving": "working",
+    "Sweeping": "working",
+    "Lofting": "working",
+    "Extruding": "working",
+    "Combining bodies": "weaving",
+    "Patterning": "weaving",
+    "Mirroring": "weaving",
+    "Applying materials": "composing",
+    "Setting the view": "searching",
+    "Looking at the result": "searching",
+    "Checking the design": "searching",
+    "Exporting": "composing",
+    "Writing a file": "composing",
+    "Saving": "composing",
+    "Planning": "solving",
+}
+ORB_DEFAULT = "working"
+# Before the first tool call there is nothing being done yet — the model is
+# thinking, and the slow morphing ring is what that looks like.
+ORB_THINKING = "breathing"
+
+
+def _orb_state(verb: str) -> str:
+    """The orb animation for a banner verb. Unknown verbs get the general one."""
+    return ORB_STATES.get(verb, ORB_DEFAULT)
+
+
 def _activity_verb(name: str, args: dict[str, Any]) -> str:
     """A short present-tense phrase for the banner, or "" for none."""
     short = name.rsplit("__", 1)[-1]
@@ -979,6 +1037,12 @@ def _activity_verb(name: str, args: dict[str, Any]) -> str:
         return "Checking the design"
     if short == "fusion_export":
         return "Exporting"
+    if short == "fusion_download":
+        # Not "Saving to Downloads": the folder is configurable now, and a
+        # banner that names the wrong folder is worse than one that names none.
+        return "Writing a file"
+    if short == "fusion_save":
+        return "Saving"
     if short == "plan":
         return "Planning"
     if short != "fusion_execute":
@@ -1000,6 +1064,11 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
         return str(args.get("view", "iso"))
     if short == "fusion_export":
         return f"{args.get('format', '')} {args.get('body_or_component', '') or '(whole design)'}"
+    if short == "fusion_download":
+        return (f"{args.get('format', '') or 'configured format'} · "
+                f"{args.get('body_or_component', '') or '(whole design)'}")
+    if short == "fusion_save":
+        return "the whole design"
     return ", ".join(f"{k}={v}" for k, v in list(args.items())[:2])[:80]
 
 
@@ -1406,6 +1475,17 @@ async def handle_index(request: web.Request) -> web.StreamResponse:
     return web.FileResponse(STATIC / "index.html")
 
 
+async def handle_orb_engine(request: web.Request) -> web.StreamResponse:
+    """The vendored thinking-orbs canvas engine.
+
+    Its own file rather than inlined: it is somebody else's code under its own
+    licence, and a 21 KB blob in the middle of the panel would bury the panel.
+    Served from disk like index.html — nothing here reaches the network.
+    """
+    return web.FileResponse(STATIC / "thinking-orb-engine.js",
+                            headers={"Content-Type": "text/javascript"})
+
+
 def _decode_images(raw_images: Any) -> tuple[list[dict[str, Any]], str | None]:
     """Validate what the panel uploaded. Returns (images, error)."""
     if not raw_images:
@@ -1637,6 +1717,115 @@ async def handle_viewport(request: web.Request) -> web.Response:
                         content_type="image/png")
 
 
+async def _bridge_execute(code: str, timeout: float = 120.0) -> dict[str, Any]:
+    """Run one snippet inside Fusion and return the bridge's envelope.
+
+    The panel's buttons do their work the same way the MCP tools do — the same
+    bridge, the same snippet — so what a button produces and what the model
+    produces are the same file. The difference is only who pressed it.
+    """
+    token = read_token()
+    if token is None:
+        return {"ok": False, "error": "no bridge token — run scripts/install.sh"}
+    try:
+        async with httpx.AsyncClient(trust_env=False, timeout=timeout) as client:
+            reply = await client.post(
+                f"{BRIDGE_URL}/execute",
+                headers={AUTH_HEADER: token, LEGACY_AUTH_HEADER: token},
+                json={"code": code, "reset": False, "allow_no_design": False},
+            )
+    except httpx.HTTPError as exc:
+        return {"ok": False, "error": f"Fusion is not reachable: {exc!r}"}
+    if reply.status_code != 200:
+        return {"ok": False, "error": reply.text[:200]}
+    payload = reply.json()
+    result = payload.get("result")
+    if payload.get("ok") and isinstance(result, dict):
+        return result
+    return payload
+
+
+async def _write_file(request: web.Request, fmt: str, filename: str,
+                      overwrite: bool) -> web.Response:
+    """Shared body of the Save and Download buttons: pick a path, then export."""
+    registry: Registry = request.app["registry"]
+    document = (registry.current or {}).get("name") or "design"
+    try:
+        target = fusion_common.output_path(
+            fusion_common.save_dir_from(), filename, document, fmt,
+            overwrite=overwrite)
+    except (OSError, ValueError) as exc:
+        return web.json_response({"ok": False, "error": str(exc)}, status=400)
+
+    outcome = await _bridge_execute(fusion_common.snippet(
+        fusion_common.EXPORT_BODY,
+        {"format": fmt, "name": "", "path": str(target)}))
+    if not outcome.get("ok"):
+        # A traceback from inside Fusion is the useful part; keep it readable.
+        error = (outcome.get("error") or outcome.get("traceback")
+                 or "the export failed")
+        return web.json_response({"ok": False, "error": str(error)[:400]},
+                                 status=502)
+    outcome["folder"] = str(target.parent)
+    outcome["name"] = target.name
+    return web.json_response(outcome)
+
+
+async def handle_fusion_save(request: web.Request) -> web.Response:
+    """The Save button: the whole design as one .f3d, overwritten each time.
+
+    Not Fusion's save — see server.py. This is a local write, which is what
+    still works when a subscription has expired and Fusion has gone read-only.
+    """
+    return await _write_file(request, fusion_common.SAVE_FORMAT, "", True)
+
+
+async def handle_fusion_download(request: web.Request) -> web.Response:
+    """The Download button: the configured format, into the configured folder."""
+    body = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except ValueError:
+            body = {}
+    fmt = str(body.get("format") or "").strip().lower() or fusion_common.format_from()
+    if fmt not in fusion_common.FORMATS:
+        return web.json_response({"ok": False, "error": f"unknown format {fmt!r}"},
+                                 status=400)
+    return await _write_file(request, fmt, str(body.get("filename") or ""), False)
+
+
+async def handle_fusion_config(request: web.Request) -> web.Response:
+    """Read or change where files go and in what format.
+
+    GET reports what is in force, including the resolved folder — the panel
+    shows the real path rather than an empty box meaning "the default", because
+    "where did my file go" is the question this button exists to answer.
+    """
+    if request.method == "POST":
+        try:
+            body = await request.json()
+        except ValueError:
+            return web.json_response({"ok": False, "error": "expected JSON"},
+                                     status=400)
+        save_dir = body.get("save_dir")
+        fmt = body.get("format")
+        try:
+            fusion_common.write_config(
+                save_dir=None if save_dir is None else str(save_dir),
+                fmt=None if fmt is None else str(fmt))
+        except ValueError as exc:
+            return web.json_response({"ok": False, "error": str(exc)}, status=400)
+    config = fusion_common.load_config()
+    return web.json_response({
+        "ok": True,
+        "save_dir": str(fusion_common.save_dir_from(config)),
+        "format": fusion_common.format_from(config),
+        "formats": list(fusion_common.FORMATS),
+        "save_format": fusion_common.SAVE_FORMAT,
+    })
+
+
 async def handle_health(request: web.Request) -> web.Response:
     registry: Registry = request.app["registry"]
     key = (registry.current or {}).get("key")
@@ -1715,6 +1904,7 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app = web.Application(middlewares=[pin_host])
     app["allowed_hosts"] = allowed_hosts(port)
     app.router.add_get("/", handle_index)
+    app.router.add_get("/thinking-orb-engine.js", handle_orb_engine)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/events", handle_events)
     app.router.add_get("/viewport", handle_viewport)
@@ -1725,6 +1915,10 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app.router.add_post("/interrupt", handle_interrupt)
     app.router.add_post("/settings", handle_settings)
     app.router.add_post("/cancel-other", handle_cancel_other)
+    app.router.add_post("/fusion/save", handle_fusion_save)
+    app.router.add_post("/fusion/download", handle_fusion_download)
+    app.router.add_get("/fusion/config", handle_fusion_config)
+    app.router.add_post("/fusion/config", handle_fusion_config)
     app.on_startup.append(on_startup)
     app.on_cleanup.append(on_cleanup)
     return app
