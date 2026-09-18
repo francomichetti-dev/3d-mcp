@@ -2,7 +2,10 @@
 
 The important one here is _resolve_export_path: it is the only thing stopping a
 model-chosen filename writing anywhere on the disk, so it gets the same
-treatment as the bridge's auth.
+treatment as the bridge's auth. _resolve_download_path is the other half of
+that job and defends differently — it takes a name rather than a path and
+builds the path itself — so what is tested is that nothing a caller writes can
+become a directory, and that no existing file is ever overwritten.
 
     cd agent && uv run --frozen --no-sync python ../tests/test_mcp_server.py
 """
@@ -113,10 +116,124 @@ refuses("refuses a symlink that leaves the root",
         lambda: srv._resolve_export_path("sneaky/escaped", "stl", "x"))
 
 
+# ------------------------------------------- where saves and downloads go ----
+# The Save and Download buttons and the MCP tools share one module, because the
+# panel's service and the MCP server are different processes and a copy of this
+# logic in each would drift. What is tested here is that nothing a caller writes
+# can become a directory, that a finished file is never overwritten, and that
+# the save mirror is the one thing that IS overwritten.
+print("Save and download destinations")
+
+from arges_mcp import common  # noqa: E402
+
+# Never read or write the operator's real ~/.arges/config.json.
+CONFIG_HOME = Path(tempfile.mkdtemp(prefix="fusion-config-test-"))
+common.state_dir = lambda: CONFIG_HOME
+DEST = Path(tempfile.mkdtemp(prefix="fusion-dest-test-")) / "out"
+
+check("f3d is one of the formats", "f3d" in common.FORMATS, True)
+check("and it is what a save writes", common.SAVE_FORMAT, "f3d")
+truthy("the export body knows how to write one",
+       "createFusionArchiveExportOptions" in common.EXPORT_BODY)
+
+target = common.output_path(DEST, "", "scooter-grip-kids", "stl")
+truthy("with no filename, named after the document",
+       target.name.startswith("scooter-grip-kids_"))
+check("in the folder it was given", target.parent, DEST)
+check("with the format's extension", target.suffix, ".stl")
+truthy("and the folder is created", DEST.is_dir())
+
+check("a plain name is used as given",
+      common.output_path(DEST, "bracket", "x", "stl").name, "bracket.stl")
+# People type the extension; slugging it would produce "bracket_stl.stl".
+check("a typed extension is not doubled",
+      common.output_path(DEST, "bracket.stl", "x", "stl").name, "bracket.stl")
+check("and the check is case-insensitive",
+      common.output_path(DEST, "Bracket.STL", "x", "stl").name, "Bracket.stl")
+check("a different extension stays part of the name",
+      common.output_path(DEST, "part.step", "x", "stl").name, "part_step.stl")
+
+# --- the ones that matter: a path offered as a filename must become a filename
+for label, attempt in [
+    ("parent traversal", "../escaped"),
+    ("deep traversal", "../../../../../../tmp/escaped"),
+    ("absolute path", "/tmp/escaped"),
+    ("absolute etc", "/etc/passwd"),
+    ("home expansion", "~/escaped"),
+    ("home of another user", "~root/escaped"),
+    ("a nested path", "sub/dir/part"),
+    ("a windows path", "..\\..\\escaped"),
+]:
+    got = common.output_path(DEST, attempt, "x", "stl")
+    check(f"{label} stays in the folder: {attempt}", got.parent, DEST)
+    truthy(f"{label} carries no separator: {attempt}",
+           not any(c in got.stem for c in "/\\") and ".." not in got.name)
+
+# --- never overwrite a file somebody asked for
+first = common.output_path(DEST, "part", "x", "stl")
+first.write_text("existing")
+check("an existing file is not chosen again",
+      common.output_path(DEST, "part", "x", "stl").name, "part-1.stl")
+(DEST / "part-1.stl").write_text("also existing")
+check("and it keeps counting",
+      common.output_path(DEST, "part", "x", "stl").name, "part-2.stl")
+check("the existing file is left alone", first.read_text(), "existing")
+
+# A symlink is worse than a file: writing "through" it lands the export outside
+# the folder entirely, and a dangling one does not answer exists().
+os.symlink(str(Path(tempfile.gettempdir()) / "fusion-no-such-target"),
+           DEST / "linked.stl")
+check("a dangling symlink is not written through",
+      common.output_path(DEST, "linked", "x", "stl").name, "linked-1.stl")
+
+# --- the save mirror is the exception: one file, tracking the current state
+mirror = common.output_path(DEST, "", "tower", "f3d", overwrite=True)
+mirror.write_text("state")
+check("the mirror keeps the same name", common.output_path(
+    DEST, "", "tower", "f3d", overwrite=True), mirror)
+truthy("and is not timestamped", "_20" not in mirror.name)
+check("it is named after the document", mirror.name, "tower.f3d")
+
+# ------------------------------------------------------------------ config ----
+print("Stored configuration")
+
+check("with no file at all, the format is stl", common.load_config()["format"], "stl")
+check("and files go to Downloads", common.save_dir_from().name, "Downloads")
+
+os.environ["ARGES_SAVE_DIR"] = str(DEST / "via-env")
+check("an operator can set the folder at launch",
+      common.save_dir_from(), DEST / "via-env")
+os.environ.pop("ARGES_SAVE_DIR", None)
+
+stored = common.write_config(save_dir=str(DEST), fmt="step")
+check("a stored format is read back", common.format_from(), "step")
+check("and a stored folder wins", common.save_dir_from(), DEST)
+check("the write reports what now holds", stored["format"], "step")
+truthy("and the file is where the state dir is",
+       common.config_path().parent == CONFIG_HOME)
+
+refuses("a format the exporter cannot produce is refused",
+        lambda: common.write_config(fmt="obj"))
+check("and the stored one is untouched", common.format_from(), "step")
+refuses("a folder that cannot be created is refused",
+        lambda: common.write_config(save_dir="/System/arges-should-not-exist"))
+check("blanking the folder goes back to the default",
+      common.write_config(save_dir="")["save_dir"], "")
+check("which is Downloads again", common.save_dir_from().name, "Downloads")
+
+# A config file is not worth failing a save over.
+common.config_path().write_text("{ not json", encoding="utf-8")
+check("a corrupt config reads as no preference", common.load_config()["format"], "stl")
+common.write_config(save_dir=str(DEST), fmt="stl")
+
+
 # -------------------------------------------------------------- limits ----
 print("Declared limits")
 check("views", set(srv.VIEWS), {"front", "top", "right", "iso", "fit"})
-check("formats", set(srv.FORMATS), {"stl", "step", "3mf", "usd"})
+check("formats", set(srv.FORMATS), {"stl", "step", "3mf", "usd", "f3d"})
+# The tools and the panel must offer the same list, or the panel's format menu
+# grows an option the exporter cannot produce.
+check("and the tools use the shared list", srv.FORMATS, common.FORMATS)
 truthy("screenshot bounds are sane",
        srv.SCREENSHOT_MIN_SIDE < srv.SCREENSHOT_MAX_HEIGHT <= srv.SCREENSHOT_MAX_WIDTH)
 check("bridge protocol version is pinned", srv.BRIDGE_PROTOCOL_VERSION, "1")
@@ -230,6 +347,10 @@ def fake_bridge(answer):
 
 
 real_bridge = srv._bridge_request
+# This section is about folding the look into the call; autosave has its own
+# below. Left on, its extra bridge call would ride along in every assertion
+# here and a failure would point at the wrong feature.
+os.environ["ARGES_AUTOSAVE"] = "0"
 try:
     # Success: one execute, one capture, both halves in the return.
     captures.clear()
@@ -276,6 +397,196 @@ try:
 finally:
     srv._bridge_request = real_bridge
     srv._capture = real_capture
+    os.environ.pop("ARGES_AUTOSAVE", None)
+
+
+# ------------------------------------------------------------- autosave -----
+# Saving after every change is the point, and it does NOT go through Fusion's
+# own save: on an expired subscription Document.save() returns True and saves
+# nothing, verified live. So a save is an export of the whole design to a local
+# .f3d, and what is tested here is the wiring — that it happens after a success,
+# never after a failure, that it targets the configured folder, and above all
+# that a save which fails cannot make a change that worked look failed.
+print("Autosave")
+
+os.environ.pop("ARGES_AUTOSAVE", None)
+truthy("on by default — losing work is the failure that matters", srv._autosave_enabled())
+for value in ("0", "false", "no", "off", "OFF", "False"):
+    os.environ["ARGES_AUTOSAVE"] = value
+    check(f"{value!r} turns it off", srv._autosave_enabled(), False)
+for value in ("1", "true", "yes", "on", ""):
+    os.environ["ARGES_AUTOSAVE"] = value
+    check(f"{value!r} leaves it on", srv._autosave_enabled(), True)
+# An operator typo must not silently stop saving.
+os.environ["ARGES_AUTOSAVE"] = "flase"
+check("an unrecognised value stays on", srv._autosave_enabled(), True)
+os.environ.pop("ARGES_AUTOSAVE", None)
+os.environ["FUSION_AUTOSAVE"] = "0"
+check("the pre-rename variable is honoured", srv._autosave_enabled(), False)
+os.environ.pop("FUSION_AUTOSAVE", None)
+
+bridge_log = []
+
+
+def fake_state_bridge(document="tower", execute=None):
+    """Answer /health with a document name and /execute with a canned result."""
+    def request(method, path, payload=None):
+        bridge_log.append((path, payload))
+        if path == "/health":
+            return {"ok": True, "document": document, "bridge_version": "1"}
+        if isinstance(execute, Exception):
+            raise execute
+        return execute or {"ok": True, "result": {
+            "ok": True, "format": "f3d", "path": "/x/tower.f3d", "bytes": 2956382,
+            "target": "whole design (root component)"}, "stdout": ""}
+    return request
+
+
+real_bridge = srv._bridge_request
+try:
+    bridge_log.clear()
+    srv._bridge_request = fake_state_bridge()
+    out = srv._write_state_file()
+    check("a state file reports itself saved", out["saved"], True)
+    check("and reports where it went", out["path"], "/x/tower.f3d")
+
+    code = [p for path, p in bridge_log if path == "/execute"][0]["code"]
+    truthy("it ran the shared export body", "_fx_export" in code)
+    truthy("as a Fusion archive", '\\"format\\": \\"f3d\\"' in code)
+    truthy("of the whole design, not one body", '\\"name\\": \\"\\"' in code)
+    truthy("into the configured folder", str(DEST) in code)
+    truthy("named after the open document", "tower" in code)
+
+    # The document name comes from /health, which is off the main thread; asking
+    # is what lets the path be decided host-side, as everywhere else here.
+    check("the document name is asked for first",
+          [path for path, _ in bridge_log][:2], ["/health", "/execute"])
+
+    # Nothing open: it must still write something rather than raise.
+    bridge_log.clear()
+    srv._bridge_request = fake_state_bridge(document=None)
+    srv._write_state_file()
+    code = [p for path, p in bridge_log if path == "/execute"][0]["code"]
+    truthy("with no document name it falls back to a fixed one", "design.f3d" in code)
+finally:
+    srv._bridge_request = real_bridge
+
+snippets = []
+
+
+def record_snippet(answer):
+    def run(body, params):
+        snippets.append((body, params))
+        if isinstance(answer, Exception):
+            raise answer
+        return dict(answer)
+    return run
+
+
+real_snippet = srv._run_snippet
+try:
+    # Rides along in the result, the way a screenshot does.
+    snippets.clear()
+    srv._bridge_request = fake_state_bridge()
+    srv._run_snippet = record_snippet({"ok": True, "path": "/x/tower.f3d", "bytes": 9})
+    out = {"ok": True, "result": 1}
+    srv._autosave(out)
+    check("a save attaches where it went", out["autosave"]["path"], "/x/tower.f3d")
+    check("and it is the export body that ran", snippets[0][0], srv._EXPORT_BODY)
+
+    # The one that matters: a broken save must not break a change that worked.
+    snippets.clear()
+    srv._run_snippet = record_snippet(RuntimeError("disk full"))
+    out = {"ok": True, "result": 1}
+    srv._autosave(out)                      # must not raise
+    check("the change still reads as successful", out["ok"], True)
+    check("the save reports its own failure", out["autosave"]["ok"], False)
+    truthy("naming the cause", "disk full" in out["autosave"]["error"])
+    truthy("and saying the change survived",
+           "succeeded" in out["autosave"]["error"])
+
+    # Off means off: nothing sent, not a call that declines to save.
+    snippets.clear()
+    os.environ["ARGES_AUTOSAVE"] = "0"
+    out = {"ok": True, "result": 1}
+    srv._autosave(out)
+    check("disabled means nothing is sent", snippets, [])
+    check("and nothing is reported", "autosave" in out, False)
+    os.environ.pop("ARGES_AUTOSAVE", None)
+finally:
+    srv._run_snippet = real_snippet
+    srv._bridge_request = real_bridge
+
+# Wired into fusion_execute: after success, never after failure.
+executed = []
+
+
+def fake_execute_bridge(answer):
+    def request(method, path, payload=None):
+        if path == "/health":
+            return {"ok": True, "document": "tower", "bridge_version": "1"}
+        code = (payload or {}).get("code", "")
+        executed.append("save" if "_fx_export" in code else "user")
+        return dict(answer)
+    return request
+
+
+try:
+    executed.clear()
+    srv._bridge_request = fake_execute_bridge({"ok": True, "result": 1, "stdout": ""})
+    out = srv.fusion_execute(code="x=1")
+    check("a successful change is saved", executed, ["user", "save"])
+    truthy("and the caller is told", "autosave" in out)
+
+    # A failed script may have left the design half-changed; the traceback is
+    # what the caller needs, and saving that state is not obviously right.
+    executed.clear()
+    srv._bridge_request = fake_execute_bridge({"ok": False, "traceback": "boom"})
+    srv.fusion_execute(code="x=1")
+    check("a failed script is not saved", executed, ["user"])
+finally:
+    srv._bridge_request = real_bridge
+
+
+# ------------------------------------------------------ download and save ----
+print("The download and save tools")
+
+try:
+    calls = []
+
+    def capture(method, path, payload=None):
+        if path == "/health":
+            return {"ok": True, "document": "tower", "bridge_version": "1"}
+        calls.append((payload or {}).get("code", ""))
+        return {"ok": True, "result": {"ok": True, "path": "/x/f", "bytes": 1},
+                "stdout": ""}
+
+    srv._bridge_request = capture
+    common.write_config(save_dir=str(DEST), fmt="step")
+
+    calls.clear()
+    srv.fusion_download()
+    truthy("a bare download uses the configured format",
+           '\\"format\\": \\"step\\"' in calls[0])
+    truthy("and the configured folder", str(DEST) in calls[0])
+    truthy("naming the file after the document", "tower" in calls[0])
+
+    calls.clear()
+    srv.fusion_download(format="3mf", body_or_component="half_pos", filename="grip")
+    truthy("an explicit format overrides it", '\\"3mf\\"' in calls[0])
+    truthy("the body is passed through", "half_pos" in calls[0])
+    truthy("and the filename is honoured", "grip.3mf" in calls[0])
+
+    refuses("a format the exporter cannot produce is refused",
+            lambda: srv.fusion_download(format="obj"))
+    check("and nothing was sent for it", len(calls), 1)
+
+    calls.clear()
+    saved = srv.fusion_save()
+    check("fusion_save reports a save", saved["saved"], True)
+    truthy("as an archive", '\\"f3d\\"' in calls[0])
+finally:
+    srv._bridge_request = real_bridge
 
 
 # The mixed return - a dict and an Image in one list - relies on fastmcp
@@ -295,6 +606,7 @@ async def call_over_protocol(args):
         return await client.call_tool("fusion_execute", args)
 
 
+os.environ["ARGES_AUTOSAVE"] = "0"          # proving the protocol, not the save
 try:
     srv._bridge_request = fake_bridge({"ok": True, "result": 7, "stdout": ""})
     srv._capture = fake_capture(lambda w, h: 10 * 1024)
@@ -314,6 +626,7 @@ try:
 finally:
     srv._bridge_request = real_bridge
     srv._capture = real_capture
+    os.environ.pop("ARGES_AUTOSAVE", None)
 
 
 import shutil  # noqa: E402

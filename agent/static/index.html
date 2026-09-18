@@ -44,6 +44,32 @@
     border-radius: 5px; padding: 3px 8px; font-size: 11px; cursor: pointer;
   }
   header button:hover { color: var(--fg); border-color: var(--dim); }
+  header button:disabled { opacity: .45; cursor: default; }
+  /* The two that produce a file read as actions rather than chrome. */
+  header button.act { color: var(--fg); }
+
+  /* Where files go. Under the header like the plan and the banner, rather than
+     floating over the conversation: it is a settings panel, and a popover that
+     covers what you are reading to tell you where files go is worse than one
+     that pushes it down for a moment. */
+  #cfg {
+    flex: none; border-bottom: 1px solid var(--line); padding: 10px 12px;
+    display: flex; flex-direction: column; gap: 7px; font-size: 11px;
+  }
+  #cfg label { color: var(--dim); display: flex; flex-direction: column; gap: 3px; }
+  #cfg input, #cfg select {
+    background: var(--panel); color: var(--fg); font-size: 11px;
+    border: 1px solid var(--line); border-radius: 5px; padding: 4px 6px;
+    font-family: ui-monospace, monospace;
+  }
+  /* Same reason as the model and effort menus below: the engine paints an open
+     dropdown itself, and unpinned it uses its own idea of dark — a pale popup
+     over this panel. */
+  #cfg select option { background: var(--panel); color: var(--fg); }
+  #cfg .row { display: flex; gap: 6px; align-items: center; }
+  #cfg .row .spacer { flex: 1; }
+  #cfg .note { color: var(--dim); }
+  #cfg .err { color: var(--warn, #d66); }
 
   #log { flex: 1; overflow-y: auto; padding: 12px; }
   .msg { margin-bottom: 12px; }
@@ -133,6 +159,12 @@
     animation: spin .7s linear infinite;
   }
   @keyframes spin { to { transform: rotate(360deg); } }
+  /* The thinking orb, once its engine has loaded. It carries .spin as well, so
+     every rule that already stops showing the indicator — done, stopped, lost —
+     covers it without being restated; this only undoes the wheel's own look. */
+  .spin.orb {
+    width: 20px; height: 20px; border: 0; border-radius: 0; animation: none;
+  }
   /* Respect a reduced-motion preference: pulse instead of spin. */
   @media (prefers-reduced-motion: reduce) {
     .spin { animation: pulse 1.4s ease-in-out infinite; }
@@ -234,8 +266,29 @@
     <span class="dot" id="dot"></span>
     <span class="name none" id="design" title="the design this chat belongs to">no design</span>
     <span class="spacer"></span>
+    <!-- Save and Download first: they are what someone reaches for when the
+         model has finished, and neither needs the model's cooperation to run. -->
+    <button id="save" class="act" title="Write the whole design to your save folder">Save</button>
+    <button id="download" class="act" title="Write a file of the design to your save folder">Download</button>
+    <button id="cfg-open" title="Where files go, and in what format">⚙</button>
     <button id="shot">Screenshot</button>
   </header>
+
+  <div id="cfg" hidden>
+    <label>Save to this folder
+      <input id="cfg-dir" type="text" spellcheck="false"
+             placeholder="~/Downloads" autocapitalize="off">
+    </label>
+    <label>Download format
+      <select id="cfg-fmt"></select>
+    </label>
+    <div class="row">
+      <span class="note" id="cfg-note"></span>
+      <span class="spacer"></span>
+      <button id="cfg-cancel" type="button">Cancel</button>
+      <button id="cfg-save" class="act" type="button">Apply</button>
+    </div>
+  </div>
 
   <!-- Pinned above the log rather than inside it: the plan is the state of the
        build, not a message in the conversation, and it has to stay put while
@@ -261,7 +314,11 @@
        the button is the answer to it. In the header it read as panel chrome
        and nobody connected it to the prompt it would cancel. -->
   <div id="banner" hidden>
-    <span class="spin" aria-hidden="true"></span>
+    <!-- The wheel is the fallback and the orb replaces it: if the engine module
+         does not load, what is left is exactly the indicator that was here
+         before it. -->
+    <span class="spin" id="wheel" aria-hidden="true"></span>
+    <canvas class="spin orb" id="orb" aria-hidden="true" hidden></canvas>
     <button id="banner-stop" type="button" title="Cancel the running prompt">Stop</button>
     <span id="banner-text"></span>
   </div>
@@ -341,11 +398,14 @@ function renderPlan(steps) {
 const bannerStop = document.getElementById('banner-stop');
 let stopping = false;         // a Stop click is in flight; colours the ending
 
-function working(label) {
+function working(label, orb) {
   banner.classList.remove('done', 'lost', 'stopped');
   bannerText.textContent = label || 'Working';
   bannerStop.disabled = false;
   banner.hidden = false;
+  // Decoration, and optional: the orb module may not have loaded, and the
+  // banner must not depend on it to say what is happening.
+  if (window.__orb) window.__orb.set(orb || 'breathing');
 }
 
 function finished() {
@@ -546,7 +606,7 @@ function render(ev, live) {
     log.appendChild(d);
     // Only while it is actually running. Replaying a transcript must not leave
     // a spinner insisting that a build finished an hour ago is still going.
-    if (live && ev.verb) working(ev.verb);
+    if (live && ev.verb) working(ev.verb, ev.orb);
     // The agent still screenshots after every geometry change — that is how it
     // catches a wrong extrude — but the panel does not mirror the image back.
     // It sits beside the viewport; the tool line above is enough to say it
@@ -847,6 +907,126 @@ input.addEventListener('input', () => {
 });
 document.getElementById('shot').onclick = viewport;
 
+// --------------------------------------------------------------- files ------
+// Save and Download go straight to the service, which exports through the same
+// bridge the model uses. No prompt, no turn, nothing for the model to forget:
+// pressing the button produces the file.
+const saveBtn = document.getElementById('save');
+const dlBtn = document.getElementById('download');
+const cfgBox = document.getElementById('cfg');
+const cfgDir = document.getElementById('cfg-dir');
+const cfgFmt = document.getElementById('cfg-fmt');
+const cfgNote = document.getElementById('cfg-note');
+
+let config = { save_dir: '', format: 'stl', formats: ['stl'], save_format: 'f3d' };
+// The real guard against a doubled press. `disabled` is what you SEE, but it is
+// only styling here: the bridge runs one job at a time and refuses the second,
+// so a press that slips through the attribute would surface as an error on a
+// save that was working fine.
+let producing = false;
+
+function human(bytes) {
+  if (!bytes && bytes !== 0) return '';
+  if (bytes >= 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes >= 1024) return Math.round(bytes / 1024) + ' KB';
+  return bytes + ' B';
+}
+
+function paintConfig() {
+  // The format is on the button, so "what will Download give me" needs no click.
+  dlBtn.textContent = 'Download ' + (config.format || '').toUpperCase();
+  dlBtn.title = 'Write a ' + (config.format || '').toUpperCase()
+              + ' of the design to ' + config.save_dir;
+  saveBtn.title = 'Write the whole design to ' + config.save_dir
+                + ' as one .' + config.save_format + ' file';
+}
+
+async function loadConfig() {
+  try {
+    const r = await fetch('/fusion/config');
+    const j = await r.json();
+    if (j && j.ok) { config = { ...config, ...j }; paintConfig(); }
+  } catch (e) { /* the buttons still work on the service's own defaults */ }
+}
+
+async function produce(button, path, body, verb) {
+  if (producing) return;
+  producing = true;
+  const was = button.textContent;
+  button.disabled = true; saveBtn.disabled = true; dlBtn.disabled = true;
+  button.textContent = verb + '…';
+  const line = status(verb + '…');
+  try {
+    const r = await fetch(path, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body || {}),
+    });
+    const j = await r.json();
+    if (j && j.ok) {
+      // The folder is the answer to "where did it go", so it is in the line.
+      line.textContent = verb + 'd ' + j.name + ' · ' + human(j.bytes)
+                       + ' → ' + j.folder;
+    } else {
+      line.className = 'status err';
+      line.textContent = (j && j.error) ? j.error : (verb + ' failed');
+    }
+  } catch (e) {
+    line.className = 'status err';
+    line.textContent = verb + ' failed: ' + e;
+  } finally {
+    producing = false;
+    button.textContent = was;
+    button.disabled = false; saveBtn.disabled = false; dlBtn.disabled = false;
+    scroll();
+  }
+}
+
+saveBtn.onclick = () => produce(saveBtn, '/fusion/save', {}, 'Save');
+dlBtn.onclick = () => produce(dlBtn, '/fusion/download', {}, 'Download');
+
+document.getElementById('cfg-open').onclick = async () => {
+  if (!cfgBox.hidden) { cfgBox.hidden = true; return; }
+  await loadConfig();
+  cfgDir.value = config.save_dir || '';
+  cfgFmt.innerHTML = '';
+  (config.formats || []).forEach(f => {
+    const o = document.createElement('option');
+    o.value = f; o.textContent = f.toUpperCase();
+    if (f === config.format) o.selected = true;
+    cfgFmt.appendChild(o);
+  });
+  cfgNote.className = 'note';
+  cfgNote.textContent = 'Save writes .' + config.save_format;
+  cfgBox.hidden = false;
+  cfgDir.focus();
+};
+
+document.getElementById('cfg-cancel').onclick = () => { cfgBox.hidden = true; };
+
+document.getElementById('cfg-save').onclick = async () => {
+  cfgNote.className = 'note'; cfgNote.textContent = 'applying…';
+  try {
+    const r = await fetch('/fusion/config', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ save_dir: cfgDir.value, format: cfgFmt.value }),
+    });
+    const j = await r.json();
+    if (j && j.ok) {
+      config = { ...config, ...j }; paintConfig(); cfgBox.hidden = true;
+      status('Files now go to ' + j.save_dir + ' · Download gives '
+             + j.format.toUpperCase());
+    } else {
+      // Stay open: a rejected folder is something to correct, not to lose.
+      cfgNote.className = 'err';
+      cfgNote.textContent = (j && j.error) ? j.error : 'could not apply that';
+    }
+  } catch (e) {
+    cfgNote.className = 'err'; cfgNote.textContent = 'could not apply that: ' + e;
+  }
+};
+
+loadConfig();
+
 // Initial paint. /document already knows which design is active and carries its
 // transcript, so a reopened panel comes back to the conversation it was showing
 // rather than a blank page.
@@ -865,6 +1045,96 @@ Promise.all([
   log.innerHTML = '';
   status('Agent service not reachable.', 'err');
 });
+</script>
+
+<!-- The thinking orb.
+     A separate module, loaded after the panel, and deliberately not part of it:
+     the panel is one plain script with no build step, and `import` would make it
+     a module — which the panel's test harness cannot execute. Kept apart, the
+     orb is what it should be anyway: decoration that the panel works without. A
+     failed import leaves the CSS wheel exactly as it was.
+
+     It watches the banner rather than being driven by it, so every way a turn
+     can end — done, stopped, connection lost — stops the animation without the
+     banner code having to remember to say so. -->
+<script type="module">
+import('/thinking-orb-engine.js').then((orbs) => {
+  const SIZE = 20;                      // the engine's inline-text tuning
+  const banner = document.getElementById('banner');
+  const wheel = document.getElementById('wheel');
+  const canvas = document.getElementById('orb');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  // Matte grey dots would read as dead pixels on this panel; the accent is what
+  // the rest of the panel uses for "this is the machine talking".
+  const TINT = { r: 124, g: 199, b: 255 };          // var(--accent), #7cc7ff
+  const dpr = Math.min(2, window.devicePixelRatio || 1);
+  canvas.width = Math.round(SIZE * dpr);
+  canvas.height = Math.round(SIZE * dpr);
+  canvas.style.width = SIZE + 'px';
+  canvas.style.height = SIZE + 'px';
+
+  const reduced = window.matchMedia
+    && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  let mode = null;
+  let raf = 0;
+  let running = false;
+
+  function use(state) {
+    // An unknown state must not take the indicator down with it.
+    try {
+      const preset = orbs.resolvePreset(state, SIZE);
+      mode = { draw: orbs.MODE_FRAMES[preset.mode], opts: preset.opts,
+               speed: preset.speed };
+    } catch (err) {
+      if (!mode) use('working');
+    }
+  }
+
+  function paint(seconds) {
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, SIZE, SIZE);
+    orbs.paintFrame(ctx, mode.draw(SIZE, seconds, mode.opts), true, TINT);
+  }
+
+  function tick() {
+    paint((performance.now() / 1000) * mode.speed);
+    if (running) raf = requestAnimationFrame(tick);
+  }
+
+  // Animating an orb nobody can see is the panel's one chance to waste a
+  // laptop battery: it is docked open all day beside the viewport.
+  function showing() {
+    return !banner.hidden && !document.hidden
+      && !/\b(done|stopped|lost)\b/.test(banner.className);
+  }
+
+  function sync() {
+    if (!mode) use('working');
+    if (showing()) {
+      canvas.hidden = false;
+      wheel.hidden = true;
+      if (reduced) { paint(0.6); return; }      // one static, representative frame
+      if (!running) { running = true; raf = requestAnimationFrame(tick); }
+    } else {
+      running = false;
+      if (raf) cancelAnimationFrame(raf);
+      raf = 0;
+    }
+  }
+
+  window.__orb = {
+    set(state) { use(state); sync(); },
+  };
+
+  new MutationObserver(sync).observe(banner, {
+    attributes: true, attributeFilter: ['hidden', 'class'],
+  });
+  document.addEventListener('visibilitychange', sync);
+  sync();
+}).catch(() => { /* no orb; the wheel is still there and still spinning */ });
 </script>
 </body>
 </html>

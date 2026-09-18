@@ -65,11 +65,17 @@ claude mcp add fusion -- uvx arges-mcp
 | --- | --- |
 | `fusion_execute` | Runs Python inside Fusion with `adsk`, `app`, `ui`, `design` injected. The namespace persists across calls. |
 | `fusion_screenshot` | Viewport PNG (`front`, `top`, `right`, `iso`, `fit`) returned as a real image, not base64 text. |
-| `fusion_export` | STL / STEP / 3MF / USD into `~/Documents/arges-exports/`. |
+| `fusion_export` | STL / STEP / 3MF / USD / F3D into `~/Documents/arges-exports/`. |
+| `fusion_download` | The same into the configured save folder (Downloads by default), never overwriting. |
+| `fusion_save` | The design as one `.f3d` in that folder. Runs automatically after every successful `fusion_execute`; `ARGES_AUTOSAVE=0` turns that off. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
 
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so the
 model can read it and fix its own code.
+
+Two settings, both read per call so neither needs a restart. `ARGES_AUTOSAVE=0` stops the automatic
+save; `ARGES_SAVE_DIR` sets where saves and downloads go when no folder has been chosen in the chat
+panel, which writes `config.json` in the state directory and wins over both.
 
 ## Upgrading
 

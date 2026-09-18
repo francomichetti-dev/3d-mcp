@@ -27,9 +27,12 @@ const HTML = fs.readFileSync(
 
 const script = HTML.match(/<script>([\s\S]*?)<\/script>/)[1];
 const ids = [...HTML.matchAll(/id="([^"]+)"/g)].map((m) => m[1]);
+// Which of them the markup hides, so the stub starts where the browser does.
+const hiddenIds = [...HTML.matchAll(/<[^>]*\bid="([^"]+)"[^>]*\shidden\s*>/g)]
+  .map((m) => m[1]);
 
 function start() {
-  const h = makeHarness(ids);
+  const h = makeHarness(ids, hiddenIds);
   vm.createContext(h.sandbox);
   vm.runInContext(script, h.sandbox);
   // A design has to be on screen before anything else means anything.
@@ -352,6 +355,228 @@ truthy('and pins the dropdown rows to the panel colours',
          guardAt !== -1 && firstDisplayId !== -1 && guardAt < firstDisplayId);
 }
 
-console.log();
-console.log(`${PASS} passed, ${FAIL} failed`);
-process.exit(FAIL ? 1 : 0);
+// --------------------------------------------------------- files ------------
+// The Save and Download buttons exist so that getting the file out never
+// depends on the model remembering to do it. What matters in here: a press
+// produces exactly one request, the reply is reported with the folder in it
+// (because "where did it go" is the question), a failure says so instead of
+// reading as success, and a press cannot be doubled while the first is in
+// flight — the bridge runs one job at a time and refuses the second.
+console.log('Save and Download');
+
+function harnessWithReplies(replies) {
+  // Each entry is matched by url; anything else gets a bare ok.
+  const h = makeHarness(ids, hiddenIds);
+  h.sandbox.fetch = (url, opts) => {
+    h.sent.push({ url, opts });
+    const body = replies[url];
+    const answer = typeof body === 'function' ? body() : body;
+    return Promise.resolve({ ok: true, json: () => Promise.resolve(answer || { ok: true }) });
+  };
+  vm.createContext(h.sandbox);
+  vm.runInContext(script, h.sandbox);
+  h.deliver({ type: 'document', key: 'd1', name: 'tower', design: true,
+              transcript: [], plan: [], busy: false });
+  return h;
+}
+
+const flush = () => new Promise((r) => setImmediate(r));
+
+truthy('the header declares a Save button', /id="save"/.test(HTML));
+truthy('and a Download button', /id="download"/.test(HTML));
+truthy('and a config button', /id="cfg-open"/.test(HTML));
+// A file the model did not ask for must still be honest about the format, or
+// "Download" is a button whose result you have to guess.
+truthy('the download button names its format', /Download ' \+ \(config\.format/.test(HTML));
+// The format menu is a <select>, and an unpinned dropdown is painted by the
+// engine in its own colours — which is how a pale popup over this dark panel
+// happened once already.
+truthy('the format menu pins its dropdown rows to the panel colours',
+       /#cfg select option\s*\{[^}]*background:\s*var\(--panel\)/.test(HTML));
+truthy('and its inputs are not transparent over the log',
+       /#cfg input, #cfg select\s*\{[^}]*background:\s*var\(--panel\)/.test(HTML));
+
+(async () => {
+  {
+    const h = harnessWithReplies({
+      '/fusion/config': { ok: true, save_dir: '/Users/x/Downloads', format: 'step',
+                          formats: ['stl', 'step', 'f3d'], save_format: 'f3d' },
+      '/fusion/save': { ok: true, name: 'tower.f3d', bytes: 2956382,
+                        folder: '/Users/x/Downloads' },
+    });
+    await flush();
+    check('the panel asks what the settings are', h.sent[0].url, '/fusion/config');
+    check('and puts the configured format on the button',
+          h.doc.getElementById('download').textContent, 'Download STEP');
+
+    h.sent.length = 0;
+    await h.doc.getElementById('save').onclick();
+    check('one press, one request', h.sent.map((s) => s.url), ['/fusion/save']);
+    check('and it is a POST', h.sent[0].opts.method, 'POST');
+    const lines = h.doc.getElementById('log').children;
+    const last = lines[lines.length - 1].textContent;
+    truthy('the result names the file', last.includes('tower.f3d'));
+    truthy('its size in something human', last.includes('2.8 MB'));
+    truthy('and the folder it went to', last.includes('/Users/x/Downloads'));
+    check('the button is usable again', h.doc.getElementById('save').disabled, false);
+  }
+
+  // A save that fails must not read as one that worked.
+  {
+    const h = harnessWithReplies({
+      '/fusion/save': { ok: false, error: 'Fusion is not reachable' },
+    });
+    await flush();
+    await h.doc.getElementById('save').onclick();
+    const lines = h.doc.getElementById('log').children;
+    const line = lines[lines.length - 1];
+    truthy('a failure is marked as one', line.classList.contains('err'));
+    truthy('and carries the reason', line.textContent.includes('not reachable'));
+  }
+
+  // Both buttons are held while either is working: the bridge does one job at a
+  // time, so a second press would be refused rather than queued.
+  {
+    let release;
+    const h = harnessWithReplies({
+      '/fusion/download': () => ({ ok: true, name: 'a.stl', bytes: 10, folder: '/f' }),
+    });
+    h.sandbox.fetch = (url, opts) => {
+      h.sent.push({ url, opts });
+      return new Promise((res) => { release = () => res({
+        ok: true, json: () => Promise.resolve({ ok: true, name: 'a.stl', bytes: 10, folder: '/f' }) }); });
+    };
+    h.sent.length = 0;                       // startup chatter is not the subject
+    const done = h.doc.getElementById('download').onclick();
+    await flush();
+    check('the other button is held too', h.doc.getElementById('save').disabled, true);
+    h.doc.getElementById('save').onclick();          // a press that must do nothing
+    await flush();
+    check('so a second press sends nothing', h.sent.map((s) => s.url), ['/fusion/download']);
+    release(); await done;
+    check('and both come back', [h.doc.getElementById('save').disabled,
+                                h.doc.getElementById('download').disabled], [false, false]);
+  }
+
+  // The config button: fills itself from the service, applies, and stays open on
+  // a rejection so a mistyped folder can be corrected rather than lost.
+  {
+    const h = harnessWithReplies({
+      '/fusion/config': { ok: true, save_dir: '/Users/x/Downloads', format: 'stl',
+                          formats: ['stl', 'step', '3mf', 'usd', 'f3d'], save_format: 'f3d' },
+    });
+    await flush();
+    await h.doc.getElementById('cfg-open').onclick();
+    check('the panel opens', h.doc.getElementById('cfg').hidden, false);
+    check('the folder box shows the real path, not a blank meaning "default"',
+          h.doc.getElementById('cfg-dir').value, '/Users/x/Downloads');
+    check('every format the exporter has is offered',
+          h.doc.getElementById('cfg-fmt').children.length, 5);
+
+    h.sandbox.fetch = (url, opts) => {
+      h.sent.push({ url, opts });
+      return Promise.resolve({ ok: true, json: () => Promise.resolve(
+        { ok: false, error: '/nope is not writable' }) });
+    };
+    h.sent.length = 0;
+    h.doc.getElementById('cfg-dir').value = '/nope';
+    await h.doc.getElementById('cfg-save').onclick();
+    check('applying sends the folder and the format',
+          JSON.parse(h.sent[0].opts.body).save_dir, '/nope');
+    check('a rejected folder keeps the panel open',
+          h.doc.getElementById('cfg').hidden, false);
+    truthy('and says why',
+           h.doc.getElementById('cfg-note').textContent.includes('not writable'));
+  }
+
+  // ------------------------------------------------------- thinking orb -----
+  // The orb is decoration, and the rule it has to obey is that the panel works
+  // without it: its engine is a separate module, so an import that fails, or a
+  // browser that will not run it, must leave the wheel that was there before.
+  console.log('Thinking orb');
+
+  truthy('the banner declares the fallback wheel', /id="wheel"/.test(HTML));
+  truthy('and a canvas for the orb', /id="orb"/.test(HTML));
+  truthy('the canvas starts hidden, so a failed import shows the wheel',
+         /<canvas[^>]*id="orb"[^>]*\shidden\s*>/.test(HTML));
+  // Carrying .spin is what makes every existing "hide the indicator" rule —
+  // done, stopped, lost — apply to the orb without being restated.
+  truthy('the orb carries the indicator class', /class="spin orb"/.test(HTML));
+  truthy('and .spin.orb undoes the wheel it inherits',
+         /\.spin\.orb\s*\{[^}]*animation:\s*none/.test(HTML));
+  // The panel's own script must stay a plain script: the harness runs it, and
+  // an import statement in it would make that impossible.
+  check('the panel script itself imports nothing', /\bimport\s*\(/.test(script), false);
+  truthy('the orb lives in its own module',
+         /<script type="module">/.test(HTML));
+
+  {
+    // With an orb present, the state on the event is what gets drawn.
+    const h = harnessWithReplies({});
+    const states = [];
+    h.sandbox.window.__orb = { set: (s) => states.push(s) };
+    h.deliver({ type: 'tool', name: 'fusion_execute', summary: '', live: true,
+                verb: 'Sketching', orb: 'shaping' });
+    check('the orb follows the event', states, ['shaping']);
+    h.deliver({ type: 'tool', name: 'fusion_save', summary: '',
+                verb: 'Saving', orb: 'composing' });
+    check('and changes with the activity', states, ['shaping', 'composing']);
+  }
+
+  {
+    // An event with no orb state — an older service, a replayed transcript —
+    // must still start the indicator rather than throwing.
+    const h = harnessWithReplies({});
+    const states = [];
+    h.sandbox.window.__orb = { set: (s) => states.push(s) };
+    h.deliver({ type: 'tool', name: 'fusion_state', summary: '', verb: 'Checking' });
+    check('a missing orb state falls back to thinking', states, ['breathing']);
+  }
+
+  // The engine is vendored, so its API is a thing that can change under us. A
+  // frame that generates but does not paint, or an export that got renamed,
+  // would show up in Fusion as a banner with a blank square in it — and nowhere
+  // else. So the draw path runs here, against a recording 2D context.
+  {
+    const engine = await import('../agent/static/thinking-orb-engine.js');
+    check('the engine exports what the panel calls',
+          ['MODE_FRAMES', 'paintFrame', 'resolvePreset']
+            .filter((k) => typeof engine[k] === 'undefined'), []);
+
+    const calls = [];
+    const ctx = {
+      setTransform() { calls.push('setTransform'); },
+      clearRect() { calls.push('clearRect'); },
+      beginPath() { calls.push('beginPath'); },
+      arc() { calls.push('arc'); },
+      fill() { calls.push('fill'); },
+      moveTo() {}, lineTo() {}, stroke() {}, closePath() {},
+      save() {}, restore() {},
+      set fillStyle(_v) {}, set strokeStyle(_v) {}, set lineWidth(_v) {},
+      set globalAlpha(_v) {},
+    };
+    // Every state the service can ask for, at the size the banner uses.
+    const states = ['working', 'searching', 'solving', 'weaving', 'composing',
+                    'breathing', 'shaping'];
+    const painted = [];
+    for (const state of states) {
+      calls.length = 0;
+      const preset = engine.resolvePreset(state, 20);
+      const frame = engine.MODE_FRAMES[preset.mode](20, 1.0, preset.opts);
+      engine.paintFrame(ctx, frame, true, { r: 124, g: 199, b: 255 });
+      painted.push(calls.filter((c) => c === 'arc').length > 0);
+      truthy(`${state} produces marks to draw`, frame.dots.length > 0);
+      truthy(`${state} has a speed to run at`, preset.speed > 0);
+    }
+    check('every state the panel uses actually paints dots',
+          painted.filter((ok) => !ok).length, 0);
+  }
+
+  console.log();
+  console.log(`${PASS} passed, ${FAIL} failed`);
+  process.exit(FAIL ? 1 : 0);
+})();
+
+const NEVER = false;
+if (NEVER) {
+}

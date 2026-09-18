@@ -1045,6 +1045,66 @@ async def switching_checks():
 
 asyncio.run(switching_checks())
 
+# ------------------------------------------------------------ thinking orb ----
+# The banner's orb is chosen here, next to the verbs, so the panel never has to
+# know what "Chamfering" looks like. The thing worth testing is coverage: a verb
+# nobody chose an animation for silently falls back to the general one, which
+# looks like a working feature and is a forgotten one.
+print("Thinking orb")
+
+named = {verb for _, verb in svc._ACTIVITY_VERBS}
+# Derived from the tools rather than listed, so a NEW tool with a new verb fails
+# this the moment it is added without an orb.
+for tool in ("fusion_screenshot", "fusion_state", "fusion_export",
+             "fusion_download", "fusion_save", "plan"):
+    named.add(svc._activity_verb("mcp__fusion__" + tool, {}))
+check("every named activity has an orb chosen for it",
+      sorted(v for v in named if v not in svc.ORB_STATES), [])
+
+# The generic ones are meant to fall through; pinned so the fallback stays
+# deliberate rather than becoming the accident above.
+check("the generic verbs use the default deliberately",
+      (svc._orb_state("Working"), svc._orb_state("Building"),
+       svc._orb_state("something new")),
+      (svc.ORB_DEFAULT, svc.ORB_DEFAULT, svc.ORB_DEFAULT))
+truthy("and thinking has its own state, distinct from working",
+       svc.ORB_THINKING != svc.ORB_DEFAULT)
+
+# The state rides on the tool event beside the verb, so a replayed transcript
+# animates the same way a live turn did.
+truthy("the orb state travels with the verb on the tool event",
+       '"orb": _orb_state(verb)' in
+       (REPO_ROOT / "agent/agent_service.py").read_text(encoding="utf-8"))
+
+
+async def orb_engine_is_served():
+    from aiohttp import web, ClientSession
+
+    app = svc.build_app(7655)
+    app.on_startup.clear()
+    app.on_cleanup.clear()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    with _socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    await web.TCPSite(runner, "127.0.0.1", port).start()
+    try:
+        async with ClientSession() as session:
+            async with session.get(
+                f"http://127.0.0.1:{port}/thinking-orb-engine.js",
+                headers={"Host": "127.0.0.1:7655"},
+            ) as reply:
+                return reply.status, reply.headers.get("Content-Type", ""), await reply.text()
+    finally:
+        await runner.cleanup()
+
+
+status, ctype, body = asyncio.run(orb_engine_is_served())
+check("the orb engine is served", status, 200)
+truthy("as JavaScript", "javascript" in ctype)
+truthy("and it is the real engine", "resolvePreset" in body)
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

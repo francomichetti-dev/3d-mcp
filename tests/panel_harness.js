@@ -55,9 +55,13 @@ class El {
   querySelector() { return null; }
 }
 
-function buildDocument(ids) {
+function buildDocument(ids, hiddenIds) {
   const byId = new Map();
   ids.forEach((id) => byId.set(id, new El('div')));
+  // Elements the markup declares `hidden` start hidden, as they do in a browser.
+  // Without this every panel is open at load, and a toggle button tested here
+  // reads its own first press as a second one.
+  (hiddenIds || []).forEach((id) => { if (byId.has(id)) byId.get(id).hidden = true; });
   return {
     _byId: byId,
     getElementById(id) {
@@ -76,9 +80,9 @@ function buildDocument(ids) {
 
 // Captures what the panel tried to send, so a test can assert on requests
 // without a server.
-function makeHarness(ids) {
+function makeHarness(ids, hiddenIds) {
   const sent = [];
-  const doc = buildDocument(ids);
+  const doc = buildDocument(ids, hiddenIds);
   const listeners = {};
   const sse = {
     set onmessage(fn) { listeners.message = fn; },

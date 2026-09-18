@@ -22,6 +22,52 @@ install recreated the failure.
 session actually reaches its tools. That needs the `claude` CLI in the test
 environment; a stub `arges` on PATH plus a session-ready assertion would do.
 
+## Fusion is read-only here: an expired subscription, and what it cost
+
+Found while verifying autosave against a live document (`scooter-grip-kids`,
+2026-09-18). The Fusion window title reads:
+
+    scooter-grip-kids* - Autodesk Fusion (Expired Subscription - Read Only)
+
+In that state `Document.save()` **returns True and saves nothing**. Verified,
+all of it: no new version (`dataFile.versionNumber` stayed 7 across a real
+parameter change plus two saves, and a fresh `findFileById` agreed), the
+document stayed dirty, Fusion's own Save command stayed disabled, and
+`app.data.activeProject` raises `InternalValidationError: id.size()` rather
+than returning None — which an earlier draft of the save code assumed.
+
+Consequences already handled:
+
+- Saving does **not** go through Fusion's save. A save is an `f3d` archive
+  written by the export manager, which keeps working in read-only mode
+  (verified: 2.96 MB written from this very document).
+- `isModified` is a real dirty flag, not a stuck one — it stays True because
+  no save can ever succeed here. Do not "fix" it.
+- Exports are unaffected: STL, STEP, 3MF and F3D all wrote correctly.
+
+**Still open:** the healthy-subscription path has never run. Nobody has seen
+this code on a Fusion that can save, so two things are unverified — whether
+Fusion's own cloud save is worth attempting *alongside* the archive when it
+would actually work, and whether `isModified` clears promptly enough after a
+real save to be used as a skip condition. Revisit when the subscription is
+renewed; until then the archive is the only save there is, and the `.f3d` in
+the save folder is the only copy of any work done in a read-only session.
+
+## The autosave costs about 1.5–2 s and ~3 MB per modelling step
+
+Measured on `scooter-grip-kids` (two bodies, 2.96 MB archive): `fusion_save`
+took 2.3 s, and a `fusion_execute` plus its autosave 1.9 s. The archive is the
+whole design, so both numbers scale with the design, and the file is rewritten
+after every successful call including ones that changed nothing.
+
+That is the price of "it is always saved", and it was the explicit ask. If it
+starts to bite in a long build, the fix is a change fingerprint computed inside
+the same snippet — timeline count, body count, parameter expressions — compared
+against the last one so an unchanged design skips the write without costing an
+extra round trip. Not built: `isModified` would be the obvious signal and it
+cannot be trusted here (see above), and guessing from the source is exactly
+what this project argues against elsewhere.
+
 ## Live numbers for the combined execute+screenshot
 
 `fusion_execute(screenshot=...)` and `rhino_execute(screenshot=...)` fold the

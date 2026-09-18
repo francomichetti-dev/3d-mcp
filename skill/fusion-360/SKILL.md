@@ -1,14 +1,17 @@
 ---
 name: fusion-360
-description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export tools are involved.
+description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save tools are involved.
 ---
 
 # Fusion 360 via arges
 
 You drive a live Fusion 360 session on this Mac. `fusion_execute` runs Python
 inside it, `fusion_screenshot` is your eyes, `fusion_state` says what is open,
-`fusion_export` writes files. Read this page fully; load a reference file below
-when you need it.
+`fusion_export` writes files into the exports folder, and `fusion_download` puts
+one in the person's own save folder when they want the file itself. You never
+need to save: every successful `fusion_execute` writes the design to that folder
+already, and `fusion_save` is only for an explicit "save it now". Read this page
+fully; load a reference file below when you need it.
 
 ## The two conversions that break everything
 
