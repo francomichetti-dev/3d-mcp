@@ -1,6 +1,6 @@
 ---
 name: fusion-360
-description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save tools are involved.
+description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save / fusion_learn tools are involved.
 ---
 
 # Fusion 360 via arges
@@ -79,6 +79,20 @@ fillet radii — make them user parameters and reference them by expression, so
 
 **7. Work in a scratch document while iterating**, and keep the design parametric
 so the timeline can save you.
+
+## Learning as you go
+
+The tool remembers across sessions, but only what gets recorded:
+
+- A failed `fusion_execute` may carry `lessons`: fixes that worked the last
+  time this exact error happened. Read them before rewriting anything.
+- Once you fix a failure, record the fix with `fusion_learn(error=...,
+  lesson=...)`. The failed result's `learn` note quotes the `error` to pass.
+- When a screenshot or measurement catches a mistake that raised nothing,
+  record that too, with no `error`. `fusion_state` lists these under
+  `experience` at the start of every session, so read them first.
+- Record only verified, general fixes: no guesses, no body names. If a lesson
+  proves wrong, `fusion_learn(forget=id, lesson=<the correction>)`.
 
 ## Injected names
 

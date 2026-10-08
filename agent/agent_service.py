@@ -401,9 +401,12 @@ work rather than describing it.
 Non-negotiables (these cost real work when broken):
 - The Fusion API's length unit is CENTIMETRES regardless of display units:
   20 mm is 2.0. Angles are radians.
-- After ANY geometry change, call fusion_screenshot and actually look at it.
-  A wrong extrude direction or a profile that grabbed the wrong region raises
-  no exception — the screenshot is the only way to catch it.
+- After ANY geometry change, look at it: pass screenshot="iso" (or another
+  view) on the fusion_execute call that makes the change, and the picture
+  comes back with the result in one round trip. Then actually read it. A
+  wrong extrude direction or a profile that grabbed the wrong region raises
+  no exception, so the picture is the only way to catch it. Call
+  fusion_screenshot only for a second angle.
 - Never query faces or edges in the SAME fusion_execute call that created a
   feature: the read succeeds but returns stale topology. Split them.
 - Never call ui.messageBox, adsk.doEvents(), or create/execute UI commands —
@@ -411,6 +414,13 @@ Non-negotiables (these cost real work when broken):
 - Prefer user parameters over hardcoded numbers so the design stays editable.
 
 Keep replies short. The person is watching geometry appear, not reading prose.
+
+This tool learns from use. A failed fusion_execute may carry `lessons`: fixes
+recorded the last time that exact error happened, in any session. Read them
+before rewriting anything. When you fix a failure, or a picture shows a
+mistake that raised nothing, record it with fusion_learn: one or two verified
+sentences, true beyond this design. fusion_state lists the general lessons, so
+read them when you start.
 
 Use the `plan` tool for anything that takes more than two or three steps. Call
 it once before you start building, with the whole plan as short concrete steps
@@ -663,13 +673,13 @@ class Session:
                     ],
                 }
             },
-            # Only the read-only tools are pre-approved. fusion_execute,
-            # fusion_export, fusion_download and fusion_save are deliberately
-            # NOT listed: an allowed_tools entry
-            # auto-approves a call *before* can_use_tool runs, so listing them
-            # would silently disable the destructive gate entirely (the SDK
-            # warns about exactly this). Leaving them out makes every call fall
-            # through to the callback, which auto-allows the additive ones.
+            # Every Fusion tool is pre-approved, fusion_execute included. That
+            # is safe only because the gate is the PreToolUse hook below, which
+            # runs before any allow rule. When the gate was can_use_tool, an
+            # allowed_tools entry approved a call before it ever ran, and
+            # listing fusion_execute here would have disabled the gate
+            # entirely (the SDK warns about exactly this).
+            # tests/test_consistency.py holds this list to the server's tools.
             allowed_tools=[
                 # Writing the plan changes nothing in the design — it only
                 # updates what the panel shows — so it never needs approval.
@@ -680,6 +690,8 @@ class Session:
                 "mcp__fusion__fusion_export",
                 "mcp__fusion__fusion_download",
                 "mcp__fusion__fusion_save",
+                # Writes a lesson to a local file and touches no geometry.
+                "mcp__fusion__fusion_learn",
             ],
             # The hook is the gate — it runs before any allow rule or
             # permission mode is consulted, so pre-approving the tools above
@@ -1015,6 +1027,7 @@ ORB_STATES: dict[str, str] = {
     "Exporting": "composing",
     "Writing a file": "composing",
     "Saving": "composing",
+    "Noting what worked": "composing",
     "Planning": "solving",
 }
 ORB_DEFAULT = "working"
@@ -1043,6 +1056,8 @@ def _activity_verb(name: str, args: dict[str, Any]) -> str:
         return "Writing a file"
     if short == "fusion_save":
         return "Saving"
+    if short == "fusion_learn":
+        return "Noting what worked"
     if short == "plan":
         return "Planning"
     if short != "fusion_execute":
@@ -1069,6 +1084,9 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
                 f"{args.get('body_or_component', '') or '(whole design)'}")
     if short == "fusion_save":
         return "the whole design"
+    if short == "fusion_learn":
+        lesson = str(args.get("lesson") or "").strip()
+        return lesson[:80] if lesson else f"forget {args.get('forget', '')}"
     return ", ".join(f"{k}={v}" for k, v in list(args.items())[:2])[:80]
 
 

@@ -94,6 +94,7 @@ server/src/arges_mcp/          the published package (PyPI: arges-mcp)
     bootstrap.py                `install` / `uninstall` / `status`
     broker.py                   the job queue the Rhino half polls
     experience.py               what the tool remembers between sessions
+    lessons.py                  fixes recalled when their error comes back
     addin/Arges/         the Fusion add-in, shipped inside the package
 scripts/rhino/                  the Rhino half — dependency-free, not published
     rhino_mcp.py                the Rhino MCP server

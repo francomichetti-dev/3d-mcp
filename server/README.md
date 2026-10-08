@@ -68,7 +68,8 @@ claude mcp add fusion -- uvx arges-mcp
 | `fusion_export` | STL / STEP / 3MF / USD / F3D into `~/Documents/arges-exports/`. |
 | `fusion_download` | The same into the configured save folder (Downloads by default), never overwriting. |
 | `fusion_save` | The design as one `.f3d` in that folder. Runs automatically after every successful `fusion_execute`; `ARGES_AUTOSAVE=0` turns that off. |
-| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
+| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
+| `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
 
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so the
 model can read it and fix its own code.

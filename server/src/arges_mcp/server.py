@@ -32,7 +32,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from . import common, experience
+from . import common, experience, lessons
 from fastmcp.utilities.types import Image
 
 # --------------------------------------------------------------------------
@@ -160,7 +160,12 @@ mcp = FastMCP(
         "Check fusion_state before assuming anything about "
         "the document, and verify every geometry change visually: "
         "fusion_execute(screenshot=\"iso\") returns the picture together with "
-        "the result in one call; fusion_screenshot is the standalone look."
+        "the result in one call; fusion_screenshot is the standalone look. "
+        "The tool learns from use: a failed call may carry `lessons`, fixes "
+        "recorded the last time that exact error happened, so read them "
+        "first. After you fix a failure, or catch a silent mistake in a "
+        "screenshot, record it with fusion_learn so the next session starts "
+        "knowing it."
     ),
 )
 
@@ -621,6 +626,42 @@ def _remember(tool: str, code: str, outcome: dict[str, Any], seconds: float,
         log.warning("could not record experience: %r", exc)
 
 
+def _recall(result: dict[str, Any]) -> dict[str, Any]:
+    """Attach what was learned about this failure to it. Never raises.
+
+    Returns what the experience log should note, so the report can tell
+    whether a lesson that was shown led to a fix.
+    """
+    failure = result.get("traceback") or result.get("error") or ""
+    try:
+        found = lessons.default_store().for_error(failure)
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not read lessons: %r", exc)
+        found = []
+    if found:
+        result["lessons"] = [lessons.brief(item) for item in found]
+        return {"lessons": [item.get("id") for item in found]}
+    # Only for code that ran and raised. An error alone means the code never
+    # ran, usually "no active design", and its message already says what to do.
+    sig = experience.error_signature(failure) if "traceback" in result else ""
+    if sig:
+        result["learn"] = (
+            "No lesson recorded for this error yet. Once you have fixed it, "
+            f"record what fixed it: fusion_learn(error={sig!r}, lesson=...).")
+    return {}
+
+
+def _experience_summary() -> dict[str, Any]:
+    """What fusion_state says about accumulated experience. Never raises."""
+    try:
+        store = lessons.default_store()
+        return {"lessons": [lessons.brief(item) for item in store.general()],
+                "lessons_total": len(store.all())}
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not read lessons: %r", exc)
+        return {"lessons": [], "lessons_total": 0}
+
+
 # --------------------------------------------------------------------------
 # Tools.
 # --------------------------------------------------------------------------
@@ -668,6 +709,11 @@ def fusion_execute(
     code never ran. The usual cause is "no active Fusion design".
     Always check `error` when `traceback` is absent. With screenshot set, that
     same JSON is the first content block and the image is the second.
+
+    LESSONS: a failed result may carry `lessons`, fixes recorded the last time
+    this exact error happened (in any session). Read them before rewriting the
+    code. If there are none it carries `learn` instead; once you have fixed
+    the error, record what fixed it with fusion_learn.
 
     SAVING IS AUTOMATIC: after every successful call the design is written to
     the person's save folder as a Fusion archive, and the result carries
@@ -720,6 +766,8 @@ def fusion_execute(
         if "autosave" in result:
             # FOLLOWUP.md asks what the autosave really costs; this answers it.
             extra["autosave_ms"] = int(round((time.monotonic() - saving) * 1000))
+    else:
+        extra.update(_recall(result))
     _remember("fusion_execute", code, result, seconds, **extra)
     if screenshot is None or not result.get("ok"):
         # A failed script wants its traceback read, not photographed; the
@@ -947,6 +995,61 @@ def fusion_save() -> dict[str, Any]:
 
 
 @mcp.tool
+def fusion_learn(lesson: str, error: str = "", tags: str = "",
+                 forget: str = "") -> dict[str, Any]:
+    """Record what you learned, so the next session starts knowing it.
+
+    Call it in two situations:
+      - You fixed a failed call. Pass `error` (the traceback's last line, or
+        the signature quoted in the failed result's `learn` note) and one or
+        two sentences on what fixed it and why. The next time any session hits
+        that error, the lesson arrives on the failed result automatically.
+      - A screenshot or measurement exposed a mistake that raised nothing: a
+        mirrored sketch, a profile that grabbed the wrong region, a part 10x
+        off. Leave `error` empty. fusion_state lists these general lessons at
+        the start of every session.
+
+    Record only what you verified (the fix worked), keep it general (true
+    beyond this design, so no body names) and actionable ("pick the profile by
+    area, not by index"). Never record a guess: a wrong lesson misleads every
+    later session. Recording the same lesson again confirms it, and the
+    better-confirmed lessons rank first.
+
+    If a lesson you were shown turned out to be wrong, pass its id as `forget`,
+    with the corrected text as `lesson` to replace it, or with no lesson to
+    remove it. `tags` is optional, comma-separated ("sketch, profiles").
+
+    Returns {"ok": true, "id", "new", "confirmed", "error_signature",
+    "lessons_total"} (plus "forgot" when one was removed), or
+    {"ok": false, "error"}.
+    """
+    text = (lesson or "").strip()
+    forget = (forget or "").strip()
+    if not text and not forget:
+        raise ToolError("`lesson` must say what fixed it and why "
+                        "(or pass `forget` with a lesson id to remove one).")
+    store = lessons.default_store()
+    out: dict[str, Any] = {"ok": True}
+    try:
+        if forget:
+            if not store.forget(forget):
+                return {"ok": False, "error": (
+                    f"no lesson with id {forget!r}. Ids come with the lessons "
+                    "on a failed result and in fusion_state.")}
+            out["forgot"] = forget
+        if text:
+            added = store.add(text, error=error, tags=tags)
+            out.update(id=added["id"], new=added["new"],
+                       confirmed=added["confirmed"],
+                       error_signature=added["sig"],
+                       lessons_total=added["total"])
+    except (OSError, ValueError) as exc:
+        raise ToolError(f"Could not record the lesson: {exc}") from None
+    log.info("fusion_learn: %s", {k: v for k, v in out.items() if k != "ok"})
+    return out
+
+
+@mcp.tool
 def fusion_state() -> dict[str, Any]:
     """Report what is currently open in Fusion — call this before assuming anything.
 
@@ -959,6 +1062,11 @@ def fusion_state() -> dict[str, Any]:
 
     This is deliberately shallow. For anything deeper — nested components, face
     and edge queries, bounding boxes, measurements — use fusion_execute.
+
+    It also carries "experience": the general lessons recorded in earlier
+    sessions (mistakes that raise no error, so nothing else would bring them
+    back), best-confirmed first, and how many lessons exist in all. Read them
+    before you start; correct a wrong one with fusion_learn(forget=id).
     """
     health = _bridge_request("GET", "/health")
     seen = health.get("bridge_version")
@@ -973,6 +1081,7 @@ def fusion_state() -> dict[str, Any]:
     state.setdefault("app_version", health.get("app_version"))
     state.setdefault("busy", health.get("busy"))
     state["bridge_version"] = BRIDGE_PROTOCOL_VERSION
+    state["experience"] = _experience_summary()
     return state
 
 

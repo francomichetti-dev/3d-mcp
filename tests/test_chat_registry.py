@@ -257,6 +257,13 @@ check("permission is not persisted", "permission" in svc.PERSISTED_EVENTS, False
 truthy("compress prompt mentions core context", "CORE CONTEXT" in svc.COMPRESS_PROMPT)
 truthy("system prompt warns about other designs",
        "other tabs" in svc.SYSTEM_APPEND or "other designs" in svc.SYSTEM_APPEND)
+# The skill teaches the look folded into the change, one round trip per step;
+# the panel's prompt still taught a separate fusion_screenshot after every
+# change, doubling the calls of every build run from the panel.
+truthy("the prompt teaches the combined execute+screenshot",
+       'screenshot="iso"' in svc.SYSTEM_APPEND)
+truthy("the prompt teaches reading lessons and recording them",
+       "lessons" in svc.SYSTEM_APPEND and "fusion_learn" in svc.SYSTEM_APPEND)
 
 # ------------------------------------------------------ DNS rebinding -------
 # This service holds the bridge token and forwards to the bridge, so anything
@@ -893,6 +900,15 @@ check("state says it is checking",
       svc._activity_verb("mcp__fusion__fusion_state", {}), "Checking the design")
 check("the plan tool says planning",
       svc._activity_verb("mcp__plan__plan", {}), "Planning")
+check("recording a lesson says so",
+      svc._activity_verb("mcp__fusion__fusion_learn", {}), "Noting what worked")
+check("and the log line shows the lesson itself",
+      svc._summarize_tool("mcp__fusion__fusion_learn",
+                          {"lesson": "Pick profiles by area.", "error": "x"}),
+      "Pick profiles by area.")
+check("or which lesson it forgot",
+      svc._summarize_tool("mcp__fusion__fusion_learn", {"lesson": "", "forget": "abc"}),
+      "forget abc")
 
 # A fillet inside a longer script still reads as filleting: the first match
 # wins, and it is ordered so the interesting operation beats the sketch that
@@ -1056,7 +1072,7 @@ named = {verb for _, verb in svc._ACTIVITY_VERBS}
 # Derived from the tools rather than listed, so a NEW tool with a new verb fails
 # this the moment it is added without an orb.
 for tool in ("fusion_screenshot", "fusion_state", "fusion_export",
-             "fusion_download", "fusion_save", "plan"):
+             "fusion_download", "fusion_save", "fusion_learn", "plan"):
     named.add(svc._activity_verb("mcp__fusion__" + tool, {}))
 check("every named activity has an orb chosen for it",
       sorted(v for v in named if v not in svc.ORB_STATES), [])

@@ -222,6 +222,14 @@ check("the MCP server exposes five tools", len(mcp_tools), 5)
 # allow is invisible from the chat, and the model is told to use it anyway.
 check("and the chat window allows exactly those", allowed, mcp_tools)
 
+# The same pairing on the Fusion side. The panel pre-approves its tools and the
+# PreToolUse hook is the real gate, so a tool the server gains without the
+# panel listing it is one the panel's model is told about and cannot call.
+fusion_tools = set(re.findall(r"^@mcp\.tool\s*\ndef (fusion_\w+)", read(FUSION_SERVER), re.M))
+panel_allowed = set(re.findall(r'"mcp__fusion__(fusion_\w+)"', read(AGENT_SERVICE)))
+truthy("the Fusion server exposes tools", len(fusion_tools) >= 6)
+check("and the chat panel allows exactly those", panel_allowed, fusion_tools)
+
 handlers = set(re.findall(r'^HANDLERS\s*=|"(execute|state|screenshot)":', read(RHINO_POLLER),
                           re.M))
 for kind in ["execute", "state", "screenshot"]:

@@ -31,9 +31,11 @@ turns the log off.
 - `server/src/arges_mcp/experience.py`: standard library only, so the chat
   service can import it as it already imports `common.py`.
   - pure: `error_signature`, `function_fingerprints`, `summarize`
-  - storage: `ExperienceLog` (append-only JSONL, rotated) and `Lessons` (one
-    JSON file, written atomically under a lock, since several MCP server
-    processes share it)
+  - storage: `ExperienceLog` (append-only JSONL, rotated)
+- `server/src/arges_mcp/lessons.py`: `Lessons`, one JSON file written
+  atomically under a lock, since several MCP server processes share it.
+  Recall is by exact error signature only: a looser match would bring back
+  lessons about other errors, and a misleading lesson is worse than none.
 - a `fastcommands` package beside it: the command library. Built-ins ship in
   `builtin/`, and learned commands live in `~/.arges/commands/`, in the same
   format: one `.py` file per command, a docstring, and `def run(p)`. A command
@@ -52,7 +54,7 @@ green. Stop and ask at every gate.
       `fusion_execute` records every call, new suite `tests/test_experience.py`,
       README and SECURITY.md say what is stored.
       **Gate.**
-- [ ] **2. Lessons**: `fusion_learn` tool; a failing call returns the lessons
+- [x] **2. Lessons**: `fusion_learn` tool; a failing call returns the lessons
       recorded for its error signature, or a one-line nudge to record one once
       fixed; `fusion_state` carries the most-confirmed general lessons. Skill
       section on when to record a lesson. **Gate.**

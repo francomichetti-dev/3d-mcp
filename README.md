@@ -159,7 +159,7 @@ what it is for, the decisions and why — instead of being lost or kept whole:
 
 ### From Claude Code
 
-Six tools. `fusion_execute` is the product; the rest exist because every session needs them and
+Seven tools. `fusion_execute` is the product; the rest exist because every session needs them and
 they shouldn't require bespoke code each time.
 
 | Tool | What it does |
@@ -169,7 +169,8 @@ they shouldn't require bespoke code each time.
 | `fusion_export` | STL / STEP / 3MF / USD / F3D into `~/Documents/arges-exports/`. |
 | `fusion_download` | The same, into **your** save folder, in your configured format. |
 | `fusion_save` | The whole design as one `.f3d` — and it already ran, see below. |
-| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components. |
+| `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
+| `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
 
 A failing script is a **normal result**, not a tool error: the traceback comes back verbatim so
 Claude can read it and fix its own code.
@@ -197,6 +198,16 @@ So a save here is a **Fusion archive** (`.f3d`) written to your save folder by t
 the whole parametric design in one local file, from a code path that keeps working when saving does
 not. One file per document, overwritten: a mirror of the current state, not a pile of snapshots.
 Fusion's own ⌘S is untouched and still yours when it works.
+
+### It learns from use
+
+Every call is recorded locally in `~/.arges/experience.jsonl`: whether it worked, an error signature
+that ignores the numbers that change between runs, and how long it took. When Claude fixes an error
+it records the fix with `fusion_learn`. The next time any session hits that error, the fix comes
+back on the failed result, before Claude spends a turn rediscovering it. Mistakes that raise
+nothing, such as a mirrored sketch or a profile that grabbed the wrong region, are recorded the same
+way, and `fusion_state` lists them at the start of every session. A lesson that turns out wrong can
+be forgotten, because here a wrong pattern is worse than a missing one.
 
 ---
 
@@ -281,7 +292,7 @@ the bridge code. Getting a model to understand *where things go in 3D space* is 
 Every API pattern in it was checked against Autodesk's reference and carries its doc URL. Where a
 claim could not be verified it says so, and tells Claude to probe at runtime rather than asserting a
 rule — **a plausible-but-wrong pattern is worse than a missing one**. It uses progressive
-disclosure: `SKILL.md` (~6 KB) is always in context, and
+disclosure: `SKILL.md` (~7 KB) is always in context, and
 `references/{patterns,gotchas,spatial,printing,workflow}.md` load on demand.
 
 A sample, all verified against a running Fusion 2704:
@@ -367,7 +378,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1171 assertions across fourteen suites**, none of which need Fusion, Rhino, or an internet
+**1236 assertions across fifteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -385,6 +396,7 @@ connection. That is a macOS run; on Linux the count is lower because the install
 | `test_consistency.py` | constants and code duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 | `test_experience.py` | the experience log: errors recognised across runs, helpers recognised across renames, and a log that can never fail a call |
+| `test_lessons.py` | lessons: recalled for their own error and no other, correctable, shared safely between processes, and never in the way of a failure |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
 | `test_panel.js` | the chat panel's own JavaScript against a stub DOM: the plan, the working banner, the file buttons, the orb |
 

@@ -77,7 +77,8 @@ user with full control, all inherited.
 The experience log, `~/.arges/experience.jsonl`, records every `fusion_execute` call: whether it
 worked, the error if it did not, how long it took, and the first 4,000 characters of the code. That
 is how the tool learns from its own history, and the code in it is design data, so it gets the same
-`0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off.
+`0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off. Lessons the
+model records with `fusion_learn` go to `~/.arges/lessons.json`, under the same rules.
 
 `scripts/uninstall.sh --purge` deletes all of it.
 

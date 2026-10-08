@@ -478,7 +478,8 @@ if front:
     # The description is the ONLY thing Claude sees when deciding whether to
     # load it, so it has to name the tools it is about.
     for tool in ("fusion_execute", "fusion_screenshot", "fusion_state",
-                 "fusion_export", "fusion_download", "fusion_save"):
+                 "fusion_export", "fusion_download", "fusion_save",
+                 "fusion_learn"):
         truthy(f"the description mentions {tool}", tool in fields.get("description", ""))
 
 # The reference files are cited in backticks, not as markdown links, so the
