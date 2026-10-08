@@ -564,11 +564,48 @@ IMPORT_REFUSED = (
     "(fusion_import() lists the open tabs); mesh files (STL, OBJ, 3MF) always import."
 )
 
-def import_params(path, fmt, name="", units="mm"):
+def import_params(path, fmt, name="", units="mm", allow_duplicate=False):
     """What IMPORT_BODY is given: the file, how to read it, and what to say if refused."""
     return {"path": str(path), "format": fmt, "name": name, "units": units,
-            "refused": IMPORT_REFUSED}
+            "refused": IMPORT_REFUSED, "allow_duplicate": bool(allow_duplicate)}
 
+
+# Where each import came from is recorded on its component, and a second import
+# of the same source is refused unless asked for. Asked to "never repeat that
+# again" after the motor and tank-wheels ended up stacked three deep at the
+# origin, under different names, looking like one part and hiding each other's
+# edits. A component of the same name counts too, which also covers imports
+# made before sources were recorded. The refusal's last line names nothing, so
+# its error signature, and any lesson about it, is the same every time.
+_DUPLICATES = '''
+def _fx_existing(root, source, name):
+    for o in root.occurrences:
+        comp = o.component
+        try:
+            mark = comp.attributes.itemByName("Arges", "source")
+            if mark is not None and mark.value == source:
+                return o.name
+        except Exception:
+            pass
+        if name and comp.name == name:
+            return o.name
+    return None
+
+
+def _fx_refuse_duplicate(existing):
+    raise RuntimeError(existing + " is already in this design.\\n"
+                       "This would be a second copy of something already in the design: it lands at the "
+                       "origin, exactly behind the first, where it looks like one part. Pass "
+                       "allow_duplicate=true if a second copy is really wanted.")
+
+
+def _fx_mark_source(occurrences, source):
+    for o in occurrences:
+        try:
+            o.component.attributes.add("Arges", "source", source)
+        except Exception:
+            pass
+'''
 
 # A new component holding whatever `add` puts in it: inside a base feature when
 # the design keeps history (bodies and meshes need one there), directly when not.
@@ -604,7 +641,7 @@ def _fx_new_component(des, name, add):
 # autosave does not write a half-imported design. No size is reported: read in
 # the same call, a new occurrence's box is stale (measured: all zeros), so the
 # server measures it in a call of its own (MEASURE_BODY).
-IMPORT_BODY = _NEW_COMPONENT + '''
+IMPORT_BODY = _NEW_COMPONENT + _DUPLICATES + '''
 def _fx_import(_p):
     import os
 
@@ -615,8 +652,14 @@ def _fx_import(_p):
     if not os.path.isfile(path):
         raise RuntimeError("the file to import is gone: " + path)
     root = des.rootComponent
+    source = "file:" + path
+    if not _p.get("allow_duplicate"):
+        existing = _fx_existing(root, source, name)
+        if existing:
+            _fx_refuse_duplicate(existing)
 
     def report(method, occurrences):
+        _fx_mark_source(occurrences, source)
         return {"ok": True, "file": path, "format": fmt, "method": method,
                 "occurrences": [o.name for o in occurrences]}
 
@@ -730,7 +773,7 @@ result = _fx_open_documents(_fx_params)
 # Copies another open document's solid bodies into a new component: geometry
 # without history. On an expired subscription this is the one way to bring in
 # a design that only exists as an open tab or as an .f3d Fusion will not import.
-COPY_BODY = _NEW_COMPONENT + _DOCUMENT_REFS + '''
+COPY_BODY = _NEW_COMPONENT + _DOCUMENT_REFS + _DUPLICATES + '''
 def _fx_copy(_p):
     ref, name = _p["document"], _p["name"]
     des = adsk.fusion.Design.cast(app.activeProduct)
@@ -748,7 +791,26 @@ def _fx_copy(_p):
     source = found[0]
     if source == active:
         raise RuntimeError(repr(ref) + " is the design being imported into; it cannot be copied into itself")
-    sroot = adsk.fusion.Design.cast(source.products.itemByProductType("DesignProductType")).rootComponent
+    sdes = adsk.fusion.Design.cast(source.products.itemByProductType("DesignProductType"))
+    sroot = sdes.rootComponent
+    # The source tab's own identity where it has one, so a copy is recognised
+    # again even after the tabs are renumbered.
+    origin = None
+    try:
+        mark = sdes.attributes.itemByName("FusionChat", "chatKey")
+        origin = mark.value if mark is not None and mark.value else None
+    except Exception:
+        origin = None
+    if origin is None:
+        try:
+            origin = "file:" + source.dataFile.id if source.dataFile is not None else None
+        except Exception:
+            origin = None
+    origin = "document:" + (origin or ref)
+    if not _p.get("allow_duplicate"):
+        existing = _fx_existing(des.rootComponent, origin, name)
+        if existing:
+            _fx_refuse_duplicate(existing)
     bodies = list(sroot.bRepBodies) + [b for o in sroot.allOccurrences for b in o.bRepBodies]
     if not bodies:
         raise RuntimeError(repr(ref) + " has no solid bodies to copy")
@@ -762,6 +824,7 @@ def _fx_copy(_p):
             else:
                 comp.bRepBodies.add(body)
     occ = _fx_new_component(des, name, add_copies)
+    _fx_mark_source([occ], origin)
     # A copy arrives as Body1, Body2..., and the names are what the organising
     # that usually follows an import works from. They are set only now: a
     # name set inside the base feature's edit does not survive finishEdit

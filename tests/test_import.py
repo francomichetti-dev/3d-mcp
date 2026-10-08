@@ -176,6 +176,16 @@ def box(lo, hi):
 added = []
 
 
+class Attributes(dict):
+    """A component's attributes, as Fusion keeps them: by group and name."""
+
+    def add(self, group, name, value):
+        self[(group, name)] = NS(value=value)
+
+    def itemByName(self, group, name):
+        return self.get((group, name))
+
+
 class Bodies(Collection):
     """A component's bodies: add() appends a new, generically named body, as
     Fusion does (a copy arrives as Body1, Body2...)."""
@@ -189,7 +199,7 @@ class Bodies(Collection):
 
 def new_component_factory(root, occ_name):
     def add_new_component(matrix):
-        comp = NS(name="Component1",
+        comp = NS(name="Component1", attributes=Attributes(),
                   meshBodies=NS(add=lambda path, units, base=None:
                                 added.append(("mesh", path, units)) or Collection([NS()])),
                   bRepBodies=Bodies(),
@@ -205,7 +215,7 @@ def new_component_factory(root, occ_name):
 
 
 def occurrence(name, bodies=1):
-    comp = NS(name=name.split(":")[0], meshBodies=Collection())
+    comp = NS(name=name.split(":")[0], meshBodies=Collection(), attributes=Attributes())
     return NS(name=name, component=comp, bRepBodies=Collection([NS()] * bodies),
               boundingBox=box((0, 0, 0), (3.7, 7.5, 3.7)))
 
@@ -387,6 +397,42 @@ check("and the half-made component is removed",
       [o.name for o in root.occurrences], ["chassis:1"])
 
 
+# ------------------------------------------------------- no duplicates ----
+# The replay left the motor and tank-wheels stacked three deep at the origin,
+# under different names, where they looked like one part and hid each other's
+# edits. Asked to make sure it never happens again: each import now records
+# its source on the component, and a second import of the same source is
+# refused unless asked for.
+print("Never a second copy by accident")
+
+root = Root()
+ns = fusion(root)
+run_import({"path": str(motor), "format": "f3d", "name": "Motor", "units": "mm"}, ns)
+check("an import records where it came from",
+      root.occurrences[-1].component.attributes.itemByName("Arges", "source").value,
+      "file:" + str(motor))
+raises("the same file again is refused, whatever it is called",
+       lambda: run(common.IMPORT_BODY, dict(common.import_params(motor, "f3d", "Motor again", "mm")), ns),
+       RuntimeError, "allow_duplicate")
+check("and nothing was added", [o.name for o in root.occurrences], ["chassis:1", "motor:1"])
+params = common.import_params(motor, "f3d", "Motor again", "mm", allow_duplicate=True)
+run(common.IMPORT_BODY, params, ns)
+check("unless a second copy is asked for", len(root.occurrences), 3)
+
+root = Root(occ_name="chassis:2")
+raises("a component of the same name already there counts too, sources recorded or not",
+       lambda: run_import({"path": str(bracket), "format": "step", "name": "chassis", "units": "mm"},
+                          fusion(root, im=ImportManager(root))), RuntimeError, "chassis:1")
+try:
+    run_import({"path": str(bracket), "format": "step", "name": "chassis", "units": "mm"},
+               fusion(Root(), im=ImportManager(Root())))
+    last_line = ""
+except RuntimeError as exc:
+    last_line = str(exc).splitlines()[-1]
+check("the refusal's last line names nothing, so one lesson covers every case",
+      "chassis" in last_line, False)
+
+
 # -------------------------------------------- copying from an open tab ----
 print("Copying from another open document")
 
@@ -430,6 +476,11 @@ check("into a new component", out["occurrences"], ["motor:1"])
 # The replay that found this: tank-wheels arrived as Body1..Body11, so the
 # organising step that followed had nothing to go on.
 check("the copies keep their names", out["bodies"], ["Motor_XD37"])
+raises("copying the same tab again is refused too, under any name",
+       lambda: run(common.COPY_BODY, {"document": "Untitled #2", "name": "motor-two"}, ns),
+       RuntimeError, "allow_duplicate")
+run(common.COPY_BODY, {"document": "Untitled #2", "name": "motor-two", "allow_duplicate": True}, ns)
+check("unless asked for", [o.name for o in root.occurrences][-2:], ["motor:1", "motor:1"])
 # Verified live: a name set inside the base feature's edit does not survive
 # finishEdit, so the result reads the names back rather than trusting them.
 check("as read back from the component, not as intended",
@@ -517,6 +568,10 @@ try:
     rec = [r for r in xp.default_log().read() if r.get("tool") == "fusion_import"][-1]
     check("the log records it as an import", rec["ok"], True)
     check("of which file", rec.get("file"), str(motor))
+
+    sent.clear()
+    srv.fusion_import("motor-RECOVERED", allow_duplicate=True)
+    truthy("allow_duplicate reaches Fusion", any('allow_duplicate\\": true' in c for c in sent))
 
     sent.clear()
     out = srv.fusion_import(from_document="Untitled #2", name="motor")

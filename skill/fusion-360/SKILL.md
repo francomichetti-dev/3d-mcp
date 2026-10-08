@@ -114,6 +114,8 @@ Desktop and the save folder, and the other open tabs. Then call
 component at the origin, measured. If Fusion refuses the file (it refuses
 .f3d and STEP on an expired subscription), `fusion_import(from_document=
 "Untitled #2")` copies an open tab's bodies instead; meshes always import.
+Importing the same file or tab twice is refused (copies stack invisibly at
+the origin); pass `allow_duplicate=true` only when a second copy is wanted.
 Never search the disk with a shell, and never write to the person's files.
 
 ## Injected names

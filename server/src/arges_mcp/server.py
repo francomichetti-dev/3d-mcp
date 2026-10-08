@@ -924,6 +924,7 @@ def fusion_import(
     units: Literal["mm", "cm", "m", "in", "ft"] = "mm",
     from_document: str = "",
     screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
+    allow_duplicate: bool = False,
 ) -> Any:
     """Bring a CAD file, or another open tab's design, into the open design as a new component.
 
@@ -948,6 +949,11 @@ def fusion_import(
     {"occurrences": ["motor:1"], "method": ..., "measured": {"motor:1":
     {"bodies", "meshes", "size_mm"}}}}. Position and join it in later steps.
     A refused import comes back as a traceback, like any failing code.
+
+    Each import records its source, and importing the same file or tab again
+    is refused, as is a name already in the design: a second copy lands
+    exactly on the first at the origin and looks like one part. Pass
+    allow_duplicate=true only when a second copy is really wanted.
     """
     roots = common.import_roots([EXPORT_DIR])
     path, from_document = (path or "").strip(), (from_document or "").strip()
@@ -968,7 +974,8 @@ def fusion_import(
     if from_document:
         label = (name or "").strip()
         log.info("fusion_import: copying from open document %r as %r", from_document, label)
-        code = common.snippet(common.COPY_BODY, {"document": from_document, "name": label})
+        code = common.snippet(common.COPY_BODY, {"document": from_document, "name": label,
+                                                  "allow_duplicate": allow_duplicate})
         extra: dict[str, Any] = {"from_document": from_document}
     else:
         try:
@@ -979,7 +986,7 @@ def fusion_import(
         label = (name or "").strip() or source.stem
         log.info("fusion_import: %s (%s) as %r", source, fmt, label)
         code = common.snippet(common.IMPORT_BODY,
-                              common.import_params(source, fmt, label, units))
+                              common.import_params(source, fmt, label, units, allow_duplicate))
         extra = {"file": str(source), "format": fmt}
     result = _run_and_report("fusion_import", code, record_code="", screenshot=None, **extra)
     imported = result.get("result") if result.get("ok") else None
