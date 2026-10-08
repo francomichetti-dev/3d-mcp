@@ -71,6 +71,8 @@ sys.path.insert(0, str(SERVER_DIR / "src"))
 from arges_mcp import common as fusion_common        # noqa: E402
 # The fast-command library, read here only to gate a command by its source.
 from arges_mcp import fastcommands as fusion_commands  # noqa: E402
+# The lessons store, read to hand the model what worked before for a request.
+from arges_mcp import lessons as fusion_lessons  # noqa: E402
 
 BIND_HOST = "127.0.0.1"
 BIND_PORT = int(os.environ.get("ARGES_CHAT_PORT")
@@ -335,6 +337,27 @@ def gated_code(tool_name: str, tool_input: dict[str, Any]) -> str:
         # Unknown: the server refuses it without running anything.
         return command.source if command is not None else ""
     return ""
+
+
+def recall_note(prompt: str) -> str:
+    """What worked before for a request like this one, as a note for the model.
+
+    Asked to "delete the one I selected", the model once spent a round asking
+    which copy before it read the selection; once that quick path is recorded
+    as a recipe, it comes with the request instead. "" when nothing matches,
+    and never raises: a request must not fail because its history could not
+    be read.
+    """
+    try:
+        found = fusion_lessons.default_store().matching(prompt)
+    except Exception:                                     # noqa: BLE001
+        return ""
+    if not found:
+        return ""
+    lines = "\n".join(f"- ({item.get('id')}) {item.get('lesson')}" for item in found)
+    return ("\n\n[From earlier sessions: what worked for requests like this one. Use it "
+            "if it fits; if one is wrong, correct it with fusion_learn(forget=id).\n"
+            + lines + "]")
 
 
 def bind_tool_input(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
@@ -629,6 +652,12 @@ before rewriting anything. When you fix a failure, or a picture shows a
 mistake that raised nothing, record it with fusion_learn: one or two verified
 sentences, true beyond this design. fusion_state lists the general lessons, so
 read them when you start.
+
+Record what worked too. When the person had to clarify what they meant ("the
+one I selected"), or it took several attempts, and it then worked, record the
+quick path with fusion_learn(when=<the request in their words>, lesson=<what to
+do at once next time>). A request like it will then arrive with that note, as
+"[From earlier sessions: ...]". Use it, and correct it if it is wrong.
 
 Fast commands are proven helpers run in one call: fusion_run("bbox") to
 measure, "timeline" to check every feature's health, "profiles" to pick a
@@ -1087,7 +1116,9 @@ class Session:
             # second; this refuses a tool call that is already in flight.
             await self.registry.pin(self.key)
             try:
-                send_prompt, send_images = prompt, images or []
+                # The note goes to the model only; the transcript already holds
+                # the person's words exactly as they typed them.
+                send_prompt, send_images = prompt + recall_note(prompt), images or []
                 while True:
                     heard_from_model = False
                     try:

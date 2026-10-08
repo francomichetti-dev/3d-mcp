@@ -1341,6 +1341,34 @@ truthy("a session waits for the first model probe before it connects",
        and start_src.index("wait_for_models") < start_src.index("ClaudeSDKClient("))
 
 
+# Recipes ride with the request. Asked to "delete the one I selected", the
+# model once asked which copy first; with the quick path recorded, it comes
+# with the message instead. Only the model sees the note: the transcript keeps
+# the person's words as they typed them.
+print("What worked before rides with the request")
+
+with tempfile.TemporaryDirectory() as d:
+    real_state_dir = svc.fusion_common.state_dir
+    svc.fusion_common.state_dir = lambda: Path(d)
+    try:
+        store = svc.fusion_lessons.default_store()
+        recipe = store.add("Read ui.activeSelections, then remove the bodies with removeFeatures.",
+                           when="delete the one I selected")
+        note = svc.recall_note("the one that ive selected, we need to delete")
+        truthy("a request like a recorded success carries its quick path",
+               "removeFeatures" in note and recipe["id"] in note)
+        truthy("with the way to correct it if it is wrong", "forget" in note)
+        check("an unrelated request carries nothing", svc.recall_note("make it 5 mm taller"), "")
+    finally:
+        svc.fusion_common.state_dir = real_state_dir
+
+turn_src = inspect.getsource(svc.Session.run_turn)
+truthy("a turn sends the request with the note attached",
+       "recall_note(prompt)" in turn_src)
+truthy("the prompt teaches recording a success and its quick path",
+       "when=" in svc.SYSTEM_APPEND and "worked" in svc.SYSTEM_APPEND)
+
+
 # Review finding: the panel's gate read a fast command's source, and the
 # server read it again to run it. A command replaced in between ran unchecked.
 # The gate now stamps the hash of what it checked onto the call, and the server

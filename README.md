@@ -223,6 +223,11 @@ nothing, such as a mirrored sketch or a profile that grabbed the wrong region, a
 way, and `fusion_state` lists them at the start of every session. A lesson that turns out wrong can
 be forgotten, because here a wrong pattern is worse than a missing one.
 
+Successes are recorded the same way. When a request needed a clarification or several attempts and
+then worked, Claude records the quick path with the words the request used. The next request like it
+arrives in the panel with that path attached, and `fusion_state(query=...)` returns it from Claude
+Code. A success after repeated failures carries a nudge to do exactly that.
+
 Code that keeps getting retyped becomes a **fast command**: one Python file with a `run(p)`, called
 by name. `fusion_run("bbox")` returns every body's world-space box in millimetres in one call,
 instead of twenty lines of the same arithmetic per session. Six are built in, chosen from what past
@@ -313,7 +318,7 @@ the bridge code. Getting a model to understand *where things go in 3D space* is 
 Every API pattern in it was checked against Autodesk's reference and carries its doc URL. Where a
 claim could not be verified it says so, and tells Claude to probe at runtime rather than asserting a
 rule — **a plausible-but-wrong pattern is worse than a missing one**. It uses progressive
-disclosure: `SKILL.md` (~8 KB) is always in context, and
+disclosure: `SKILL.md` (~9 KB) is always in context, and
 `references/{patterns,gotchas,spatial,printing,workflow}.md` load on demand.
 
 A sample, all verified against a running Fusion 2704:
@@ -399,7 +404,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1593 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
+**1616 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

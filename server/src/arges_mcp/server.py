@@ -168,7 +168,10 @@ mcp = FastMCP(
         "recorded the last time that exact error happened, so read them "
         "first. After you fix a failure, or catch a silent mistake in a "
         "screenshot, record it with fusion_learn so the next session starts "
-        "knowing it. Fast commands are proven helpers run in one call with "
+        "knowing it. Record successes too: when a request needed a "
+        "clarification or several attempts and then worked, fusion_learn("
+        "when=<the request>, lesson=<the quick path>). Start with "
+        "fusion_state(query=<the person's request>) to get what worked before. Fast commands are proven helpers run in one call with "
         "fusion_run (bbox, inspect, timeline, profiles, sketch_frame, "
         "set_params, plus any saved with fusion_command_save); prefer them "
         "to retyping the same helper, and save one when you have written a "
@@ -683,6 +686,40 @@ def _recall(result: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+# Failures since the last success, in this process (one session). A success
+# after several of them is the moment the quick path is known, and the moment
+# it is about to be forgotten.
+_streak = {"failures": 0}
+_streak_lock = threading.Lock()
+STREAK_NUDGE = 2
+
+
+def _streak_reset() -> None:
+    with _streak_lock:
+        _streak["failures"] = 0
+
+
+def _streak_after(result: dict[str, Any]) -> None:
+    """Count a modelling call, and nudge on a hard-won success. Never raises."""
+    try:
+        with _streak_lock:
+            if not result.get("ok"):
+                # Only code that ran and raised is an attempt. "No active
+                # design" and the like never ran anything.
+                if "traceback" in result:
+                    _streak["failures"] += 1
+                return
+            failed, _streak["failures"] = _streak["failures"], 0
+        if failed >= STREAK_NUDGE and "learn" not in result:
+            result["learn"] = (
+                f"That worked after {failed} failed attempts. If what fixed it is "
+                "general, record the quick path so the next session goes straight "
+                "there: fusion_learn(when=\"<what was being attempted>\", "
+                "lesson=\"<what worked>\").")
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not track the success streak: %r", exc)
+
+
 def _experience_summary() -> dict[str, Any]:
     """What fusion_state says about accumulated experience. Never raises."""
     try:
@@ -878,6 +915,7 @@ def _run_and_report(tool: str, code: str, *, record_code: str,
         extra.update(_recall(result))
     if tool == "fusion_execute" and result.get("ok"):
         _repetition_hint(record_code, result)
+    _streak_after(result)
     _remember(tool, record_code, result, seconds, **extra)
     return _with_screenshot(result, screenshot)
 
@@ -1310,10 +1348,10 @@ def fusion_save() -> dict[str, Any]:
 
 @mcp.tool
 def fusion_learn(lesson: str, error: str = "", tags: str = "",
-                 forget: str = "") -> dict[str, Any]:
+                 forget: str = "", when: str = "") -> dict[str, Any]:
     """Record what you learned, so the next session starts knowing it.
 
-    Call it in two situations:
+    Call it in three situations:
       - You fixed a failed call. Pass `error` (the traceback's last line, or
         the signature quoted in the failed result's `learn` note) and one or
         two sentences on what fixed it and why. The next time any session hits
@@ -1322,6 +1360,12 @@ def fusion_learn(lesson: str, error: str = "", tags: str = "",
         mirrored sketch, a profile that grabbed the wrong region, a part 10x
         off. Leave `error` empty. fusion_state lists these general lessons at
         the start of every session.
+      - Something worked, and next time it should work at once: the person
+        had to clarify what they meant ("the one I selected"), or it took
+        several attempts. Pass `when`, the request in the words a person would
+        use ("delete the one I selected"), and as `lesson` the quick path:
+        what to do immediately next time. The panel hands it back with any
+        request like it, and so does fusion_state(query=...).
 
     Record only what you verified (the fix worked), keep it general (true
     beyond this design, so no body names) and actionable ("pick the profile by
@@ -1333,7 +1377,7 @@ def fusion_learn(lesson: str, error: str = "", tags: str = "",
     with the corrected text as `lesson` to replace it, or with no lesson to
     remove it. `tags` is optional, comma-separated ("sketch, profiles").
 
-    Returns {"ok": true, "id", "new", "confirmed", "error_signature",
+    Returns {"ok": true, "id", "new", "confirmed", "error_signature", "when",
     "lessons_total"} (plus "forgot" when one was removed), or
     {"ok": false, "error"}.
     """
@@ -1352,11 +1396,12 @@ def fusion_learn(lesson: str, error: str = "", tags: str = "",
                     "on a failed result and in fusion_state.")}
             out["forgot"] = forget
         if text:
-            added = store.add(text, error=error, tags=tags)
+            added = store.add(text, error=error, tags=tags, when=when)
             out.update(id=added["id"], new=added["new"],
                        confirmed=added["confirmed"],
-                       error_signature=added["sig"],
+                       error_signature=added["sig"], when=added["when"],
                        lessons_total=added["total"])
+            _streak_reset()                    # the nudge, if any, was heeded
     except (OSError, ValueError) as exc:
         raise ToolError(f"Could not record the lesson: {exc}") from None
     log.info("fusion_learn: %s", {k: v for k, v in out.items() if k != "ok"})
@@ -1364,7 +1409,7 @@ def fusion_learn(lesson: str, error: str = "", tags: str = "",
 
 
 @mcp.tool
-def fusion_state() -> dict[str, Any]:
+def fusion_state(query: str = "") -> dict[str, Any]:
     """Report what is currently open in Fusion — call this before assuming anything.
 
     Returns the document name and saved flag, designType ("parametric" or
@@ -1382,6 +1427,10 @@ def fusion_state() -> dict[str, Any]:
     back), best-confirmed first, how many lessons exist in all, and the fast
     commands available to fusion_run. Read them before you start; correct a
     wrong lesson with fusion_learn(forget=id).
+
+    Pass `query`, the person's request in their own words, and "experience"
+    also carries "relevant": what worked before for requests like it, so a
+    known quick path is used at once instead of rediscovered.
     """
     health = _bridge_request("GET", "/health")
     seen = health.get("bridge_version")
@@ -1397,6 +1446,12 @@ def fusion_state() -> dict[str, Any]:
     state.setdefault("busy", health.get("busy"))
     state["bridge_version"] = BRIDGE_PROTOCOL_VERSION
     state["experience"] = _experience_summary()
+    try:
+        state["experience"]["relevant"] = [
+            lessons.brief(item) for item in lessons.default_store().matching(query)]
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not match lessons: %r", exc)
+        state["experience"]["relevant"] = []
     return state
 
 

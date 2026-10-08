@@ -124,6 +124,46 @@ check("and it is gone", other["id"] in [l["id"] for l in store.all()], False)
 check("forgetting something unknown says so", store.forget("nope"), False)
 
 
+# ---------------------------------------------------------- recipes ----
+# Successes are worth as much as fixes. Asked to "delete the one I selected",
+# the panel's model first asked which copy, and only after the person said it
+# again did it read ui.activeSelections and remove the bodies; that path worked
+# first time. A recipe records it with the phrasings that should bring it back,
+# so next time it comes with the request instead of after a round of questions.
+print("Recipes: successes recalled by what was asked")
+
+store = ls.Lessons(SANDBOX / "recipes" / "lessons.json")
+RECIPE = ("Read ui.activeSelections (fusion_run('selection')): a selected face or edge "
+          "belongs to entity.body. Remove reversibly with removeFeatures "
+          "(fusion_run('remove', {'selection': true})).")
+added = store.add(RECIPE, when="the person refers to the one they selected")
+check("a recipe is stored with what it answers",
+      store.all()[0]["when"], ["the person refers to the one they selected"])
+check("it is a general lesson, not tied to an error", added["sig"], "")
+
+found = store.matching("the one that ive selected, we need to delete")
+check("the person's own words bring it back", [l["id"] for l in found], [added["id"]])
+check("so do other forms of the same words",
+      [l["id"] for l in store.matching("delete my selection")], [added["id"]])
+check("an unrelated request brings nothing", store.matching("make the walls 2 mm thicker"), [])
+check("nor does an empty one", store.matching(""), [])
+
+again = store.add(RECIPE, when="delete what I have highlighted")
+check("the same success in other words confirms it", (again["new"], again["confirmed"]), (False, 2))
+check("and keeps both phrasings", len(store.all()[0]["when"]), 2)
+check("so the new phrasing finds it too",
+      [l["id"] for l in store.matching("please delete the highlighted part")], [added["id"]])
+
+store.add(PROFILE_FIX, error=PROFILE_TB)
+check("a lesson's own text can match a request as well",
+      [l["lesson"] for l in store.matching("which profile do I pick, by area or by index")],
+      [PROFILE_FIX])
+check("what rides on a result says when it applies",
+      ls.brief(store.all()[0]).get("when"), store.all()[0]["when"])
+check("an unreadable store matches nothing, without raising",
+      ls.Lessons(SANDBOX / "nowhere" / "x" / "lessons.json").matching("delete the selected"), [])
+
+
 # ------------------------------------------------- shared between processes --
 # Claude Code and every design in the panel run their own MCP server, all on
 # one file. A store that wrote back a stale copy would erase another's lesson.
@@ -261,6 +301,7 @@ try:
           "learn" in out, False)
 
     srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    srv._streak_reset()                 # a first success, not one after failures
     out = srv.fusion_execute(code="x = 1")
     check("a success carries neither", ("lessons" in out, "learn" in out), (False, False))
 
@@ -286,6 +327,42 @@ try:
     missing = srv.fusion_learn(lesson="", forget="nope")
     check("forgetting an unknown id says so instead of pretending",
           missing["ok"], False)
+
+    # Recipes through the tools: recorded with `when`, recalled by fusion_state
+    # with the person's request as the query.
+    recipe = srv.fusion_learn(lesson=RECIPE, when="the person refers to the one they selected")
+    check("fusion_learn records a recipe", (recipe["ok"], recipe["when"]),
+          (True, ["the person refers to the one they selected"]))
+
+    def state_bridge_q(method, path, payload=None):
+        if path == "/health":
+            return {"ok": True, "document": "tower", "bridge_version": "1", "app_version": "2704"}
+        return {"ok": True, "result": {"ok": True, "document": "tower"}, "stdout": ""}
+    srv._bridge_request = state_bridge_q
+    state = srv.fusion_state(query="the one I selected, delete it")
+    check("fusion_state(query=...) returns what worked before for a request like it",
+          [l["id"] for l in state["experience"]["relevant"]], [recipe["id"]])
+    check("and nothing relevant without a query", srv.fusion_state()["experience"].get("relevant"), [])
+    srv.fusion_learn(lesson="", forget=recipe["id"])
+
+    # A success that took several failures is the moment a quick path is
+    # known and about to be forgotten.
+    srv._streak_reset()
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": PROFILE_TB, "stdout": ""})
+    srv.fusion_execute(code="a()")
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    out = srv.fusion_execute(code="b()")
+    check("one failure then a success is ordinary: no nudge", "learn" in out, False)
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": PROFILE_TB, "stdout": ""})
+    srv.fusion_execute(code="a()")
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": "NameError: x", "stdout": ""})
+    srv.fusion_execute(code="a()")
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    out = srv.fusion_execute(code="c()")
+    truthy("a success after two failures nudges to record the quick path",
+           "2 failed attempts" in out.get("learn", "") and "when=" in out.get("learn", ""))
+    out = srv.fusion_execute(code="d()")
+    check("once: the next success is ordinary again", "learn" in out, False)
 
     # fusion_state is what a session reads first, so it is where the lessons
     # that have no error to trigger them get seen at all.

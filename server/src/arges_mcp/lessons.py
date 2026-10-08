@@ -53,6 +53,16 @@ RECALL_LIMIT = 3
 GENERAL_LIMIT = 5
 
 _TAG = re.compile(r"[^a-z0-9_-]+")
+_WORD = re.compile(r"[a-z0-9]+")
+# A recipe keeps a few phrasings of what it answers, not every one ever used.
+MAX_WHEN = 5
+MAX_WHEN_CHARS = 200
+# Words that say nothing about what was asked. Kept short: a missing stopword
+# costs a little ranking noise, a wrong one hides a real match.
+_STOP = frozenset("""the and for with this that these those what which who you your our its
+are was were has have had can could should would will just like into from then than them
+they their there here make need want please one some all any not but how also very
+""".split())
 
 
 def _normal(text):
@@ -68,6 +78,45 @@ def _tags(raw):
         if tag and tag not in out:
             out.append(tag)
     return out[:MAX_TAGS]
+
+
+# Words people use for the same thing. The case that made this necessary: the
+# person said "delete the one I selected", and the recipe that answers it says
+# "remove", so the two shared only "select". Keys and values are stems.
+_SAME = {"delet": "remov", "eras": "remov", "erase": "remov",
+         "highlight": "select", "pick": "select", "chosen": "select"}
+
+
+def _stems(text):
+    """Words reduced far enough that "selected", "selection" and "select" meet.
+
+    Deliberately crude: strip one common suffix, then a trailing e, so
+    "delete", "deleted" and "deleting" all become "delet". A stemmer library
+    would be better and would also be a dependency; this is enough to recognise
+    the same request said twice.
+    """
+    out = set()
+    for word in _WORD.findall(str(text or "").lower()):
+        if len(word) < 3 or word in _STOP:
+            continue
+        for suffix in ("ation", "ions", "ion", "ing", "ed", "es", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
+                word = word[: -len(suffix)]
+                break
+        if word.endswith("e") and len(word) > 4:
+            word = word[:-1]
+        out.add(_SAME.get(word, word))
+    return out
+
+
+def _when(raw):
+    items = raw if isinstance(raw, list) else [raw]
+    out = []
+    for item in items:
+        text = " ".join(str(item or "").split())[:MAX_WHEN_CHARS]
+        if text and text not in out:
+            out.append(text)
+    return out[:MAX_WHEN]
 
 
 def _rank(lesson):
@@ -123,14 +172,38 @@ class Lessons:
         hits = [item for item in self.all() if item.get("sig") == sig]
         return sorted(hits, key=_rank)[:limit]
 
+    def matching(self, text, limit=RECALL_LIMIT):
+        """Lessons that fit a request, by the words it shares with them.
+
+        What a recipe says it answers (`when`) counts double: those phrasings
+        were written to be matched against requests like this one. Two shared
+        words at least, or a single word would recall half the store.
+        """
+        wanted = _stems(text)
+        if not wanted:
+            return []
+        scored = []
+        for item in self.all():
+            when = wanted & _stems(" ".join(item.get("when") or []))
+            said = wanted & _stems(item.get("lesson"))
+            if len(when | said) < 2:
+                continue
+            scored.append((2 * len(when) + len(said), item))
+        scored.sort(key=lambda pair: (-pair[0],) + _rank(pair[1]))
+        return [item for _, item in scored[:limit]]
+
     def general(self, limit=GENERAL_LIMIT):
         """Lessons with no error to trigger them, best-confirmed first."""
         return sorted((item for item in self.all() if not item.get("sig")),
                       key=_rank)[:limit]
 
     # ------------------------------------------------------------ writing --
-    def add(self, lesson, error="", tags=()):
+    def add(self, lesson, error="", tags=(), when=""):
         """Record a lesson, or confirm it if it is already there.
+
+        `when` is what the lesson answers, in the words a request would use. A
+        success recorded again with other words confirms it and keeps the new
+        phrasing too.
 
         Raises ValueError for an empty lesson and OSError if the store cannot be
         written. Unlike recall, adding is something the model asked for, so a
@@ -151,11 +224,12 @@ class Lessons:
                     item["confirmed"] = int(item.get("confirmed") or 0) + 1
                     item["updated"], item["updated_at"] = stamp, now
                     item["tags"] = _tags(list(item.get("tags") or []) + _tags(tags))
+                    item["when"] = _when(list(item.get("when") or []) + _when(when))
                     self._write(lessons)
-                    return {"id": lesson_id, "new": False, "sig": sig,
+                    return {"id": lesson_id, "new": False, "sig": sig, "when": item["when"],
                             "confirmed": item["confirmed"], "total": len(lessons)}
             lessons.append({"id": lesson_id, "lesson": text, "sig": sig,
-                            "tags": _tags(tags), "confirmed": 1,
+                            "tags": _tags(tags), "when": _when(when), "confirmed": 1,
                             "created": stamp, "updated": stamp, "updated_at": now})
             while len(lessons) > self.max_lessons:
                 # Evict the least confirmed, oldest first, and never the one
@@ -165,8 +239,8 @@ class Lessons:
                     int(item.get("confirmed") or 0), float(item.get("updated_at") or 0)))
                 lessons.remove(worst)
             self._write(lessons)
-            return {"id": lesson_id, "new": True, "sig": sig, "confirmed": 1,
-                    "total": len(lessons)}
+            return {"id": lesson_id, "new": True, "sig": sig, "when": _when(when),
+                    "confirmed": 1, "total": len(lessons)}
 
     def forget(self, lesson_id):
         """Remove a lesson. True if it was there."""
@@ -228,5 +302,8 @@ def default_store():
 
 def brief(lesson):
     """What rides on a tool result: enough to act on and to correct."""
-    return {"id": lesson.get("id"), "lesson": lesson.get("lesson"),
-            "confirmed": lesson.get("confirmed", 1)}
+    out = {"id": lesson.get("id"), "lesson": lesson.get("lesson"),
+           "confirmed": lesson.get("confirmed", 1)}
+    if lesson.get("when"):
+        out["when"] = lesson["when"]
+    return out

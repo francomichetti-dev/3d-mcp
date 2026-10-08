@@ -91,6 +91,10 @@ The tool remembers across sessions, but only what gets recorded:
 - When a screenshot or measurement catches a mistake that raised nothing,
   record that too, with no `error`. `fusion_state` lists these under
   `experience` at the start of every session, so read them first.
+- Record successes too. When the person had to clarify, or it took several
+  tries, and it then worked: `fusion_learn(when=<their request>, lesson=<the
+  quick path>)`. Start with `fusion_state(query=<their request>)` to get
+  what worked before for requests like it.
 - Record only verified, general fixes: no guesses, no body names. If a lesson
   proves wrong, `fusion_learn(forget=id, lesson=<the correction>)`.
 
