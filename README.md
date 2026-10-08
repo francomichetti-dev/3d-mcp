@@ -165,7 +165,7 @@ what it is for, the decisions and why — instead of being lost or kept whole:
 
 ### From Claude Code
 
-Nine tools. `fusion_execute` is the product; the rest exist because every session needs them and
+Ten tools. `fusion_execute` is the product; the rest exist because every session needs them and
 they shouldn't require bespoke code each time.
 
 | Tool | What it does |
@@ -178,6 +178,7 @@ they shouldn't require bespoke code each time.
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
 | `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
 | `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, plus any learned ones. With no command, lists them with how to call each. |
+| `fusion_import` | Brings a CAD file (f3d, STEP, IGES, SAT, STL, OBJ, 3MF) into the open design as a new component in one call. With no path, lists what is in Downloads, Desktop and the save folder, newest first. Reads the file and never changes it. |
 | `fusion_command_save` | Saves a helper that worked as a learned fast command in `~/.arges/commands/`, so the next session calls it instead of retyping it. |
 
 A failing script is a **normal result**, not a tool error: the traceback comes back verbatim so
@@ -397,7 +398,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1396 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
+**1454 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -417,6 +418,7 @@ connection. That is a macOS run; on Linux the count is lower because the install
 | `test_experience.py` | the experience log: errors recognised across runs, helpers recognised across renames, and a log that can never fail a call |
 | `test_lessons.py` | lessons: recalled for their own error and no other, correctable, shared safely between processes, and never in the way of a failure |
 | `test_fastcommands.py` | fast commands: refused when they would fail later, arguments carried as data and never as code, and the built-ins checked against stand-ins |
+| `test_import.py` | importing: files found by name in the usual folders, every format routed to its importer, and what arrived reported |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
 | `test_panel.js` | the chat panel's own JavaScript against a stub DOM: the plan, the working banner, the file buttons, the orb |
 

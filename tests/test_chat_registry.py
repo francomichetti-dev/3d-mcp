@@ -298,6 +298,8 @@ truthy("the prompt teaches the combined execute+screenshot",
        'screenshot="iso"' in svc.SYSTEM_APPEND)
 truthy("the prompt teaches reading lessons and recording them",
        "lessons" in svc.SYSTEM_APPEND and "fusion_learn" in svc.SYSTEM_APPEND)
+truthy("the prompt sends file imports to fusion_import, not to a shell",
+       "fusion_import" in svc.SYSTEM_APPEND)
 truthy("and using fast commands and saving new ones",
        "fusion_run" in svc.SYSTEM_APPEND and "fusion_command_save" in svc.SYSTEM_APPEND)
 
@@ -942,6 +944,13 @@ check("and the log line shows the lesson itself",
       svc._summarize_tool("mcp__fusion__fusion_learn",
                           {"lesson": "Pick profiles by area.", "error": "x"}),
       "Pick profiles by area.")
+check("importing a file says so",
+      svc._activity_verb("mcp__fusion__fusion_import", {"path": "motor.f3d"}), "Importing")
+check("and the log line names the file, not its whole path",
+      svc._summarize_tool("mcp__fusion__fusion_import",
+                          {"path": "/somewhere/Downloads/motor.f3d"}), "motor.f3d")
+check("or that it is listing what can be imported",
+      svc._summarize_tool("mcp__fusion__fusion_import", {}), "(list files)")
 check("saving a command says so",
       svc._activity_verb("mcp__fusion__fusion_command_save", {}), "Saving a fast command")
 check("the log line for a command names it and its arguments",
@@ -1326,7 +1335,7 @@ named = {verb for _, verb in svc._ACTIVITY_VERBS}
 # this the moment it is added without an orb.
 for tool in ("fusion_screenshot", "fusion_state", "fusion_export",
              "fusion_download", "fusion_save", "fusion_learn",
-             "fusion_run", "fusion_command_save", "plan"):
+             "fusion_run", "fusion_command_save", "fusion_import", "plan"):
     named.add(svc._activity_verb("mcp__fusion__" + tool, {}))
 check("every named activity has an orb chosen for it",
       sorted(v for v in named if v not in svc.ORB_STATES), [])

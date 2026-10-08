@@ -87,6 +87,10 @@ and are never spliced into its source. The chat panel gates `fusion_run` by the 
 exactly as it gates `fusion_execute` by its code. Without that, saving a destructive snippet under
 a name would be a way around the gate.
 
+`fusion_import` reads a file into Fusion and never writes to it. With no path it lists the CAD
+files at the top of the save folder, Downloads, Desktop and Documents. It reads nothing beyond
+their names and sizes, and walks no deeper than the top level.
+
 `scripts/uninstall.sh --purge` deletes all of it.
 
 ## Reporting a vulnerability

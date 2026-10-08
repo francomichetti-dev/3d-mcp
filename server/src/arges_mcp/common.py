@@ -189,6 +189,119 @@ def output_path(folder, filename, fallback_name, fmt, overwrite=False):
     raise ValueError(f"{folder} already holds 999 files named {stem}*.{fmt}")
 
 
+# ------------------------------------------------------------- importing --
+#
+# Asked to import a motor from Downloads, a model once spent its turn on two
+# tool lookups, three Bash searches through Downloads and Fusion's cache, and
+# two hand-written importManager attempts. Finding the file is host-side work
+# that needs no Fusion and no shell, so it lives here, and the import itself is
+# one snippet (IMPORT_BODY, below).
+
+IMPORT_FORMATS = {
+    ".f3d": "f3d", ".f3z": "f3d",
+    ".step": "step", ".stp": "step",
+    ".iges": "iges", ".igs": "iges",
+    ".sat": "sat", ".smt": "smt",
+    ".stl": "mesh", ".obj": "mesh", ".3mf": "mesh",
+}
+# The units a mesh file is read in (STL carries none); IMPORT_BODY maps each to
+# Fusion's MeshUnits enum.
+MESH_UNITS = ("mm", "cm", "m", "in", "ft")
+IMPORT_LIST_LIMIT = 30
+
+
+def import_format(name):
+    """The importer a file needs ("f3d", "step", "iges", "sat", "smt", "mesh"), or None."""
+    return IMPORT_FORMATS.get(Path(str(name)).suffix.lower())
+
+
+def import_roots(extra=()):
+    """Where a file to import is looked for: the save folder, then the usual places.
+
+    Top level only, on purpose. A file somebody means to import was put
+    somewhere they can name, and walking whole trees is slow and returns
+    things nobody meant.
+    """
+    home = Path("~").expanduser()
+    candidates = [save_dir_from(), home / "Downloads", home / "Desktop", home / "Documents",
+                  *[Path(p) for p in extra], state_dir() / "imports"]
+    out, seen = [], set()
+    for folder in candidates:
+        try:
+            real = folder.resolve()
+        except OSError:
+            continue
+        if real not in seen and folder.is_dir():
+            seen.add(real)
+            out.append(folder)
+    return out
+
+
+def importable_files(roots, limit=IMPORT_LIST_LIMIT):
+    """Importable files at the top of each root, newest first."""
+    found = []
+    for folder in roots:
+        try:
+            entries = list(Path(folder).iterdir())
+        except OSError:
+            continue
+        for path in entries:
+            fmt = import_format(path.name)
+            if fmt is None or path.name.startswith("."):
+                continue
+            try:
+                if not path.is_file():
+                    continue
+                st = path.stat()
+            except OSError:
+                continue
+            found.append({"name": path.name, "path": str(path), "format": fmt,
+                          "bytes": st.st_size, "mtime": st.st_mtime,
+                          "modified": time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime)),
+                          "folder": str(folder)})
+    found.sort(key=lambda f: f["mtime"], reverse=True)
+    for entry in found:
+        entry.pop("mtime")
+    return found[:limit]
+
+
+def resolve_import(spec, roots, home=None):
+    """The file `spec` names: a path, a ~ path, or a bare name found in `roots`.
+
+    A bare name matches with or without its extension and in any case, newest
+    first, because "import the motor from Downloads" is how people say it.
+    ValueError, naming what is there, when nothing matches.
+    """
+    raw = str(spec or "").strip()
+    if not raw:
+        raise ValueError("name a file to import, or call with no file to list them")
+    if raw.startswith("~"):
+        base = Path(home) if home else Path("~").expanduser()
+        path = base / raw[2:] if raw.startswith("~/") else Path(raw).expanduser()
+    elif os.path.isabs(raw) or os.sep in raw:
+        path = Path(raw)
+    else:
+        path = None
+    if path is not None:
+        if path.is_dir():
+            raise ValueError(f"{path} is a folder, not a file")
+        if not path.is_file():
+            raise ValueError(f"no file at {path}")
+        if import_format(path.name) is None:
+            raise ValueError(f"cannot import {path.suffix or 'that'} files; importable: "
+                             + ", ".join(sorted(IMPORT_FORMATS)))
+        return path
+    wanted = raw.lower()
+    candidates = importable_files(roots, limit=10_000)
+    for entry in candidates:
+        name = entry["name"].lower()
+        if name == wanted or Path(name).stem == wanted:
+            return Path(entry["path"])
+    recent = ", ".join(e["name"] for e in candidates[:8]) or "none"
+    raise ValueError(f"no importable file named {raw!r} in "
+                     + ", ".join(str(r) for r in roots) + f". Most recent there: {recent}")
+
+
 # -------------------------------------------------------------- the mirror --
 #
 # A save is the design written to one .f3d per document, overwritten each time:
@@ -360,6 +473,83 @@ result = _fx_identity(_fx_params)
 '''
 
 IDENTITY_PARAMS = {"group": DOC_ATTR_GROUP, "attr": DOC_ATTR_NAME}
+
+
+# Brings one file into the open design as a new component, reporting what
+# arrived. Failures raise, as any failing code does, so they come back as a
+# traceback with lessons, and no autosave writes a half-imported design.
+IMPORT_BODY = '''
+def _fx_import(_p):
+    import os
+
+    path, fmt, name = _p["path"], _p["format"], _p["name"]
+    des = adsk.fusion.Design.cast(app.activeProduct)
+    if des is None:
+        raise RuntimeError("no active Fusion design to import into: open or create one first")
+    if not os.path.isfile(path):
+        raise RuntimeError("the file to import is gone: " + path)
+    root = des.rootComponent
+    before = set(o.name for o in root.occurrences)
+    occurrences = []
+
+    if fmt == "mesh":
+        # Meshes have no import options on older Fusion; they are added to a
+        # component of their own, inside a base feature when the design keeps
+        # history (meshBodies.add requires one there).
+        units = getattr(adsk.fusion.MeshUnits, {
+            "mm": "MillimeterMeshUnit", "cm": "CentimeterMeshUnit", "m": "MeterMeshUnit",
+            "in": "InchMeshUnit", "ft": "FootMeshUnit"}[_p.get("units") or "mm"])
+        occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+        if name:
+            occ.component.name = name
+        parametric = des.designType == adsk.fusion.DesignTypes.ParametricDesignType
+        if parametric:
+            base = occ.component.features.baseFeatures.add()
+            base.startEdit()
+            occ.component.meshBodies.add(path, units, base)
+            base.finishEdit()
+        else:
+            occ.component.meshBodies.add(path, units)
+        occurrences = [occ]
+    else:
+        im = app.importManager
+        make = {"f3d": im.createFusionArchiveImportOptions,
+                "step": getattr(im, "createSTEPImportOptions", None),
+                "iges": getattr(im, "createIGESImportOptions", None),
+                "sat": getattr(im, "createSATImportOptions", None),
+                "smt": getattr(im, "createSMTImportOptions", None)}.get(fmt)
+        if make is None:
+            raise RuntimeError("this Fusion cannot import " + fmt + " files")
+        options = make(path)
+        to_target2 = getattr(im, "importToTarget2", None)
+        if callable(to_target2):
+            got = to_target2(options, root)
+            occurrences = [got.item(i) for i in range(got.count)] if got else []
+        elif not im.importToTarget(options, root):
+            raise RuntimeError("Fusion refused to import " + path)
+        if not occurrences:
+            occurrences = [o for o in root.occurrences if o.name not in before]
+        if name and len(occurrences) == 1:
+            occurrences[0].component.name = name
+
+    bodies = 0
+    lows, highs = [], []
+    for occ in occurrences:
+        bodies += occ.bRepBodies.count + getattr(occ.component.meshBodies, "count", 0)
+        bb = occ.boundingBox
+        lows.append((bb.minPoint.x, bb.minPoint.y, bb.minPoint.z))
+        highs.append((bb.maxPoint.x, bb.maxPoint.y, bb.maxPoint.z))
+    size = None
+    if lows:
+        lo = [min(c) for c in zip(*lows)]
+        hi = [max(c) for c in zip(*highs)]
+        size = [round((h - l) * 10, 3) + 0.0 for l, h in zip(lo, hi)]
+    return {"ok": True, "file": path, "format": fmt,
+            "occurrences": [o.name for o in occurrences], "bodies": bodies, "size_mm": size}
+
+
+result = _fx_import(_fx_params)
+'''
 
 
 EXPORT_BODY = '''

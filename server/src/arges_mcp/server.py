@@ -172,7 +172,10 @@ mcp = FastMCP(
         "fusion_run (bbox, inspect, timeline, profiles, sketch_frame, "
         "set_params, plus any saved with fusion_command_save); prefer them "
         "to retyping the same helper, and save one when you have written a "
-        "helper that worked and will be needed again."
+        "helper that worked and will be needed again. To bring in a CAD file "
+        "(f3d, STEP, IGES, STL, ...) use fusion_import: with no path it lists "
+        "what is in Downloads and the other usual folders, and with a name it "
+        "imports it as a new component. Never search for files with a shell."
     ),
 )
 
@@ -889,6 +892,51 @@ def fusion_run(
         "fusion_run", fastcommands.invocation(found, args or {}), record_code="",
         screenshot=screenshot, autosave=not found.readonly,
         command=name, args=args or {})
+
+
+@mcp.tool
+def fusion_import(
+    path: str = "",
+    name: str = "",
+    units: Literal["mm", "cm", "m", "in", "ft"] = "mm",
+    screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
+) -> Any:
+    """Bring a CAD file into the open design as a new component, in one call.
+
+    Call it with no path first if you do not know exactly where the file is:
+    it lists the importable files (f3d/f3z, STEP, IGES, SAT, SMT, STL, OBJ,
+    3MF) in the save folder, Downloads, Desktop and Documents, newest first.
+    Never search for files with a shell; this is faster and sees the same
+    folders.
+
+    `path` is a full path, a ~ path, or just a file name such as
+    "motor.f3d" or even "motor", found in those folders (newest wins). The
+    file is only read, never moved or changed. It arrives as its own component
+    at the origin, named `name` (default: the file's name), and the result
+    says what arrived: {"ok": true, "result": {"occurrences": ["motor:1"],
+    "bodies": n, "size_mm": [x, y, z]}}. Position and join it in later steps.
+    `units` matters only for mesh files (STL carries no units): it says how to
+    read the numbers in them.
+
+    `screenshot` works as on fusion_execute: the picture comes back with the
+    result. A failed import comes back as a traceback, like any failing code.
+    """
+    roots = common.import_roots([EXPORT_DIR])
+    if not (path or "").strip():
+        return {"ok": True, "files": common.importable_files(roots),
+                "searched": [str(r) for r in roots]}
+    try:
+        source = common.resolve_import(path, roots)
+    except ValueError as exc:
+        raise ToolError(f"{exc}. Nothing was imported.") from None
+    _check_view(screenshot)
+    fmt = common.import_format(source.name)
+    label = (name or "").strip() or source.stem
+    log.info("fusion_import: %s (%s) as %r", source, fmt, label)
+    code = common.snippet(common.IMPORT_BODY, {"path": str(source), "format": fmt,
+                                               "name": label, "units": units})
+    return _run_and_report("fusion_import", code, record_code="", screenshot=screenshot,
+                           file=str(source), format=fmt)
 
 
 @mcp.tool

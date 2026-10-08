@@ -71,6 +71,7 @@ claude mcp add fusion -- uvx arges-mcp
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
 | `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
 | `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, plus any learned ones. With no command, lists them with how to call each. |
+| `fusion_import` | Brings a CAD file (f3d, STEP, IGES, SAT, STL, OBJ, 3MF) into the open design as a new component in one call. With no path, lists what is in Downloads, Desktop and the save folder, newest first. Reads the file and never changes it. |
 | `fusion_command_save` | Saves a helper that worked as a learned fast command in `~/.arges/commands/`, so the next session calls it instead of retyping it. |
 
 A failing script is a **normal result**, not a tool error — the traceback comes back verbatim so the

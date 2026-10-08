@@ -1,6 +1,6 @@
 ---
 name: fusion-360
-description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save / fusion_learn / fusion_run / fusion_command_save tools are involved.
+description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save / fusion_learn / fusion_run / fusion_command_save / fusion_import tools are involved.
 ---
 
 # Fusion 360 via arges
@@ -104,6 +104,14 @@ profile by area or centroid), `sketch_frame` (a sketch's axes in the world),
 any learned ones, and `fusion_run()` shows how to call each. When a helper
 you wrote works and will be needed again, save it with `fusion_command_save`:
 general (sizes and names from `p`), with a `usage` the next session can follow.
+
+## Importing files
+
+To bring in a file the person mentions ("the motor in Downloads"), call
+`fusion_import()` with no path to list the CAD files in Downloads, Desktop
+and the save folder, then `fusion_import("motor.f3d")`; a bare name works. It
+arrives as a new component at the origin, and the result reports its size.
+Never search the disk with a shell, and never write to the person's files.
 
 ## Injected names
 

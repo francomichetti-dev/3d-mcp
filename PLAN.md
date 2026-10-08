@@ -62,6 +62,17 @@ green. Stop and ask at every gate.
       library, and built-ins drawn from the mined repeats (`bbox`, `inspect`,
       `params`, `sketch_axes`, `profiles`). Read-only commands skip the autosave.
       Built-ins verified live against Fusion on read-only calls. **Gate.**
+- [x] **3b. Found in use, fixed out of order** (2026-10-08):
+      - the model picker lists what the installed CLI offers, and the
+        panel runs that CLI rather than the SDK's frozen copy
+      - saving never overwrites a file this tool did not write (the
+        autosave had written an empty "Untitled" design over a downloaded
+        Untitled.f3d)
+      - `fusion_import` finds a CAD file by name in the usual folders and
+        imports it in one call
+- [ ] **3c. Import from the panel**: drop a CAD file on the panel and it is
+      imported at once, with a line in the chat saying what arrived, and the
+      model told on its next turn. **Gate.**
 - [ ] **4. Repetition hints**: a successful call whose helper function has
       been defined three or more times before gets a one-time hint to save it
       as a fast command. **Gate.**

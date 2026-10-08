@@ -594,6 +594,12 @@ profile by area, "set_params" to set parameters, and any saved before
 Use one instead of retyping the same helper. When you have written a helper
 that worked and will be needed again, save it with fusion_command_save.
 
+To bring in a file the person mentions (a motor from Downloads, a STEP from a
+supplier), use fusion_import. With no path it lists the CAD files in Downloads
+and the other usual folders, and with a name it imports that file as a new
+component. Never search for files with Bash. The person's files are theirs:
+import them, and never write over one.
+
 Use the `plan` tool for anything that takes more than two or three steps. Call
 it once before you start building, with the whole plan as short concrete steps
 in the person's own words, then call it again the moment a step's status
@@ -871,6 +877,8 @@ class Session:
                 "mcp__fusion__fusion_run",
                 # Writes a command to a local file; running it is gated.
                 "mcp__fusion__fusion_command_save",
+                # Reads a file and adds it as a new component: additive.
+                "mcp__fusion__fusion_import",
             ],
             # The hook is the gate — it runs before any allow rule or
             # permission mode is consulted, so pre-approving the tools above
@@ -1208,6 +1216,7 @@ ORB_STATES: dict[str, str] = {
     "Saving": "composing",
     "Noting what worked": "composing",
     "Saving a fast command": "composing",
+    "Importing": "composing",
     "Measuring": "searching",
     "Running a fast command": "working",
     "Planning": "solving",
@@ -1242,6 +1251,8 @@ def _activity_verb(name: str, args: dict[str, Any]) -> str:
         return "Noting what worked"
     if short == "fusion_command_save":
         return "Saving a fast command"
+    if short == "fusion_import":
+        return "Importing"
     if short == "fusion_run":
         try:
             command = fusion_commands.default_library().get(
@@ -1282,6 +1293,9 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
                 + (f" {json.dumps(given)[:70]}" if given else ""))
     if short == "fusion_command_save":
         return f"{args.get('name', '')} · {str(args.get('description') or '')[:70]}"
+    if short == "fusion_import":
+        given = str(args.get("path") or "").strip()
+        return Path(given).name if given else "(list files)"
     if short == "fusion_learn":
         lesson = str(args.get("lesson") or "").strip()
         return lesson[:80] if lesson else f"forget {args.get('forget', '')}"
