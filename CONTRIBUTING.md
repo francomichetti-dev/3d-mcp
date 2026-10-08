@@ -93,6 +93,7 @@ server/src/arges_mcp/          the published package (PyPI: arges-mcp)
     cli.py                      `arges-mcp` — bare invocation serves stdio
     bootstrap.py                `install` / `uninstall` / `status`
     broker.py                   the job queue the Rhino half polls
+    experience.py               what the tool remembers between sessions
     addin/Arges/         the Fusion add-in, shipped inside the package
 scripts/rhino/                  the Rhino half — dependency-free, not published
     rhino_mcp.py                the Rhino MCP server

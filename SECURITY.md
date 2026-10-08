@@ -74,6 +74,11 @@ On Windows that is done with an explicit ACL (`icacls /inheritance:r /grant:r`),
 on a real machine, a file "locked" with `chmod(0600)` still listed SYSTEM, Administrators and the
 user with full control, all inherited.
 
+The experience log, `~/.arges/experience.jsonl`, records every `fusion_execute` call: whether it
+worked, the error if it did not, how long it took, and the first 4,000 characters of the code. That
+is how the tool learns from its own history, and the code in it is design data, so it gets the same
+`0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off.
+
 `scripts/uninstall.sh --purge` deletes all of it.
 
 ## Reporting a vulnerability

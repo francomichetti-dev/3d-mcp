@@ -32,7 +32,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from . import common
+from . import common, experience
 from fastmcp.utilities.types import Image
 
 # --------------------------------------------------------------------------
@@ -598,6 +598,30 @@ def _autosave(result: dict[str, Any]) -> None:
 
 
 # --------------------------------------------------------------------------
+# Experience.
+#
+# Every call is written to ~/.arges/experience.jsonl by the server rather than
+# left to the model, so the record is complete whether or not anyone thinks to
+# keep it. See experience.py for what is stored and why it stays local.
+# --------------------------------------------------------------------------
+
+
+def _remember(tool: str, code: str, outcome: dict[str, Any], seconds: float,
+              **extra: Any) -> None:
+    """Add one call to the experience log. Never raises.
+
+    Losing a line of history is cheap. Turning a call that worked into an error
+    because its history could not be written is not: the model would read it
+    as "the script failed" and run the same code twice.
+    """
+    try:
+        experience.record_call(
+            experience.call_record(tool, code, outcome, seconds, **extra))
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not record experience: %r", exc)
+
+
+# --------------------------------------------------------------------------
 # Tools.
 # --------------------------------------------------------------------------
 
@@ -676,12 +700,27 @@ def fusion_execute(
         len(code), reset, allow_no_design, screenshot,
     )
     log.debug("fusion_execute code: %s", code[:2000])
-    result = _execute(code, reset=reset, allow_no_design=allow_no_design)
+    started = time.monotonic()
+    try:
+        result = _execute(code, reset=reset, allow_no_design=allow_no_design)
+    except ToolError as exc:
+        # The bridge being down is experience too: it is how the report can
+        # tell a bad afternoon of code from a bad afternoon of Fusion.
+        _remember("fusion_execute", code, {"ok": False, "error": str(exc)},
+                  time.monotonic() - started, view=screenshot, kind="tool_error")
+        raise
+    seconds = time.monotonic() - started
+    extra: dict[str, Any] = {"view": screenshot}
     # Before the screenshot, so both return shapes carry the outcome, and so a
     # slow cloud save cannot leave a window where the picture is newer than the
     # saved document.
     if result.get("ok"):
+        saving = time.monotonic()
         _autosave(result)
+        if "autosave" in result:
+            # FOLLOWUP.md asks what the autosave really costs; this answers it.
+            extra["autosave_ms"] = int(round((time.monotonic() - saving) * 1000))
+    _remember("fusion_execute", code, result, seconds, **extra)
     if screenshot is None or not result.get("ok"):
         # A failed script wants its traceback read, not photographed; the
         # geometry may be half-changed and the next step is fixing the code.

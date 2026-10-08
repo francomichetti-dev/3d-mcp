@@ -324,6 +324,8 @@ the entire point, so the channel is gated tightly instead:
   screenshot dimensions *rejected* outside 64..1920 × 64..1440 rather than silently clamped; 8
   concurrent connections; one execution at a time.
 - `~/.arges` is 0700 and its files 0600; the token is never logged.
+- The experience log (`~/.arges/experience.jsonl`) keeps each call's outcome and the code that ran,
+  locally, so the tool can learn from it. `ARGES_EXPERIENCE=0` turns it off.
 
 Exports are confined to `~/Documents/arges-exports/`, attachments to `~/.arges/attachments/`. For
 saves and downloads the *folder* is configuration and the *name* is slugged, so a caller supplies a
@@ -365,7 +367,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1099 assertions across thirteen suites**, none of which need Fusion, Rhino, or an internet
+**1171 assertions across fourteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -382,6 +384,7 @@ connection. That is a macOS run; on Linux the count is lower because the install
 | `test_rhino_poller.py` | the poller that runs inside Rhino, against a RhinoCommon stub — above all, that a tick never raises |
 | `test_consistency.py` | constants and code duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
+| `test_experience.py` | the experience log: errors recognised across runs, helpers recognised across renames, and a log that can never fail a call |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
 | `test_panel.js` | the chat panel's own JavaScript against a stub DOM: the plan, the working banner, the file buttons, the orb |
 
