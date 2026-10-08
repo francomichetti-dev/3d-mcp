@@ -180,6 +180,45 @@ check("but its real size is recorded",
       xp.call_record("fusion_execute", long_code, {"ok": True}, 0)["chars"], len(long_code))
 
 
+# ----------------------------------------------------------- repetition ----
+print("Repeated helpers")
+
+
+def helper_record(name="setp", shape=prints["setp"], *, ok=True,
+                  tool="fusion_execute", session="earlier"):
+    return {"tool": tool, "ok": ok, "session": session, "defs": {name: shape}}
+
+
+history = [helper_record(), helper_record("set_param", session="another"),
+           helper_record("set_param")]
+repeat = getattr(xp, "repeated_helpers", None)
+truthy("the repetition query is available", callable(repeat))
+if callable(repeat):
+    check("three earlier successes qualify, including the current call in the total",
+          repeat(history, prints), {"setp": {"count": 4, "names": ["set_param"]}})
+    check("two earlier successes are too few", repeat(history[:2], prints), {})
+    check("the threshold can be changed", repeat(history[:2], prints, threshold=2),
+          {"setp": {"count": 3, "names": ["set_param"]}})
+    check("no definitions means no repetition", repeat(history, {}), {})
+    check("the same name with a different shape is new",
+          repeat(history, xp.function_fingerprints(DIFFERENT)), {})
+    ignored = [helper_record(ok=False), helper_record(tool="fusion_run"),
+               helper_record(tool="fusion_import"), {"defs": prints},
+               {"tool": "fusion_execute", "ok": True, "defs": None}]
+    check("failed calls and other tools cannot reach the threshold",
+          repeat(history[:2] + ignored, prints), {})
+    aliases = helper_record()
+    aliases["defs"]["set_param"] = prints["setp"]
+    check("two aliases in one earlier record count as one call",
+          repeat([aliases, aliases], prints), {})
+    check("other names are unique, sorted, and exclude the current name",
+          repeat(history + [helper_record("z"), helper_record("a")], prints),
+          {"setp": {"count": 6, "names": ["a", "set_param", "z"]}})
+    before = json.dumps(history)
+    repeat(history, prints)
+    check("querying does not change the history", json.dumps(history), before)
+
+
 # ----------------------------------------------------------------- log ----
 print("The log file")
 
@@ -385,6 +424,180 @@ try:
     check("an unwritable log does not fail the call", out["ok"], True)
     common.state_dir = real_state_dir
 finally:
+    srv._bridge_request = real_bridge
+    srv._capture = real_capture
+    os.environ.pop("ARGES_AUTOSAVE", None)
+    os.environ.pop("ARGES_EXPERIENCE", None)
+
+
+# A fresh cache stands in for a new server process; every seeded record goes
+# through the real log, so the first call also tests when it is read.
+print("Repetition hints in fusion_execute")
+
+
+def fresh_helpers(records=()):
+    fresh_log()
+    srv._helper_counts = None
+    srv._hinted_helpers = set()
+    for record in records:
+        xp.default_log().append(record)
+
+
+real_read = xp.ExperienceLog.read
+reads = []
+
+
+def counted_read(self):
+    reads.append(self.path)
+    return real_read(self)
+
+
+def broken_read(self):
+    raise RuntimeError("history unavailable")
+
+
+try:
+    os.environ["ARGES_AUTOSAVE"] = "0"
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    xp.ExperienceLog.read = counted_read
+    fresh_helpers(history)
+    out = srv.fusion_execute(code="result = 1")
+    check("a call with no helper has no hint", out.get("hint"), None)
+    check("and does not load the history", len(reads), 0)
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": FUSION_TB})
+    out = srv.fusion_execute(code=SETP)
+    check("a failed helper has no hint", out.get("hint"), None)
+    check("a failure does not load the history either", len(reads), 0)
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    out = srv.fusion_execute(code=SETP)
+    check("the fourth successful definition suggests saving it", out.get("hint"),
+          "You have now written `setp` 4 times across sessions (also as `set_param`). "
+          "Save it with fusion_command_save so it is one fusion_run call from now on.")
+    check("history is loaded once", len(reads), 1)
+    out = srv.fusion_execute(code=RENAMED)
+    check("renaming cannot repeat the same hint", out.get("hint"), None)
+    check("another helper call does not reread the log", len(reads), 1)
+    xp.ExperienceLog.read = real_read
+    check("the successful current call is still logged just once",
+          sum(r.get("ok") and r.get("defs") == prints
+              for r in xp.default_log().read()), 2)
+
+    fresh_helpers(history[:2])
+    check("the third definition does not count the current call twice",
+          srv.fusion_execute(code=SETP).get("hint"), None)
+    truthy("the next call uses the count updated in memory",
+           "`setp` 4 times" in srv.fusion_execute(code=SETP).get("hint", ""))
+
+    fresh_helpers()
+    for i in range(3):
+        check(f"a fresh process's definition {i + 1} has no hint",
+              srv.fusion_execute(code=SETP).get("hint"), None)
+    truthy("repetition within this process counts too",
+           "`setp` 4 times" in srv.fusion_execute(code=SETP).get("hint", ""))
+
+    fresh_helpers(history)
+    concurrent = []
+    ready = threading.Barrier(4)
+
+    def repeat_together():
+        try:
+            ready.wait(5)
+            concurrent.append(srv.fusion_execute(code=SETP))
+        except Exception as exc:
+            concurrent.append({"ok": False, "error": str(exc)})
+
+    callers = [threading.Thread(target=repeat_together) for _ in range(4)]
+    for caller in callers:
+        caller.start()
+    for caller in callers:
+        caller.join(5)
+    check("concurrent successful calls all return",
+          sum(bool(out.get("ok")) for out in concurrent), 4)
+    check("concurrent calls cannot show the same hint twice",
+          sum(bool(out.get("hint")) for out in concurrent), 1)
+
+    fresh_helpers(history[:2])
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": FUSION_TB})
+    srv.fusion_execute(code=SETP)
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    check("a failure in this process cannot advance the count",
+          srv.fusion_execute(code=SETP).get("hint"), None)
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": FUSION_TB})
+    check("a failure with loaded counts still has no hint",
+          srv.fusion_execute(code=SETP).get("hint"), None)
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
+    srv._run_and_report("fusion_run", SETP, record_code=SETP,
+                        screenshot=None, autosave=False)
+    out = srv._run_and_report("fusion_import", SETP, record_code=SETP,
+                              screenshot=None, autosave=False)
+    check("an import never gets a hint", out.get("hint"), None)
+    truthy("run and import records cannot advance the cached count",
+           "`setp` 4 times" in srv.fusion_execute(code=SETP).get("hint", ""))
+
+    fresh_helpers(history)
+    out = srv._run_and_report("fusion_run", SETP, record_code=SETP,
+                              screenshot=None, autosave=False)
+    check("a run never gets a hint, even with qualifying history", out.get("hint"), None)
+    srv._capture = lambda view, w, h: b"\x89PNG" + b"0" * 100
+    out = srv.fusion_execute(code=SETP, screenshot="top")
+    truthy("the screenshot's JSON block carries the hint", out[0].get("hint"))
+    srv._capture = real_capture
+
+    fresh_helpers(history)
+    out = srv.fusion_execute(code=SETP + RENAMED)
+    check("two names for one shape produce just one suggestion",
+          out.get("hint", "").count("fusion_command_save"), 1)
+    check("neither alias is nagged on the next call",
+          srv.fusion_execute(code=SETP + RENAMED).get("hint"), None)
+
+    other_shape = xp.function_fingerprints(DIFFERENT)["setp"]
+    fresh_helpers(history + [helper_record("remove_param", other_shape)] * 3)
+    out = srv.fusion_execute(code=SETP + DIFFERENT.replace("def setp(", "def remove_param("))
+    truthy("each repeated shape can be suggested", all(
+        name in out.get("hint", "") for name in ("`setp`", "`remove_param`")))
+    check("the hint stays on one line", len(out.get("hint", "").splitlines()), 1)
+
+    fresh_helpers(history + [helper_record("remove_param", other_shape)] * 3)
+    reads.clear()
+    xp.ExperienceLog.read = counted_read
+    os.environ["ARGES_EXPERIENCE"] = "0"
+    out = srv.fusion_execute(code=SETP)
+    check("logging off means no hint", out.get("hint"), None)
+    check("logging off does not read history", len(reads), 0)
+    os.environ.pop("ARGES_EXPERIENCE", None)
+    truthy("a call while logging was off did not enter the count",
+           "`setp` 4 times" in srv.fusion_execute(code=SETP).get("hint", ""))
+    os.environ["ARGES_EXPERIENCE"] = "0"
+    out = srv.fusion_execute(code=DIFFERENT)
+    check("logging off also applies with an already loaded cache", out.get("hint"), None)
+    os.environ.pop("ARGES_EXPERIENCE", None)
+    truthy("the disabled call did not advance the loaded count",
+           "`setp` 4 times" in srv.fusion_execute(code=DIFFERENT).get("hint", ""))
+
+    fresh_helpers(history)
+    xp.ExperienceLog.read = broken_read
+    out = srv.fusion_execute(code=SETP)
+    check("a history exception cannot fail the successful call", out["ok"], True)
+    check("a history exception means no hint", out.get("hint"), None)
+    xp.ExperienceLog.read = real_read
+    check("the call is still recorded after a hint failure", last_record()["ok"], True)
+
+    fresh_helpers(history)
+    real_repeated = xp.HelperCounts.repeated
+
+    def broken_repeated(self, defs, threshold=3):
+        raise RuntimeError("count unavailable")
+
+    xp.HelperCounts.repeated = broken_repeated
+    try:
+        out = srv.fusion_execute(code=SETP)
+        check("a counter exception cannot fail the successful call", out["ok"], True)
+        check("a counter exception means no hint", out.get("hint"), None)
+        check("the call is still logged after a counter failure", last_record()["ok"], True)
+    finally:
+        xp.HelperCounts.repeated = real_repeated
+finally:
+    xp.ExperienceLog.read = real_read
     srv._bridge_request = real_bridge
     srv._capture = real_capture
     os.environ.pop("ARGES_AUTOSAVE", None)

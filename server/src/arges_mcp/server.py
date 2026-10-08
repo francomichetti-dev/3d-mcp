@@ -729,6 +729,7 @@ def fusion_execute(
 
     RESULT: assign to a variable named `result` to send a value back; anything
     you print() is captured and returned as `stdout`. Both are capped at 64 KB.
+    A `hint` suggests saving a repeatedly defined helper with fusion_command_save.
 
     VERIFY EVERY GEOMETRY CHANGE: pass screenshot="iso" (or another view) and
     the viewport image arrives together with the result — one call instead of
@@ -798,6 +799,49 @@ def _check_view(screenshot: str | None) -> None:
         )
 
 
+_helper_counts: experience.HelperCounts | None = None
+_hinted_helpers: set[str] = set()
+_helper_lock = threading.Lock()
+
+
+def _repetition_hint(code: str, result: dict[str, Any]) -> None:
+    """Suggest saving repeated helpers, once per shape per process. Never raises."""
+    global _helper_counts
+    try:
+        if not experience.enabled():
+            return
+        defs = experience.function_fingerprints(code)
+        if not defs:
+            return
+        # Tools can run on different threads; two calls crossing the threshold
+        # together must not both show the same one-time hint.
+        with _helper_lock:
+            if _helper_counts is None:
+                # Read before this call is logged, so it cannot count twice.
+                # Later writes by other processes may be missed: scanning the
+                # whole log on every call would make accumulated history a cost.
+                _helper_counts = experience.HelperCounts(experience.default_log().read())
+            repeated = _helper_counts.repeated(defs)
+            _helper_counts.add({"tool": "fusion_execute", "ok": True, "defs": defs})
+            hints = []
+            shown = set()
+            for name, item in repeated.items():
+                shape = defs[name]
+                if shape in _hinted_helpers or shape in shown:
+                    continue
+                aliases = ", ".join(f"`{other}`" for other in item["names"])
+                also = f" (also as {aliases})" if aliases else ""
+                hints.append(
+                    f"You have now written `{name}` {item['count']} times across sessions{also}. "
+                    "Save it with fusion_command_save so it is one fusion_run call from now on.")
+                shown.add(shape)
+            if hints:
+                result["hint"] = " ".join(hints)
+                _hinted_helpers.update(shown)
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not suggest repeated helpers: %r", exc)
+
+
 def _run_and_report(tool: str, code: str, *, record_code: str,
                     screenshot: str | None, autosave: bool = True,
                     reset: bool = False, allow_no_design: bool = False,
@@ -832,6 +876,8 @@ def _run_and_report(tool: str, code: str, *, record_code: str,
                 extra["autosave_ms"] = int(round((time.monotonic() - saving) * 1000))
     else:
         extra.update(_recall(result))
+    if tool == "fusion_execute" and result.get("ok"):
+        _repetition_hint(record_code, result)
     _remember(tool, record_code, result, seconds, **extra)
     return _with_screenshot(result, screenshot)
 

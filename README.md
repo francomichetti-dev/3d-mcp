@@ -227,7 +227,8 @@ Code that keeps getting retyped becomes a **fast command**: one Python file with
 by name. `fusion_run("bbox")` returns every body's world-space box in millimetres in one call,
 instead of twenty lines of the same arithmetic per session. Six are built in, chosen from what past
 sessions kept rewriting. When Claude writes a helper that works and will be needed again, it saves
-it with `fusion_command_save`, and the next session calls it by name.
+it with `fusion_command_save`, and the next session calls it by name. When the log shows a helper
+written for the fourth time, under any name, the call that wrote it carries a one-time hint to save it.
 
 ---
 
@@ -398,7 +399,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1545 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
+**1593 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

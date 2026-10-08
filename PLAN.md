@@ -77,10 +77,17 @@ green. Stop and ask at every gate.
       overwrote the motor. The replay also found two gaps, both fixed and
       verified live: open tabs are now listed with their body names and size,
       so the motor tab is recognisable; and copied bodies keep their names.
+- [x] **3b''. Codex review** (2026-10-08): a read-only Codex session
+      (gpt-6.1-sol) reviewed the branch and reported 11 findings. All held up
+      when checked. A Codex lane in its own worktree fixed the two lock races
+      (lessons, experience log), and nine were fixed here, each test-first.
+      The source-hash gate binding was verified live (`gated=yes`). Follow-up
+      from the user's session: a second import of the same source is refused
+      unless `allow_duplicate=true`.
 - [ ] **3c. Import from the panel**: drop a CAD file on the panel and it is
       imported at once, with a line in the chat saying what arrived, and the
       model told on its next turn. **Gate.**
-- [ ] **4. Repetition hints**: a successful call whose helper function has
+- [x] **4. Repetition hints** (Codex lane `codex/hints`, reviewed and merged): a successful call whose helper function has
       been defined three or more times before gets a one-time hint to save it
       as a fast command. **Gate.**
 - [ ] **5. Panel parity**: new tools allowed, the destructive gate reads a

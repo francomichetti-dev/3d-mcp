@@ -167,6 +167,62 @@ def function_fingerprints(code):
     return out
 
 
+# ----------------------------------------------------------- repetition ----
+class HelperCounts:
+    """Successful execute records per shape, with every name it appeared under.
+
+    Kept separately from the records so a long-running server can count new
+    calls without retaining their code or scanning the log again.
+    """
+
+    def __init__(self, records=()):
+        self.counts = {}
+        self.names = {}
+        for record in records:
+            self.add(record)
+
+    def add(self, record):
+        """Count one successful fusion_execute, once per shape in its defs."""
+        if record.get("tool") != "fusion_execute" or not record.get("ok"):
+            return
+        defs = record.get("defs")
+        if not isinstance(defs, dict):
+            return
+        shapes = set()
+        for name, shape in defs.items():
+            if not isinstance(name, str) or not isinstance(shape, str) or not shape:
+                continue
+            self.names.setdefault(shape, set()).add(name)
+            shapes.add(shape)
+        # Two aliases in a snippet are still one earlier call, not two pieces
+        # of evidence that the model keeps retyping this helper.
+        for shape in shapes:
+            self.counts[shape] = self.counts.get(shape, 0) + 1
+
+    def repeated(self, defs, threshold=3):
+        """Qualifying helpers, with totals including this call and other names.
+
+        `defs` is the current call, which must not already be in the counts.
+        Querying does not add it; the server adds it once after querying.
+        """
+        out = {}
+        for name, shape in defs.items():
+            count = self.counts.get(shape, 0)
+            if count >= threshold:
+                out[name] = {"count": count + 1,
+                             "names": sorted(self.names.get(shape, set()) - {name})}
+        return out
+
+
+def repeated_helpers(records, defs, threshold=3):
+    """Repeated helpers in `defs`; `records` contains only earlier calls.
+
+    Each result has `count` (including this call) and `names` (other names
+    under which its shape was defined). Sessions do not split the history.
+    """
+    return HelperCounts(records).repeated(defs, threshold)
+
+
 # -------------------------------------------------------------- records ----
 def call_record(tool, code, outcome, seconds, **extra):
     """One line of the log, built from a call and what the bridge answered.
