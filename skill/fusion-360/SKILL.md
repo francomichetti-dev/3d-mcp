@@ -1,6 +1,6 @@
 ---
 name: fusion-360
-description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save / fusion_learn tools are involved.
+description: Model in Autodesk Fusion 360 through the arges bridge — write Fusion API Python, verify with screenshots, export print-ready files. Use for any CAD, 3D modelling, parametric design, 3D-printing, STL/STEP export, enclosure, bracket, or mechanical-part request, and whenever the fusion_execute / fusion_screenshot / fusion_state / fusion_export / fusion_download / fusion_save / fusion_learn / fusion_run / fusion_command_save tools are involved.
 ---
 
 # Fusion 360 via arges
@@ -93,6 +93,17 @@ The tool remembers across sessions, but only what gets recorded:
   `experience` at the start of every session, so read them first.
 - Record only verified, general fixes: no guesses, no body names. If a lesson
   proves wrong, `fusion_learn(forget=id, lesson=<the correction>)`.
+
+## Fast commands
+
+`fusion_run(command, args)` runs proven code in one call. Prefer it to
+retyping a helper: `bbox` (world boxes in mm), `inspect` (volume, faces,
+solid), `timeline` (feature health; `problems_only`), `profiles` (pick a
+profile by area or centroid), `sketch_frame` (a sketch's axes in the world),
+`set_params` (create or update parameters). `fusion_state` lists them with
+any learned ones, and `fusion_run()` shows how to call each. When a helper
+you wrote works and will be needed again, save it with `fusion_command_save`:
+general (sizes and names from `p`), with a `usage` the next session can follow.
 
 ## Injected names
 

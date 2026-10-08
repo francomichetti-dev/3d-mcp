@@ -67,6 +67,8 @@ SERVER_DIR = REPO / "server"
 # standard library, which is what makes this safe across the two environments.
 sys.path.insert(0, str(SERVER_DIR / "src"))
 from arges_mcp import common as fusion_common        # noqa: E402
+# The fast-command library, read here only to gate a command by its source.
+from arges_mcp import fastcommands as fusion_commands  # noqa: E402
 
 BIND_HOST = "127.0.0.1"
 BIND_PORT = int(os.environ.get("ARGES_CHAT_PORT")
@@ -300,11 +302,36 @@ def forget_attachments(key: str) -> None:
         pass            # never existed, or already gone
 
 
+def gated_code(tool_name: str, tool_input: dict[str, Any]) -> str:
+    """The code a call is about to run in Fusion, or "" if it runs none.
+
+    For fusion_execute that is its `code`. A fast command carries only a name,
+    so it is resolved to the command's source: gating the name alone would let
+    any destructive snippet through by saving it first, and showing only a
+    name would ask the person to approve something they cannot see. Saving a
+    command runs nothing, so fusion_command_save is not gated; running it later
+    is.
+    """
+    if tool_name.endswith("fusion_execute"):
+        return str(tool_input.get("code") or "")
+    if tool_name.endswith("fusion_run"):
+        name = str(tool_input.get("command") or "").strip()
+        if not name:
+            return ""
+        try:
+            command = fusion_commands.default_library().get(name)
+        except Exception:                                 # noqa: BLE001
+            command = None
+        # Unknown: the server refuses it without running anything.
+        return command.source if command is not None else ""
+    return ""
+
+
 def destructive_reason(tool_name: str, tool_input: dict[str, Any]) -> str | None:
     """Return why this call is destructive, or None if it is safe to auto-run."""
-    if not tool_name.endswith("fusion_execute"):
+    code = gated_code(tool_name, tool_input)
+    if not code:
         return None
-    code = tool_input.get("code") or ""
     for pattern, reason in DESTRUCTIVE_PATTERNS:
         if re.search(pattern, code):
             return reason
@@ -421,6 +448,13 @@ before rewriting anything. When you fix a failure, or a picture shows a
 mistake that raised nothing, record it with fusion_learn: one or two verified
 sentences, true beyond this design. fusion_state lists the general lessons, so
 read them when you start.
+
+Fast commands are proven helpers run in one call: fusion_run("bbox") to
+measure, "timeline" to check every feature's health, "profiles" to pick a
+profile by area, "set_params" to set parameters, and any saved before
+(fusion_state lists them; fusion_run() with no command shows how to call each).
+Use one instead of retyping the same helper. When you have written a helper
+that worked and will be needed again, save it with fusion_command_save.
 
 Use the `plan` tool for anything that takes more than two or three steps. Call
 it once before you start building, with the whole plan as short concrete steps
@@ -577,7 +611,7 @@ class Session:
             "type": "permission",
             "id": request_id,
             "reason": reason,
-            "code": (tool_input.get("code") or "")[:4000],
+            "code": gated_code(tool_name, tool_input)[:4000],
         })
         try:
             approved = await future
@@ -692,6 +726,10 @@ class Session:
                 "mcp__fusion__fusion_save",
                 # Writes a lesson to a local file and touches no geometry.
                 "mcp__fusion__fusion_learn",
+                # Runs a saved command: the hook gates it by its source.
+                "mcp__fusion__fusion_run",
+                # Writes a command to a local file; running it is gated.
+                "mcp__fusion__fusion_command_save",
             ],
             # The hook is the gate — it runs before any allow rule or
             # permission mode is consulted, so pre-approving the tools above
@@ -1028,6 +1066,9 @@ ORB_STATES: dict[str, str] = {
     "Writing a file": "composing",
     "Saving": "composing",
     "Noting what worked": "composing",
+    "Saving a fast command": "composing",
+    "Measuring": "searching",
+    "Running a fast command": "working",
     "Planning": "solving",
 }
 ORB_DEFAULT = "working"
@@ -1058,6 +1099,16 @@ def _activity_verb(name: str, args: dict[str, Any]) -> str:
         return "Saving"
     if short == "fusion_learn":
         return "Noting what worked"
+    if short == "fusion_command_save":
+        return "Saving a fast command"
+    if short == "fusion_run":
+        try:
+            command = fusion_commands.default_library().get(
+                str(args.get("command") or "").strip())
+        except Exception:                                 # noqa: BLE001
+            command = None
+        return "Measuring" if command is not None and command.readonly \
+            else "Running a fast command"
     if short == "plan":
         return "Planning"
     if short != "fusion_execute":
@@ -1084,6 +1135,12 @@ def _summarize_tool(name: str, args: dict[str, Any]) -> str:
                 f"{args.get('body_or_component', '') or '(whole design)'}")
     if short == "fusion_save":
         return "the whole design"
+    if short == "fusion_run":
+        given = args.get("args")
+        return (f"{args.get('command', '') or '(list)'}"
+                + (f" {json.dumps(given)[:70]}" if given else ""))
+    if short == "fusion_command_save":
+        return f"{args.get('name', '')} · {str(args.get('description') or '')[:70]}"
     if short == "fusion_learn":
         lesson = str(args.get("lesson") or "").strip()
         return lesson[:80] if lesson else f"forget {args.get('forget', '')}"

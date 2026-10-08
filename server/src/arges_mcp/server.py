@@ -32,7 +32,7 @@ import httpx
 from fastmcp import FastMCP
 from fastmcp.exceptions import ToolError
 
-from . import common, experience, lessons
+from . import common, experience, fastcommands, lessons
 from fastmcp.utilities.types import Image
 
 # --------------------------------------------------------------------------
@@ -95,6 +95,9 @@ MAX_SCREENSHOT_BYTES = 512 * 1024
 SCREENSHOT_SHRINK_ATTEMPTS = 2
 SCREENSHOT_MIN_SIDE = 64
 STATE_ENTRY_CAP = 50
+# fusion_state lists the fast commands so a session knows they exist; past this
+# many, fusion_run() with no command is the full list.
+COMMANDS_IN_STATE = 40
 LOG_MAX_BYTES = 5 * 1024 * 1024
 
 # Mirrors the add-in's body cap. Enforced here as well because the add-in
@@ -165,7 +168,11 @@ mcp = FastMCP(
         "recorded the last time that exact error happened, so read them "
         "first. After you fix a failure, or catch a silent mistake in a "
         "screenshot, record it with fusion_learn so the next session starts "
-        "knowing it."
+        "knowing it. Fast commands are proven helpers run in one call with "
+        "fusion_run (bbox, inspect, timeline, profiles, sketch_frame, "
+        "set_params, plus any saved with fusion_command_save); prefer them "
+        "to retyping the same helper, and save one when you have written a "
+        "helper that worked and will be needed again."
     ),
 )
 
@@ -655,11 +662,20 @@ def _experience_summary() -> dict[str, Any]:
     """What fusion_state says about accumulated experience. Never raises."""
     try:
         store = lessons.default_store()
-        return {"lessons": [lessons.brief(item) for item in store.general()],
-                "lessons_total": len(store.all())}
+        summary = {"lessons": [lessons.brief(item) for item in store.general()],
+                   "lessons_total": len(store.all())}
     except Exception as exc:                              # noqa: BLE001
         log.warning("could not read lessons: %r", exc)
-        return {"lessons": [], "lessons_total": 0}
+        summary = {"lessons": [], "lessons_total": 0}
+    try:
+        # Names and descriptions only: enough for a session to know a command
+        # exists. fusion_run() with no command gives each one's usage.
+        summary["commands"] = fastcommands.listing(
+            fastcommands.default_library().all(), usage=False)[:COMMANDS_IN_STATE]
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not read fast commands: %r", exc)
+        summary["commands"] = []
+    return summary
 
 
 # --------------------------------------------------------------------------
@@ -733,42 +749,65 @@ def fusion_execute(
     """
     if not isinstance(code, str) or not code.strip():
         raise ToolError("`code` must be a non-empty Python source string.")
-    # An unknown view must be refused BEFORE the code runs: rejecting it after
-    # would leave the geometry changed and the caller believing nothing
-    # happened, which is the worst possible reading of an error.
-    if screenshot is not None and screenshot not in VIEWS:
-        raise ToolError(
-            f"Unknown screenshot view {screenshot!r} — valid views: "
-            f"{', '.join(VIEWS)}. The code was NOT run."
-        )
+    _check_view(screenshot)
     log.info(
         "fusion_execute: %d chars, reset=%s, allow_no_design=%s, screenshot=%s",
         len(code), reset, allow_no_design, screenshot,
     )
     log.debug("fusion_execute code: %s", code[:2000])
+    return _run_and_report(
+        "fusion_execute", code, record_code=code, screenshot=screenshot,
+        reset=reset, allow_no_design=allow_no_design)
+
+
+def _check_view(screenshot: str | None) -> None:
+    """Refuse an unknown view BEFORE anything runs.
+
+    Rejecting it afterwards would leave the geometry changed and the caller
+    believing nothing happened, which is the worst possible reading of an error.
+    """
+    if screenshot is not None and screenshot not in VIEWS:
+        raise ToolError(
+            f"Unknown screenshot view {screenshot!r} — valid views: "
+            f"{', '.join(VIEWS)}. The code was NOT run."
+        )
+
+
+def _run_and_report(tool: str, code: str, *, record_code: str,
+                    screenshot: str | None, autosave: bool = True,
+                    reset: bool = False, allow_no_design: bool = False,
+                    **record_extra: Any) -> Any:
+    """Run code in Fusion and hand back what every modelling tool hands back.
+
+    One path for fusion_execute and fusion_run, so the two cannot drift: a
+    success is saved and photographed, a failure brings its lessons, and either
+    way the call goes into the experience log.
+    """
     started = time.monotonic()
     try:
         result = _execute(code, reset=reset, allow_no_design=allow_no_design)
     except ToolError as exc:
         # The bridge being down is experience too: it is how the report can
         # tell a bad afternoon of code from a bad afternoon of Fusion.
-        _remember("fusion_execute", code, {"ok": False, "error": str(exc)},
-                  time.monotonic() - started, view=screenshot, kind="tool_error")
+        _remember(tool, record_code, {"ok": False, "error": str(exc)},
+                  time.monotonic() - started, view=screenshot, kind="tool_error",
+                  **record_extra)
         raise
     seconds = time.monotonic() - started
-    extra: dict[str, Any] = {"view": screenshot}
+    extra: dict[str, Any] = {"view": screenshot, **record_extra}
     # Before the screenshot, so both return shapes carry the outcome, and so a
     # slow cloud save cannot leave a window where the picture is newer than the
     # saved document.
     if result.get("ok"):
-        saving = time.monotonic()
-        _autosave(result)
-        if "autosave" in result:
-            # FOLLOWUP.md asks what the autosave really costs; this answers it.
-            extra["autosave_ms"] = int(round((time.monotonic() - saving) * 1000))
+        if autosave:
+            saving = time.monotonic()
+            _autosave(result)
+            if "autosave" in result:
+                # FOLLOWUP.md asks what the autosave really costs; this answers it.
+                extra["autosave_ms"] = int(round((time.monotonic() - saving) * 1000))
     else:
         extra.update(_recall(result))
-    _remember("fusion_execute", code, result, seconds, **extra)
+    _remember(tool, record_code, result, seconds, **extra)
     if screenshot is None or not result.get("ok"):
         # A failed script wants its traceback read, not photographed; the
         # geometry may be half-changed and the next step is fixing the code.
@@ -783,6 +822,108 @@ def fusion_execute(
         )
         return result
     return [result, Image(data=data, format="png")]
+
+
+@mcp.tool
+def fusion_run(
+    command: str = "",
+    args: dict[str, Any] | None = None,
+    screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
+) -> Any:
+    """Run a fast command: saved, proven code, called by name in one step.
+
+    Call it with no command to list them, each with its description, how to
+    call it (`usage`) and whether it is read-only. Built-ins include:
+      bbox          world-space bounding boxes in mm, every body or named ones
+      inspect       volume, area, faces, edges, solid, per body
+      timeline      every feature with its health; problems_only=true
+      profiles      a sketch's profiles with area/centroid, to pick by invariant
+      sketch_frame  where a sketch's X/Y axes point in the world
+      set_params    create or update user parameters by expression
+    plus any commands saved with fusion_command_save. Prefer a command over
+    retyping the same helper in fusion_execute: it is shorter, already
+    debugged, and the same every session.
+
+    `args` is a JSON object passed to the command as its `p` dict; its keys
+    are in the command's usage. `screenshot` works exactly as on
+    fusion_execute: the picture comes back with the result in one call.
+
+    The result has the same shape as fusion_execute's, including `lessons`
+    or `learn` on a failure. A command that changes the design is saved
+    afterwards like any change; a read-only one is not, since there is
+    nothing new to save.
+    """
+    library = fastcommands.default_library()
+    name = (command or "").strip()
+    if not name:
+        return {"ok": True, "commands": fastcommands.listing(library.all())}
+    found = library.get(name)
+    if found is None:
+        known = ", ".join(c.name for c in library.all())
+        raise ToolError(f"No fast command named {name!r}. Available: {known}. "
+                        "Nothing was run.")
+    if args is not None and not isinstance(args, dict):
+        raise ToolError("`args` must be a JSON object (the command's `p`). "
+                        "Nothing was run.")
+    _check_view(screenshot)
+    log.info("fusion_run: %s (%s) args=%s screenshot=%s", name, found.origin,
+             json.dumps(args or {})[:300], screenshot)
+    # The source is not logged: it is already on disk under the command's name,
+    # and a copy per call would crowd the log's real history out.
+    return _run_and_report(
+        "fusion_run", fastcommands.invocation(found, args or {}), record_code="",
+        screenshot=screenshot, autosave=not found.readonly,
+        command=name, args=args or {})
+
+
+@mcp.tool
+def fusion_command_save(
+    name: str,
+    description: str = "",
+    code: str = "",
+    usage: str = "",
+    readonly: bool = False,
+    remove: bool = False,
+) -> dict[str, Any]:
+    """Save code that worked as a fast command, so it is one call next time.
+
+    Save a helper when you have written it, it has already run successfully,
+    and you expect to need it again in this design or another: placing the
+    camera, building a standard feature, checking a measurement. Then
+    fusion_run(name, args) runs it in one call in any later session.
+
+    `code` must define `run(p)`, which receives the call's arguments as a dict
+    and returns something JSON can carry. It runs inside Fusion with `adsk`,
+    `app`, `ui` and `design` injected, as in fusion_execute. Make it
+    general: take sizes, names and counts from `p` instead of hardcoding
+    this design's. `description` is one line saying what it does. `usage`
+    says which keys `p` takes and what comes back; the next session reads it
+    to call the command, so be precise. Set `readonly=true` only if the
+    command changes nothing in the design: read-only commands skip the
+    autosave.
+
+    Saving under an existing learned name replaces it, keeping the previous
+    version as <name>.py.prev. Built-in names cannot be reused.
+    `remove=true` with just a name deletes a learned command that turned out
+    to be wrong (it too is kept as .prev).
+
+    Returns {"ok": true, "name", "path", "replaced"} or {"ok": true,
+    "removed": bool}.
+    """
+    library = fastcommands.default_library()
+    try:
+        if remove:
+            removed = library.remove((name or "").strip())
+            log.info("fusion_command_save: removed %s -> %s", name, removed)
+            return {"ok": True, "name": name, "removed": removed}
+        saved, replaced = library.save((name or "").strip(), description, code,
+                                       usage=usage, readonly=readonly)
+    except (OSError, ValueError) as exc:
+        raise ToolError(f"Command not saved: {exc}") from None
+    log.info("fusion_command_save: %s (readonly=%s, replaced=%s)",
+             saved.name, saved.readonly, replaced)
+    return {"ok": True, "name": saved.name, "path": str(saved.path),
+            "readonly": saved.readonly, "replaced": replaced}
 
 
 @mcp.tool
@@ -1065,8 +1206,9 @@ def fusion_state() -> dict[str, Any]:
 
     It also carries "experience": the general lessons recorded in earlier
     sessions (mistakes that raise no error, so nothing else would bring them
-    back), best-confirmed first, and how many lessons exist in all. Read them
-    before you start; correct a wrong one with fusion_learn(forget=id).
+    back), best-confirmed first, how many lessons exist in all, and the fast
+    commands available to fusion_run. Read them before you start; correct a
+    wrong lesson with fusion_learn(forget=id).
     """
     health = _bridge_request("GET", "/health")
     seen = health.get("bridge_version")

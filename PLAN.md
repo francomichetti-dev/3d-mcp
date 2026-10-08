@@ -36,7 +36,7 @@ turns the log off.
   atomically under a lock, since several MCP server processes share it.
   Recall is by exact error signature only: a looser match would bring back
   lessons about other errors, and a misleading lesson is worse than none.
-- a `fastcommands` package beside it: the command library. Built-ins ship in
+- `server/src/arges_mcp/fastcommands/`: the command library. Built-ins ship in
   `builtin/`, and learned commands live in `~/.arges/commands/`, in the same
   format: one `.py` file per command, a docstring, and `def run(p)`. A command
   runs as data inside the snippet mechanism `common.snippet` already uses, so
@@ -58,7 +58,7 @@ green. Stop and ask at every gate.
       recorded for its error signature, or a one-line nudge to record one once
       fixed; `fusion_state` carries the most-confirmed general lessons. Skill
       section on when to record a lesson. **Gate.**
-- [ ] **3. Fast commands**: `fusion_run`, `fusion_command_save`, the
+- [x] **3. Fast commands**: `fusion_run`, `fusion_command_save`, the
       library, and built-ins drawn from the mined repeats (`bbox`, `inspect`,
       `params`, `sketch_axes`, `profiles`). Read-only commands skip the autosave.
       Built-ins verified live against Fusion on read-only calls. **Gate.**

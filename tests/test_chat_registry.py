@@ -194,6 +194,38 @@ for code, expect_blocked in cases:
 check("gate ignores non-execute tools",
       svc.destructive_reason("mcp__fusion__fusion_screenshot", {"code": "x.deleteMe()"}), None)
 
+# A fast command carries no code in its call, only a name. Gating the name
+# would let any destructive snippet through by saving it first, so the gate
+# reads the command's source, the same code Fusion is about to run.
+with tempfile.TemporaryDirectory() as d:
+    real_state_dir = svc.fusion_common.state_dir
+    svc.fusion_common.state_dir = lambda: Path(d)
+    try:
+        library = svc.fusion_commands.default_library()
+        library.save("close_it", "Close the document.",
+                     "def run(p):\n    app.activeDocument.close(False)\n")
+        truthy("a saved command that closes the document is gated by its source",
+               svc.destructive_reason("mcp__fusion__fusion_run", {"command": "close_it"}))
+        truthy("and the person is shown that source, not just its name",
+               ".close(False)" in svc.gated_code("mcp__fusion__fusion_run",
+                                                 {"command": "close_it"}))
+        check("a read-only built-in passes",
+              svc.destructive_reason("mcp__fusion__fusion_run", {"command": "bbox"}), None)
+        check("an unknown command passes: the server refuses it without running anything",
+              svc.destructive_reason("mcp__fusion__fusion_run", {"command": "nope"}), None)
+        check("listing the commands passes",
+              svc.destructive_reason("mcp__fusion__fusion_run", {}), None)
+        check("saving a command runs nothing, so it is not gated",
+              svc.destructive_reason("mcp__fusion__fusion_command_save",
+                                     {"name": "x_y", "code": "doc.close(False)"}), None)
+        check("a fast command's banner says what it is doing",
+              svc._activity_verb("mcp__fusion__fusion_run", {"command": "bbox"}), "Measuring")
+        check("including one that changes the design",
+              svc._activity_verb("mcp__fusion__fusion_run", {"command": "close_it"}),
+              "Running a fast command")
+    finally:
+        svc.fusion_common.state_dir = real_state_dir
+
 
 # ----------------------------------------------------------- attachments ----
 print("Attachments")
@@ -264,6 +296,8 @@ truthy("the prompt teaches the combined execute+screenshot",
        'screenshot="iso"' in svc.SYSTEM_APPEND)
 truthy("the prompt teaches reading lessons and recording them",
        "lessons" in svc.SYSTEM_APPEND and "fusion_learn" in svc.SYSTEM_APPEND)
+truthy("and using fast commands and saving new ones",
+       "fusion_run" in svc.SYSTEM_APPEND and "fusion_command_save" in svc.SYSTEM_APPEND)
 
 # ------------------------------------------------------ DNS rebinding -------
 # This service holds the bridge token and forwards to the bridge, so anything
@@ -906,6 +940,16 @@ check("and the log line shows the lesson itself",
       svc._summarize_tool("mcp__fusion__fusion_learn",
                           {"lesson": "Pick profiles by area.", "error": "x"}),
       "Pick profiles by area.")
+check("saving a command says so",
+      svc._activity_verb("mcp__fusion__fusion_command_save", {}), "Saving a fast command")
+check("the log line for a command names it and its arguments",
+      svc._summarize_tool("mcp__fusion__fusion_run",
+                          {"command": "bbox", "args": {"bodies": ["Plate"]}}),
+      'bbox {"bodies": ["Plate"]}')
+check("and for a saved one, its name and what it does",
+      svc._summarize_tool("mcp__fusion__fusion_command_save",
+                          {"name": "hole_grid", "description": "Drill a grid."}),
+      "hole_grid · Drill a grid.")
 check("or which lesson it forgot",
       svc._summarize_tool("mcp__fusion__fusion_learn", {"lesson": "", "forget": "abc"}),
       "forget abc")
@@ -1072,7 +1116,8 @@ named = {verb for _, verb in svc._ACTIVITY_VERBS}
 # Derived from the tools rather than listed, so a NEW tool with a new verb fails
 # this the moment it is added without an orb.
 for tool in ("fusion_screenshot", "fusion_state", "fusion_export",
-             "fusion_download", "fusion_save", "fusion_learn", "plan"):
+             "fusion_download", "fusion_save", "fusion_learn",
+             "fusion_run", "fusion_command_save", "plan"):
     named.add(svc._activity_verb("mcp__fusion__" + tool, {}))
 check("every named activity has an orb chosen for it",
       sorted(v for v in named if v not in svc.ORB_STATES), [])

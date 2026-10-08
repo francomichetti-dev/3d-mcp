@@ -80,6 +80,13 @@ is how the tool learns from its own history, and the code in it is design data, 
 `0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off. Lessons the
 model records with `fusion_learn` go to `~/.arges/lessons.json`, under the same rules.
 
+Learned fast commands, saved with `fusion_command_save`, are Python files in `~/.arges/commands/`
+that run inside Fusion when called, with the same privileges as `fusion_execute`. They are code the
+model wrote, kept `0600`, and run only when called by name. A command's arguments travel as data
+and are never spliced into its source. The chat panel gates `fusion_run` by the command's source,
+exactly as it gates `fusion_execute` by its code. Without that, saving a destructive snippet under
+a name would be a way around the gate.
+
 `scripts/uninstall.sh --purge` deletes all of it.
 
 ## Reporting a vulnerability

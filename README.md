@@ -159,7 +159,7 @@ what it is for, the decisions and why — instead of being lost or kept whole:
 
 ### From Claude Code
 
-Seven tools. `fusion_execute` is the product; the rest exist because every session needs them and
+Nine tools. `fusion_execute` is the product; the rest exist because every session needs them and
 they shouldn't require bespoke code each time.
 
 | Tool | What it does |
@@ -171,6 +171,8 @@ they shouldn't require bespoke code each time.
 | `fusion_save` | The whole design as one `.f3d` — and it already ran, see below. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
 | `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
+| `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, plus any learned ones. With no command, lists them with how to call each. |
+| `fusion_command_save` | Saves a helper that worked as a learned fast command in `~/.arges/commands/`, so the next session calls it instead of retyping it. |
 
 A failing script is a **normal result**, not a tool error: the traceback comes back verbatim so
 Claude can read it and fix its own code.
@@ -208,6 +210,12 @@ back on the failed result, before Claude spends a turn rediscovering it. Mistake
 nothing, such as a mirrored sketch or a profile that grabbed the wrong region, are recorded the same
 way, and `fusion_state` lists them at the start of every session. A lesson that turns out wrong can
 be forgotten, because here a wrong pattern is worse than a missing one.
+
+Code that keeps getting retyped becomes a **fast command**: one Python file with a `run(p)`, called
+by name. `fusion_run("bbox")` returns every body's world-space box in millimetres in one call,
+instead of twenty lines of the same arithmetic per session. Six are built in, chosen from what past
+sessions kept rewriting. When Claude writes a helper that works and will be needed again, it saves
+it with `fusion_command_save`, and the next session calls it by name.
 
 ---
 
@@ -292,7 +300,7 @@ the bridge code. Getting a model to understand *where things go in 3D space* is 
 Every API pattern in it was checked against Autodesk's reference and carries its doc URL. Where a
 claim could not be verified it says so, and tells Claude to probe at runtime rather than asserting a
 rule — **a plausible-but-wrong pattern is worse than a missing one**. It uses progressive
-disclosure: `SKILL.md` (~7 KB) is always in context, and
+disclosure: `SKILL.md` (~8 KB) is always in context, and
 `references/{patterns,gotchas,spatial,printing,workflow}.md` load on demand.
 
 A sample, all verified against a running Fusion 2704:
@@ -378,7 +386,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1236 assertions across fifteen suites**, none of which need Fusion, Rhino, or an internet
+**1346 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -397,6 +405,7 @@ connection. That is a macOS run; on Linux the count is lower because the install
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 | `test_experience.py` | the experience log: errors recognised across runs, helpers recognised across renames, and a log that can never fail a call |
 | `test_lessons.py` | lessons: recalled for their own error and no other, correctable, shared safely between processes, and never in the way of a failure |
+| `test_fastcommands.py` | fast commands: refused when they would fail later, arguments carried as data and never as code, and the built-ins checked against stand-ins |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |
 | `test_panel.js` | the chat panel's own JavaScript against a stub DOM: the plan, the working banner, the file buttons, the orb |
 
