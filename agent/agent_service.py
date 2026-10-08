@@ -2006,13 +2006,27 @@ async def _bridge_execute(code: str, timeout: float = 120.0) -> dict[str, Any]:
 
 async def _write_file(request: web.Request, fmt: str, filename: str,
                       overwrite: bool) -> web.Response:
-    """Shared body of the Save and Download buttons: pick a path, then export."""
+    """Shared body of the Save and Download buttons: pick a path, then export.
+
+    Save overwrites, but only its own mirror: the same rule as the autosave,
+    because the same rule once failed here. See fusion_common.mirror_path.
+    """
     registry: Registry = request.app["registry"]
     document = (registry.current or {}).get("name") or "design"
+    key = None
+    if overwrite:
+        found = await _bridge_execute(fusion_common.snippet(
+            fusion_common.IDENTITY_BODY, fusion_common.IDENTITY_PARAMS))
+        # _bridge_execute hands back the snippet's own result dict on success.
+        document = found.get("name") or document if isinstance(found.get("name"), str) else document
+        key = found.get("key") if isinstance(found.get("key"), str) else None
     try:
-        target = fusion_common.output_path(
-            fusion_common.save_dir_from(), filename, document, fmt,
-            overwrite=overwrite)
+        if overwrite:
+            target = fusion_common.mirror_path(
+                fusion_common.save_dir_from(), document, key)
+        else:
+            target = fusion_common.output_path(
+                fusion_common.save_dir_from(), filename, document, fmt)
     except (OSError, ValueError) as exc:
         return web.json_response({"ok": False, "error": str(exc)}, status=400)
 
@@ -2025,6 +2039,8 @@ async def _write_file(request: web.Request, fmt: str, filename: str,
                  or "the export failed")
         return web.json_response({"ok": False, "error": str(error)[:400]},
                                  status=502)
+    if overwrite:
+        fusion_common.record_mirror(outcome.get("path") or target, key)
     outcome["folder"] = str(target.parent)
     outcome["name"] = target.name
     return web.json_response(outcome)

@@ -11,6 +11,7 @@ become a directory, and that no existing file is ever overwritten.
 """
 
 import os
+import stat
 import sys
 import tempfile
 from pathlib import Path
@@ -186,13 +187,62 @@ os.symlink(str(Path(tempfile.gettempdir()) / "fusion-no-such-target"),
 check("a dangling symlink is not written through",
       common.output_path(DEST, "linked", "x", "stl").name, "linked-1.stl")
 
-# --- the save mirror is the exception: one file, tracking the current state
-mirror = common.output_path(DEST, "", "tower", "f3d", overwrite=True)
-mirror.write_text("state")
-check("the mirror keeps the same name", common.output_path(
-    DEST, "", "tower", "f3d", overwrite=True), mirror)
-truthy("and is not timestamped", "_20" not in mirror.name)
-check("it is named after the document", mirror.name, "tower.f3d")
+# --- the save mirror: one file per document, and never somebody else's file
+#
+# The mirror used to be "<folder>/<document name>.f3d, overwritten". On
+# 2026-10-08 that destroyed a real file: the person had downloaded a motor as
+# Untitled.f3d into Downloads (the default save folder), asked for it to be
+# imported, and the first successful call saved the open, empty "Untitled"
+# design over it. Every unsaved Fusion document is called Untitled, so the
+# name alone could never have been safe. Now the mirror only ever replaces a
+# file this tool wrote, for the same document, unchanged since it wrote it.
+print("The save mirror never overwrites somebody else's file")
+
+MIRROR = Path(tempfile.mkdtemp(prefix="fusion-mirror-test-"))
+theirs = MIRROR / "Untitled.f3d"
+theirs.write_bytes(b"the motor: 200 KB of somebody's real work")
+
+a = common.mirror_path(MIRROR, "Untitled", "doc:a")
+check("a file the person put there is never the target", a.name, "Untitled-1.f3d")
+a.write_bytes(b"state of A")
+common.record_mirror(a, "doc:a")
+check("the same document keeps writing to its own file",
+      common.mirror_path(MIRROR, "Untitled", "doc:a"), a)
+
+b = common.mirror_path(MIRROR, "Untitled", "doc:b")
+check("another document with the same name gets a file of its own", b.name, "Untitled-2.f3d")
+b.write_bytes(b"state of B")
+common.record_mirror(b, "doc:b")
+check("and the person's file is untouched throughout",
+      theirs.read_bytes(), b"the motor: 200 KB of somebody's real work")
+
+a.write_bytes(b"edited by hand since the tool wrote it")
+moved = common.mirror_path(MIRROR, "Untitled", "doc:a")
+check("a mirror somebody changed is no longer the tool's to replace", moved == a, False)
+check("so the state goes to a free name instead", moved.exists(), False)
+moved.write_bytes(b"x")
+common.record_mirror(moved, "doc:a")
+moved.unlink()
+check("a mirror the person deleted is simply written again",
+      common.mirror_path(MIRROR, "Untitled", "doc:a"), moved)
+
+(MIRROR / "tower.f3d").write_text("theirs")
+check("with no document identity at all, a foreign file is still never the target",
+      common.mirror_path(MIRROR, "tower", None).name, "tower-1.f3d")
+check("an unnamed document still gets a file", common.mirror_path(MIRROR, "", "doc:z").name,
+      "design.f3d")
+check("the mirror is a Fusion archive", a.suffix, ".f3d")
+
+ledger = common.state_dir() / common.LEDGER_NAME
+check("the ledger of what the tool wrote is private",
+      stat.S_IMODE(ledger.stat().st_mode), 0o600)
+ledger.write_text("{ corrupt")
+check("a corrupt ledger makes nothing look like the tool's",
+      common.mirror_path(MIRROR, "Untitled", "doc:b") == b, False)
+
+ids = common.IDENTITY_BODY
+truthy("the identity snippet reads the same attribute the add-in stamps",
+       "attributes.itemByName" in ids and "dataFile" in ids)
 
 # ------------------------------------------------------------------ config ----
 print("Stored configuration")
@@ -429,11 +479,15 @@ bridge_log = []
 
 
 def fake_state_bridge(document="tower", execute=None):
-    """Answer /health with a document name and /execute with a canned result."""
+    """Answer /health and the identity snippet with a document, and /execute
+    with a canned result."""
     def request(method, path, payload=None):
         bridge_log.append((path, payload))
         if path == "/health":
             return {"ok": True, "document": document, "bridge_version": "1"}
+        if "_fx_identity" in (payload or {}).get("code", ""):
+            return {"ok": True, "stdout": "",
+                    "result": {"name": document or "", "key": "doc:tower"}}
         if isinstance(execute, Exception):
             raise execute
         return execute or {"ok": True, "result": {
@@ -450,24 +504,35 @@ try:
     check("a state file reports itself saved", out["saved"], True)
     check("and reports where it went", out["path"], "/x/tower.f3d")
 
-    code = [p for path, p in bridge_log if path == "/execute"][0]["code"]
+    code = [p for path, p in bridge_log if path == "/execute"][-1]["code"]
     truthy("it ran the shared export body", "_fx_export" in code)
     truthy("as a Fusion archive", '\\"format\\": \\"f3d\\"' in code)
     truthy("of the whole design, not one body", '\\"name\\": \\"\\"' in code)
     truthy("into the configured folder", str(DEST) in code)
     truthy("named after the open document", "tower" in code)
 
-    # The document name comes from /health, which is off the main thread; asking
-    # is what lets the path be decided host-side, as everywhere else here.
-    check("the document name is asked for first",
-          [path for path, _ in bridge_log][:2], ["/health", "/execute"])
+    # The document's name AND identity are asked for first: the name alone is
+    # "Untitled" for every unsaved document, which is how one overwrote a file.
+    first = [p for path, p in bridge_log if path == "/execute"][0]["code"]
+    truthy("the document's identity is asked for first", "_fx_identity" in first)
 
     # Nothing open: it must still write something rather than raise.
     bridge_log.clear()
     srv._bridge_request = fake_state_bridge(document=None)
     srv._write_state_file()
-    code = [p for path, p in bridge_log if path == "/execute"][0]["code"]
-    truthy("with no document name it falls back to a fixed one", "design.f3d" in code)
+    code = [p for path, p in bridge_log if path == "/execute"][-1]["code"]
+    truthy("with no document name it falls back to a fixed one", "design" in code)
+
+    # The incident itself: a file of the same name already in the folder.
+    (DEST / "tower.f3d").write_bytes(b"somebody else's tower")
+    bridge_log.clear()
+    srv._bridge_request = fake_state_bridge(document="tower")
+    srv._write_state_file()
+    code = [p for path, p in bridge_log if path == "/execute"][-1]["code"]
+    check("an autosave never targets a file it did not write",
+          "tower.f3d" in code.replace("tower-", "TOWER-"), False)
+    check("which is still there, unchanged",
+          (DEST / "tower.f3d").read_bytes(), b"somebody else's tower")
 finally:
     srv._bridge_request = real_bridge
 
@@ -492,7 +557,8 @@ try:
     out = {"ok": True, "result": 1}
     srv._autosave(out)
     check("a save attaches where it went", out["autosave"]["path"], "/x/tower.f3d")
-    check("and it is the export body that ran", snippets[0][0], srv._EXPORT_BODY)
+    check("the document's identity is read, then the export body runs",
+          [body for body, _ in snippets], [common.IDENTITY_BODY, srv._EXPORT_BODY])
 
     # The one that matters: a broken save must not break a change that worked.
     snippets.clear()
@@ -526,7 +592,8 @@ def fake_execute_bridge(answer):
         if path == "/health":
             return {"ok": True, "document": "tower", "bridge_version": "1"}
         code = (payload or {}).get("code", "")
-        executed.append("save" if "_fx_export" in code else "user")
+        executed.append("save" if "_fx_export" in code
+                        else "identity" if "_fx_identity" in code else "user")
         return dict(answer)
     return request
 
@@ -535,7 +602,7 @@ try:
     executed.clear()
     srv._bridge_request = fake_execute_bridge({"ok": True, "result": 1, "stdout": ""})
     out = srv.fusion_execute(code="x=1")
-    check("a successful change is saved", executed, ["user", "save"])
+    check("a successful change is saved", executed, ["user", "identity", "save"])
     truthy("and the caller is told", "autosave" in out)
 
     # A failed script may have left the design half-changed; the traceback is
@@ -584,7 +651,7 @@ try:
     calls.clear()
     saved = srv.fusion_save()
     check("fusion_save reports a save", saved["saved"], True)
-    truthy("as an archive", '\\"f3d\\"' in calls[0])
+    truthy("as an archive", '\\"f3d\\"' in calls[-1])
 finally:
     srv._bridge_request = real_bridge
 

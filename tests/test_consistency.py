@@ -210,6 +210,19 @@ check("and the numbers agree", bounds[FUSION_SERVER], bounds[RHINO_POLLER])
 check("which are the documented ones", bounds[RHINO_POLLER], (64, 1920, 1440))
 
 
+# ------------------------------------------------- document identity --------
+# The save mirror and the add-in read one attribute to identify a document. If
+# they named it differently, every unsaved document would get two identities,
+# and the mirror would treat its own earlier file as somebody else's.
+print("Document identity")
+common_src = read("server/src/arges_mcp/common.py")
+addin_src = read(FUSION_ADDIN)
+for constant in ("DOC_ATTR_GROUP", "DOC_ATTR_NAME"):
+    pattern = constant + r' = "([^"]+)"'
+    check(f"{constant} is the same in the mirror and the add-in",
+          re.search(pattern, common_src).group(1), re.search(pattern, addin_src).group(1))
+
+
 # ------------------------------------------------------------ tool naming --
 # The chat window auto-approves tools by name. A rename on one side without the
 # other means the tool silently stops being permitted, and Claude Code then
@@ -603,8 +616,10 @@ truthy("there is a shared module at all", len(common_text) > 500)
 #    environment has no fastmcp, so a third-party import here does not fail a
 #    test — it stops the panel from starting, with a traceback about a package
 #    nobody was thinking about.
+# fcntl locks the save ledger, which several processes write. It is POSIX-only,
+# so common.py imports it optionally, inside a try.
 STDLIB_OK = {"json", "os", "re", "time", "pathlib", "typing", "dataclasses",
-             "shutil", "tempfile", "hashlib", "datetime", "math"}
+             "shutil", "tempfile", "hashlib", "datetime", "math", "fcntl"}
 imported = set(re.findall(r"^(?:import|from)\s+([A-Za-z_][\w.]*)", common_text, re.M))
 outside = {name for name in imported if name.split(".")[0] not in STDLIB_OK}
 check("the shared module imports nothing but the standard library", outside, set())

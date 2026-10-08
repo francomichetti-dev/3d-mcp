@@ -15,8 +15,15 @@ chat service import it without the MCP server's dependencies.
 import json
 import os
 import re
+import tempfile
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:                 # Windows: no flock. The Fusion half is
+    fcntl = None                    # verified on macOS only; this keeps a
+                                    # Windows import working, unlocked.
 
 # ----------------------------------------------------------------- formats --
 # "f3d" is the Fusion archive: the whole parametric design in one local file. It
@@ -182,6 +189,128 @@ def output_path(folder, filename, fallback_name, fmt, overwrite=False):
     raise ValueError(f"{folder} already holds 999 files named {stem}*.{fmt}")
 
 
+# -------------------------------------------------------------- the mirror --
+#
+# A save is the design written to one .f3d per document, overwritten each time:
+# a mirror of the current state. It used to be "<folder>/<document name>.f3d",
+# and on 2026-10-08 that destroyed a real file. The person had downloaded a
+# motor as Untitled.f3d into Downloads (the default folder), asked for it to be
+# imported, and the first successful call wrote the open, empty "Untitled"
+# design over it. Every unsaved Fusion document is called Untitled, so the name
+# could never have been enough on its own.
+#
+# So the mirror keeps a ledger of what it wrote and replaces a file only if the
+# ledger shows this tool wrote it, for the same document, and nobody has
+# changed it since. Anything else gets the next free name.
+
+LEDGER_NAME = "saves.json"
+# The add-in stamps this attribute to give an unsaved document a stable chat
+# identity. The mirror reads the same one, so a document has one identity
+# throughout. tests/test_consistency.py pins both to the add-in's constants.
+DOC_ATTR_GROUP = "FusionChat"
+DOC_ATTR_NAME = "chatKey"
+MAX_LEDGER_FILES = 500
+
+
+def _ledger_path():
+    return state_dir() / LEDGER_NAME
+
+
+def _load_ledger():
+    """The ledger, or an empty one. Corrupt reads as empty, which is the safe
+    direction: nothing looks like the tool's, so nothing is overwritten."""
+    try:
+        data = json.loads(_ledger_path().read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        data = None
+    if not isinstance(data, dict):
+        data = {}
+    docs = data.get("docs") if isinstance(data.get("docs"), dict) else {}
+    files = data.get("files") if isinstance(data.get("files"), dict) else {}
+    return {"version": 1, "docs": docs, "files": files}
+
+
+def _signature(path):
+    st = os.stat(path)
+    return [st.st_size, st.st_mtime_ns]
+
+
+def _is_ours(ledger, path, key):
+    """Did this tool write `path` for this document, with nothing changed since?"""
+    record = ledger["files"].get(str(path))
+    if not isinstance(record, dict) or record.get("doc") != (key or ""):
+        return False
+    if not os.path.lexists(path):
+        return True               # ours, and deleted since: free to write again
+    if os.path.islink(path):
+        return False
+    try:
+        return _signature(path) == record.get("sig")
+    except OSError:
+        return False
+
+
+def mirror_path(folder, document_name, document_key):
+    """Where a document's saved state goes. Never a file this tool did not write.
+
+    The same document gets the same file every time, so the mirror tracks the
+    current state rather than piling up copies. A file the person put there, a
+    mirror they edited by hand, and another document's mirror are all left
+    alone. The state goes to the next free name instead (tower-1.f3d).
+    """
+    folder = Path(folder)
+    folder.mkdir(parents=True, exist_ok=True)
+    ledger = _load_ledger()
+    key = document_key or ""
+    known = ledger["docs"].get(key) if key else None
+    if known and Path(known).parent == folder and _is_ours(ledger, known, key):
+        return Path(known)
+    stem = slug(document_name or "") or "design"
+    for attempt in range(0, 1000):
+        target = folder / (stem + ("-" + str(attempt) if attempt else "") + "." + SAVE_FORMAT)
+        if not os.path.lexists(target) or _is_ours(ledger, target, key):
+            return target
+    raise ValueError(f"{folder} already holds 999 files named {stem}*.{SAVE_FORMAT}")
+
+
+def record_mirror(path, document_key):
+    """Note that the tool just wrote `path` for this document. Never raises.
+
+    Called after a successful write, so the signature is the file as the tool
+    left it. Any later change by somebody else no longer matches it.
+    """
+    try:
+        sig = _signature(path)
+        lock_path = Path(str(_ledger_path()) + ".lock")
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            ledger = _load_ledger()
+            key = document_key or ""
+            ledger["files"][str(path)] = {"doc": key, "sig": sig,
+                                          "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+            if key:
+                ledger["docs"][key] = str(path)
+            # Bounded: drop the oldest records of files that no longer exist.
+            if len(ledger["files"]) > MAX_LEDGER_FILES:
+                for stale in [p for p in ledger["files"] if not os.path.lexists(p)]:
+                    ledger["files"].pop(stale, None)
+                    if len(ledger["files"]) <= MAX_LEDGER_FILES:
+                        break
+            tmp_fd, tmp = tempfile.mkstemp(dir=lock_path.parent, prefix=".saves-")
+            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+                json.dump(ledger, fh, indent=1)
+            os.replace(tmp, _ledger_path())
+        finally:
+            if fcntl is not None:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            os.close(fd)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
 # -------------------------------------------------------- Fusion-side code --
 #
 # Parameters are embedded as a JSON document the snippet parses at runtime,
@@ -192,6 +321,45 @@ def output_path(folder, filename, fallback_name, fmt, overwrite=False):
 def snippet(body, params):
     literal = json.dumps(json.dumps(params, ensure_ascii=True))
     return "import json as _fx_json\n_fx_params = _fx_json.loads(" + literal + ")\n" + body
+
+
+# The open document's name and identity, resolved the way the add-in resolves a
+# chat's key: the stamped attribute first, then the saved file's id, and only
+# then a fresh key stamped into the document. A save happens after a change, so
+# the document is modified already and the stamp costs nothing.
+IDENTITY_BODY = '''
+def _fx_identity(_p):
+    doc = app.activeDocument
+    des = adsk.fusion.Design.cast(app.activeProduct)
+    key = None
+    if des is not None:
+        try:
+            attr = des.attributes.itemByName(_p["group"], _p["attr"])
+            if attr is not None and attr.value:
+                key = attr.value
+        except Exception:
+            key = None
+    if key is None and doc is not None:
+        try:
+            if doc.dataFile is not None:
+                key = "file:" + doc.dataFile.id
+        except Exception:
+            key = None
+    if key is None and des is not None:
+        import uuid
+        stamped = "doc:" + uuid.uuid4().hex
+        try:
+            des.attributes.add(_p["group"], _p["attr"], stamped)
+            key = stamped
+        except Exception:
+            key = None
+    return {"name": doc.name if doc is not None else "", "key": key}
+
+
+result = _fx_identity(_fx_params)
+'''
+
+IDENTITY_PARAMS = {"group": DOC_ATTR_GROUP, "attr": DOC_ATTR_NAME}
 
 
 EXPORT_BODY = '''

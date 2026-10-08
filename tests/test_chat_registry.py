@@ -1184,6 +1184,57 @@ async def refresh_checks():
 
 asyncio.run(refresh_checks())
 
+
+# ----------------------------------------------- the Save button's file ----
+# The button shares the mirror with the autosave, and with it the rule that
+# destroyed a real file once: a save goes to "<folder>/<document>.f3d" only if
+# this tool wrote that file, for this document, unchanged since.
+print("The Save button never overwrites somebody else's file")
+
+
+async def save_button_checks():
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d) / "Downloads"
+        folder.mkdir()
+        (folder / "Untitled.f3d").write_bytes(b"the person's motor")
+        real_state_dir = svc.fusion_common.state_dir
+        svc.fusion_common.state_dir = lambda: Path(d) / "state"
+        os.environ["ARGES_SAVE_DIR"] = str(folder)
+        sent = []
+
+        async def bridge(code, timeout=120.0):
+            sent.append(code)
+            if "_fx_identity" in code:
+                # The real helper unwraps the envelope: the result dict itself.
+                return {"name": "Untitled", "key": "doc:mine"}
+            line = code.splitlines()[1]          # _fx_params = _fx_json.loads("...")
+            literal = line[len("_fx_params = _fx_json.loads("):-1]
+            target = json.loads(json.loads(literal))["path"]
+            Path(target).write_bytes(b"state")
+            return {"ok": True, "path": target, "bytes": 5}
+
+        real_bridge = svc._bridge_execute
+        svc._bridge_execute = bridge
+        try:
+            r = fresh_registry(d)
+            r.current = {"key": "doc:mine", "name": "Untitled", "design": True}
+            request = type("R", (), {"app": {"registry": r}})()
+            first = json.loads((await svc.handle_fusion_save(request)).text)
+            check("the person's own Untitled.f3d is not the target", first["name"], "Untitled-1.f3d")
+            check("and is untouched", (folder / "Untitled.f3d").read_bytes(), b"the person's motor")
+            again = json.loads((await svc.handle_fusion_save(request)).text)
+            check("pressing Save again overwrites the button's own file", again["name"], "Untitled-1.f3d")
+            ledger = json.loads((Path(d) / "state" / "saves.json").read_text())
+            check("recorded under the document's own identity",
+                  ledger["docs"].get("doc:mine"), str(folder / "Untitled-1.f3d"))
+        finally:
+            svc._bridge_execute = real_bridge
+            svc.fusion_common.state_dir = real_state_dir
+            os.environ.pop("ARGES_SAVE_DIR", None)
+
+
+asyncio.run(save_button_checks())
+
 # -------------------------------------------- switching mid-build ----------
 # Switching designs used to kill the running turn outright. It now holds it at
 # its next tool call instead, so the build keeps its context, its plan and its

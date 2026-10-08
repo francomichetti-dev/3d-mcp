@@ -566,23 +566,38 @@ def _document_name() -> str:
     return name if isinstance(name, str) else ""
 
 
+def _document_identity() -> tuple[str, str | None]:
+    """The open document's name and stable identity, or ("", None)."""
+    try:
+        found = _run_snippet(common.IDENTITY_BODY, common.IDENTITY_PARAMS)
+    except Exception as exc:                              # noqa: BLE001
+        log.warning("could not read the document's identity: %r", exc)
+        return "", None
+    name = found.get("name") if isinstance(found.get("name"), str) else ""
+    key = found.get("key") if isinstance(found.get("key"), str) else None
+    return name, key
+
+
 def _write_state_file() -> dict[str, Any]:
     """Write the whole design to the configured folder as one .f3d.
 
     One file per document, overwritten. This is a mirror of the current state,
     not a pile of snapshots — Fusion's own version history is the place for
     those, and a new 3 MB archive per modelling step would fill a disk by
-    lunchtime.
+    lunchtime. "Overwritten" means only the file this tool wrote for this
+    document: common.mirror_path never picks anybody else's (see there for the
+    file it once destroyed).
     """
     folder = common.save_dir_from()
-    target = common.output_path(folder, "", _document_name() or "design",
-                                common.SAVE_FORMAT, overwrite=True)
+    name, key = _document_identity()
+    target = common.mirror_path(folder, name or "design", key)
     outcome = _run_snippet(
         _EXPORT_BODY,
         {"format": common.SAVE_FORMAT, "name": "", "path": str(target)},
     )
     if outcome.get("ok"):
         outcome["saved"] = True
+        common.record_mirror(outcome.get("path") or target, key)
     return outcome
 
 

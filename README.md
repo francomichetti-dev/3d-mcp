@@ -120,7 +120,8 @@ Something not working? [`docs/troubleshooting.md`](docs/troubleshooting.md) has 
 
 Describe what you want. The header carries the three things you need while it works:
 
-- **Save** — the whole design to your save folder as one `.f3d`, overwritten each press.
+- **Save** — the whole design to your save folder as one `.f3d`, overwritten each press, but only
+  the file it wrote for this design. A file already in the folder is never touched.
 - **Download `<FORMAT>`** — one file in the format you picked. The button names the format, so you
   never press it to find out.
 - **⚙** — the save folder and the download format. The folder box shows the resolved path rather
@@ -204,6 +205,11 @@ What a save *is* here is deliberate:
 So a save here is a **Fusion archive** (`.f3d`) written to your save folder by the export manager —
 the whole parametric design in one local file, from a code path that keeps working when saving does
 not. One file per document, overwritten: a mirror of the current state, not a pile of snapshots.
+"Overwritten" means only a file this tool wrote, for that same document, and unchanged since. A
+ledger in `~/.arges/saves.json` records which those are. Every unsaved Fusion document is called
+*Untitled*, and the first version of this saved by name alone. It wrote an empty design over a
+downloaded `Untitled.f3d` it had been asked to import. Now a name that is taken gets `-1`, `-2`,
+and so on, and two documents with the same name never share a file.
 Fusion's own ⌘S is untouched and still yours when it works.
 
 ### It learns from use
@@ -353,8 +359,8 @@ the entire point, so the channel is gated tightly instead:
 
 Exports are confined to `~/Documents/arges-exports/`, attachments to `~/.arges/attachments/`. For
 saves and downloads the *folder* is configuration and the *name* is slugged, so a caller supplies a
-filename and never a path — `../../etc/passwd` becomes the inert name `.._.._etc_passwd` — and an
-existing file is never overwritten. Nothing third-party executes inside the CAD, and the bridge, MCP
+filename and never a path — `../../etc/passwd` becomes the inert name `.._.._etc_passwd` — and a
+file the tool did not write itself is never overwritten. Nothing third-party executes inside the CAD, and the bridge, MCP
 server and chat service make no outbound calls; the deliberate exceptions are `uv sync` at install
 time and the panel's own calls to Anthropic, which is what makes it a chat.
 
@@ -391,7 +397,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1378 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
+**1396 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

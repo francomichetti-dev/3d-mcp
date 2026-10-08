@@ -23,7 +23,6 @@ copy over another's lesson.
 Standard library only, like experience.py.
 """
 
-import fcntl
 import hashlib
 import json
 import os
@@ -31,6 +30,12 @@ import re
 import tempfile
 import time
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:                 # Windows: no flock. The Fusion half is
+    fcntl = None                    # verified on macOS only; this keeps a
+                                    # Windows import working, unlocked.
 
 from . import common
 from .experience import error_signature
@@ -200,12 +205,14 @@ class _FileLock:
 
     def __enter__(self):
         self.fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-        fcntl.flock(self.fd, fcntl.LOCK_EX)
+        if fcntl is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
         return self
 
     def __exit__(self, *exc):
         try:
-            fcntl.flock(self.fd, fcntl.LOCK_UN)
+            if fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
         finally:
             os.close(self.fd)
 
