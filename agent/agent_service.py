@@ -661,7 +661,9 @@ do at once next time>). A request like it will then arrive with that note, as
 
 Fast commands are proven helpers run in one call: fusion_run("bbox") to
 measure, "timeline" to check every feature's health, "profiles" to pick a
-profile by area, "set_params" to set parameters, and any saved before
+profile by area, "set_params" to set parameters, "selection" when the person
+says "this" or "the one I selected", "remove" to remove it reversibly, and any
+saved before
 (fusion_state lists them; fusion_run() with no command shows how to call each).
 Use one instead of retyping the same helper. When you have written a helper
 that worked and will be needed again, save it with fusion_command_save.

@@ -173,7 +173,8 @@ mcp = FastMCP(
         "when=<the request>, lesson=<the quick path>). Start with "
         "fusion_state(query=<the person's request>) to get what worked before. Fast commands are proven helpers run in one call with "
         "fusion_run (bbox, inspect, timeline, profiles, sketch_frame, "
-        "set_params, plus any saved with fusion_command_save); prefer them "
+        "set_params, selection, remove, plus any saved with "
+        "fusion_command_save); prefer them "
         "to retyping the same helper, and save one when you have written a "
         "helper that worked and will be needed again. To bring in a CAD file "
         "(f3d, STEP, IGES, STL, ...) use fusion_import: with no path it lists "
@@ -955,6 +956,8 @@ def fusion_run(
       profiles      a sketch's profiles with area/centroid, to pick by invariant
       sketch_frame  where a sketch's X/Y axes point in the world
       set_params    create or update user parameters by expression
+      selection     what the person has selected ("this", "the one I selected")
+      remove        remove selected or named bodies/components, reversibly
     plus any commands saved with fusion_command_save. Prefer a command over
     retyping the same helper in fusion_execute: it is shorter, already
     debugged, and the same every session.

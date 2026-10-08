@@ -109,12 +109,12 @@ print("The built-ins")
 library = fc.default_library()
 builtins = {c.name: c for c in library.builtins()}
 check("the built-in set", sorted(builtins),
-      ["bbox", "inspect", "profiles", "set_params", "sketch_frame", "timeline"])
+      ["bbox", "inspect", "profiles", "remove", "selection", "set_params", "sketch_frame", "timeline"])
 for name, command in sorted(builtins.items()):
     check(f"{name} is a built-in", command.origin, "builtin")
     truthy(f"{name} says how to call it", len(command.usage) > 20)
-check("only set_params changes the design",
-      sorted(n for n, c in builtins.items() if not c.readonly), ["set_params"])
+check("only remove and set_params change the design",
+      sorted(n for n, c in builtins.items() if not c.readonly), ["remove", "set_params"])
 
 
 # -------------------------------------------------------------- saving ----
@@ -269,6 +269,143 @@ check("a coordinate that rounds to zero reads 0.0, never -0.0",
 picked = run_builtin("bbox", {"bodies": ["Pin", "Shell", "Ghost"]}, design)
 check("a named pick returns just those", sorted(picked["bodies"]), ["Housing:1/Shell", "Pin"])
 check("and says which names it could not find", picked["missing"], ["Ghost"])
+
+
+class RemoveFeatures(Collection):
+    def add(self, entity):
+        prefix = "RemoveInstance" if entity.objectType.endswith("::Occurrence") else "RemoveBody"
+        feature = NS(name=f"{prefix}-{self.count + 1}", entity=entity)
+        self.append(feature)
+        return feature
+
+
+def selection_design():
+    root = NS(name="Root", features=NS(removeFeatures=RemoveFeatures()))
+    comp = NS(name="Housing", features=NS(removeFeatures=RemoveFeatures()))
+    plate = body("Plate", (0, 0, 0), (4, 3, 0.2), objectType="adsk::fusion::BRepBody",
+                 assemblyContext=None, nativeObject=None, parentComponent=root)
+    shell = body("Shell", (-1, -1, 0), (1, 1, 2), objectType="adsk::fusion::BRepBody",
+                 assemblyContext=None, nativeObject=None, parentComponent=comp)
+    root.bRepBodies = Collection([plate])
+    comp.bRepBodies = Collection([shell])
+    occ = NS(name="Housing:1", objectType="adsk::fusion::Occurrence", component=comp,
+             assemblyContext=None)
+    proxy = body("Shell", (9, -1, 0), (11, 1, 2), objectType="adsk::fusion::BRepBody",
+                 assemblyContext=occ, nativeObject=shell, parentComponent=comp)
+    occ.bRepBodies = Collection([proxy])
+    root.occurrences = Collection([occ])
+    root.allOccurrences = Collection([occ])
+    return NS(rootComponent=root), plate, shell, proxy, occ
+
+
+def run_selected(name, args, design, entities=()):
+    fake_adsk = NS(fusion=NS(
+        BRepBody=NS(classType=lambda: "adsk::fusion::BRepBody"),
+        Occurrence=NS(classType=lambda: "adsk::fusion::Occurrence")))
+    ns = {"adsk": fake_adsk, "app": NS(), "design": design,
+          "ui": NS(activeSelections=Collection([NS(entity=e) for e in entities]))}
+    exec(compile(fc.invocation(builtins[name], args), "<fusion_execute>", "exec"), ns, ns)
+    return ns["result"]
+
+
+selected_design, root_body, native_body, proxy_body, occurrence = selection_design()
+face = NS(objectType="adsk::fusion::BRepFace", body=proxy_body)
+edge = NS(objectType="adsk::fusion::BRepEdge", body=proxy_body)
+vertex = NS(objectType="adsk::fusion::BRepVertex", body=proxy_body)
+sketch = NS(objectType="adsk::fusion::Sketch", name="Sketch1")
+selected = run_selected("selection", {}, selected_design,
+                        [face, edge, vertex, proxy_body, root_body, occurrence, sketch])
+check("selection reports the actual selected types",
+      [x["type"] for x in selected["items"]],
+      ["BRepFace", "BRepEdge", "BRepVertex", "BRepBody", "BRepBody", "Occurrence", "Sketch"])
+check("a face reports the body and occurrence it belongs to", selected["items"][0],
+      {"type": "BRepFace", "body": "Housing:1/Shell", "occurrence": "Housing:1",
+       "size_mm": [20.0, 20.0, 20.0]})
+check("a selected body also reports its own name", selected["items"][3]["name"], "Shell")
+check("a root body has no occurrence prefix", selected["items"][4],
+      {"type": "BRepBody", "name": "Plate", "body": "Plate", "occurrence": None,
+       "size_mm": [40.0, 30.0, 2.0]})
+check("faces, edges and vertices collapse to one body",
+      selected["bodies"], ["Housing:1/Shell", "Plate"])
+check("only selected occurrence entities go in occurrences",
+      selected["occurrences"], ["Housing:1"])
+check("other named entities are still reported", selected["items"][-1],
+      {"type": "Sketch", "name": "Sketch1"})
+check("selection counts every selected entity", (selected["count"], selected["truncated"]), (7, 0))
+check("an empty selection gives the model nothing to guess from",
+      run_selected("selection", {}, selected_design),
+      {"items": [], "bodies": [], "occurrences": [], "count": 0, "truncated": 0})
+capped = run_selected("selection", {}, selected_design, [face] * 103)
+check("selection caps its items while keeping the total count",
+      (len(capped["items"]), capped["count"], capped["truncated"]), (100, 103, 3))
+check("repeated occurrence selections are de-duplicated",
+      run_selected("selection", {}, selected_design, [occurrence, occurrence])["occurrences"],
+      ["Housing:1"])
+
+removed = run_selected("remove", {"selection": True}, selected_design,
+                       [face, edge, vertex, proxy_body, root_body, occurrence, occurrence, sketch])
+check("remove by selection creates a timeline feature for each target", removed,
+      {"removed": [{"what": "Housing:1/Shell", "feature": "RemoveBody-1"},
+                   {"what": "Plate", "feature": "RemoveBody-1"},
+                   {"what": "Housing:1", "feature": "RemoveInstance-2"}],
+       "missing": [], "skipped": ["Sketch"]})
+truthy("a selected proxy removes its native body in the body's component",
+       occurrence.component.features.removeFeatures[0].entity is native_body)
+check("faces, edges, vertices and their body make only one RemoveBody",
+      occurrence.component.features.removeFeatures.count, 1)
+truthy("a root body is removed through root features",
+       selected_design.rootComponent.features.removeFeatures[0].entity is root_body)
+truthy("a selected occurrence is removed through root features",
+       selected_design.rootComponent.features.removeFeatures[1].entity is occurrence)
+check("removing an empty selection is a no-op",
+      run_selected("remove", {"selection": True}, selected_design),
+      {"removed": [], "missing": [], "skipped": []})
+check("remove without targets does not remove everything",
+      run_selected("remove", {}, selected_design, [root_body]),
+      {"removed": [], "missing": [], "skipped": []})
+
+named_design, named_root, named_native, named_proxy, named_occ = selection_design()
+removed = run_selected("remove", {"bodies": ["Housing:1/Shell", "Plate", "Plate", "Ghost", "Shell"],
+                                  "occurrences": ["Housing:1", "Housing:1", "motor:1"]},
+                       named_design)
+check("remove by exact names reports missing bodies and occurrences without raising", removed,
+      {"removed": [{"what": "Housing:1/Shell", "feature": "RemoveBody-1"},
+                   {"what": "Plate", "feature": "RemoveBody-1"},
+                   {"what": "Housing:1", "feature": "RemoveInstance-2"}],
+       "missing": ["Ghost", "Shell", "motor:1"], "skipped": []})
+truthy("a named occurrence body is resolved to its native body",
+       named_occ.component.features.removeFeatures[0].entity is named_native)
+
+mixed_design, mixed_root, mixed_native, mixed_proxy, mixed_occ = selection_design()
+another_occ = NS(name="Housing:2", objectType="adsk::fusion::Occurrence",
+                 component=mixed_occ.component, assemblyContext=None)
+another_proxy = body("Shell", (19, -1, 0), (21, 1, 2), objectType="adsk::fusion::BRepBody",
+                     assemblyContext=another_occ, nativeObject=mixed_native,
+                     parentComponent=mixed_occ.component)
+another_occ.bRepBodies = Collection([another_proxy])
+mixed_design.rootComponent.occurrences.append(another_occ)
+mixed_design.rootComponent.allOccurrences.append(another_occ)
+removed = run_selected("remove", {"selection": True,
+                                  "bodies": ["Housing:1/Shell", "Housing:2/Shell", "Plate"],
+                                  "occurrences": ["Housing:1"]}, mixed_design,
+                       [mixed_proxy, another_proxy, mixed_root, mixed_occ])
+check("selection and names, including two proxies of one native body, are de-duplicated",
+      [x["what"] for x in removed["removed"]], ["Housing:1/Shell", "Plate", "Housing:1"])
+check("the shared native body gets one feature", mixed_occ.component.features.removeFeatures.count, 1)
+
+fallback_design, _, fallback_native, fallback_proxy, fallback_occ = selection_design()
+fallback_proxy.nativeObject = None
+run_selected("remove", {"selection": True}, fallback_design, [fallback_proxy])
+truthy("a proxy without nativeObject resolves by name in its own component",
+       fallback_occ.component.features.removeFeatures[0].entity is fallback_native)
+
+nested_design, _, _, _, parent_occ = selection_design()
+nested_occ = NS(name="Nested:1", objectType="adsk::fusion::Occurrence",
+                assemblyContext=parent_occ, bRepBodies=Collection())
+nested_design.rootComponent.allOccurrences.append(nested_occ)
+check("only top-level occurrences can be removed", run_selected(
+    "remove", {"selection": True, "occurrences": ["Nested:1"]}, nested_design, [nested_occ]),
+    {"removed": [], "missing": ["Nested:1"], "skipped": ["Occurrence"]})
 
 
 class Params(Collection):

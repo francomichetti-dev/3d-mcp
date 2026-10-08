@@ -177,7 +177,7 @@ they shouldn't require bespoke code each time.
 | `fusion_save` | The whole design as one `.f3d` — and it already ran, see below. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
 | `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
-| `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, plus any learned ones. With no command, lists them with how to call each. |
+| `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, `selection`, `remove`, plus any learned ones. With no command, lists them with how to call each. |
 | `fusion_import` | Brings a CAD file (f3d, STEP, IGES, SAT, STL, OBJ, 3MF) into the open design as a new component in one call, measured. With no arguments, lists what is in Downloads, Desktop and the save folder, plus the other open tabs. `from_document` copies an open tab's bodies when Fusion refuses a file (as it does on an expired subscription). Never changes the source. |
 | `fusion_command_save` | Saves a helper that worked as a learned fast command in `~/.arges/commands/`, so the next session calls it instead of retyping it. |
 
@@ -230,7 +230,7 @@ Code. A success after repeated failures carries a nudge to do exactly that.
 
 Code that keeps getting retyped becomes a **fast command**: one Python file with a `run(p)`, called
 by name. `fusion_run("bbox")` returns every body's world-space box in millimetres in one call,
-instead of twenty lines of the same arithmetic per session. Six are built in, chosen from what past
+instead of twenty lines of the same arithmetic per session. Eight are built in, chosen from what past
 sessions kept rewriting. When Claude writes a helper that works and will be needed again, it saves
 it with `fusion_command_save`, and the next session calls it by name. When the log shows a helper
 written for the fourth time, under any name, the call that wrote it carries a one-time hint to save it.
@@ -404,7 +404,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1616 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
+**1646 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

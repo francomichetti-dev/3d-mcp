@@ -70,7 +70,7 @@ claude mcp add fusion -- uvx arges-mcp
 | `fusion_save` | The design as one `.f3d` in that folder. Runs automatically after every successful `fusion_execute`; `ARGES_AUTOSAVE=0` turns that off. |
 | `fusion_state` | Document, units, design type, timeline count, parameters, top-level bodies and components, and the lessons learned so far. |
 | `fusion_learn` | Records what fixed an error, or a mistake a screenshot caught. The fix comes back on that error's next failure in any session; general lessons appear in `fusion_state`. |
-| `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, plus any learned ones. With no command, lists them with how to call each. |
+| `fusion_run` | Runs a fast command, proven code called by name in one step: `bbox`, `inspect`, `timeline`, `profiles`, `sketch_frame`, `set_params`, `selection`, `remove`, plus any learned ones. With no command, lists them with how to call each. |
 | `fusion_import` | Brings a CAD file (f3d, STEP, IGES, SAT, STL, OBJ, 3MF) into the open design as a new component in one call, measured. With no arguments, lists what is in Downloads, Desktop and the save folder, plus the other open tabs. `from_document` copies an open tab's bodies when Fusion refuses a file (as it does on an expired subscription). Never changes the source. |
 | `fusion_command_save` | Saves a helper that worked as a learned fast command in `~/.arges/commands/`, so the next session calls it instead of retyping it. |
 
