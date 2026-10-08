@@ -33,6 +33,12 @@ import time
 import uuid
 from pathlib import Path
 
+try:
+    import fcntl
+except ImportError:                 # Windows: no flock. The Fusion half is
+    fcntl = None                    # verified on macOS only; this keeps a
+                                    # Windows import working, unlocked.
+
 from . import common
 
 LOG_NAME = "experience.jsonl"
@@ -196,7 +202,9 @@ class ExperienceLog:
     Several processes append to it at once: Claude Code's MCP server and one
     per design in the chat panel. Each record goes out in a single write() on
     an O_APPEND descriptor, so lines from different processes cannot
-    interleave mid-line.
+    interleave mid-line. An exclusive lock covers rotation and that write:
+    without it, two writers can both see the same full log, and the second
+    rotates the first writer's fresh file over the history (found in review).
     """
 
     def __init__(self, path, max_bytes=MAX_LOG_BYTES):
@@ -213,12 +221,24 @@ class ExperienceLog:
             line = json.dumps(record, ensure_ascii=False, separators=(",", ":"),
                               default=str) + "\n"
             self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-            self._rotate_if_full()
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            # Lock a sibling, since rotating the log changes its inode and
+            # would let a new writer lock a different file at the same path.
+            lock_fd = os.open(Path(str(self.path) + ".lock"), os.O_RDWR | os.O_CREAT, 0o600)
             try:
-                os.write(fd, line.encode("utf-8"))
+                if fcntl is not None:
+                    fcntl.flock(lock_fd, fcntl.LOCK_EX)
+                self._rotate_if_full()
+                fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+                try:
+                    os.write(fd, line.encode("utf-8"))
+                finally:
+                    os.close(fd)
             finally:
-                os.close(fd)
+                try:
+                    if fcntl is not None:
+                        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(lock_fd)
             return True
         except (OSError, TypeError, ValueError):
             return False

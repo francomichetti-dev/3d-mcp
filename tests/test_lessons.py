@@ -137,6 +137,38 @@ check("neither writer erases the other",
       sorted(l["lesson"] for l in ls.Lessons(path).all()),
       ["Lesson from Claude Code.", "Lesson from the panel."])
 
+# A reader can hold corrupt bytes after a writer has quarantined them and
+# installed a valid store. Renaming by path then moved the writer's new file
+# aside, so the next write silently started over. Pause at the read, not on a
+# timer, to make that ordering happen on every run.
+real_read_text = Path.read_text
+for method in ("all", "for_error", "general"):
+    path = SANDBOX / method / "lessons.json"
+    path.parent.mkdir()
+    path.write_text("{ not json", encoding="utf-8")
+    reader, writer = ls.Lessons(path), ls.Lessons(path)
+
+    def read_then_write(self, *args, **kwargs):
+        raw = real_read_text(self, *args, **kwargs)
+        if self == path:
+            Path.read_text = real_read_text
+            writer.add("Written while the reader held corrupt bytes.")
+        return raw
+
+    Path.read_text = read_then_write
+    try:
+        read = getattr(reader, method)
+        check(f"{method} returns empty for the corrupt bytes it read",
+              read(PROFILE_TB) if method == "for_error" else read(), [])
+    finally:
+        Path.read_text = real_read_text
+    check(f"{method} leaves the writer's replacement in place",
+          [l["lesson"] for l in writer.all()],
+          ["Written while the reader held corrupt bytes."])
+    writer.add("Written after the reader finished.")
+    check(f"{method} cannot make the next writer lose history",
+          len(writer.all()), 2)
+
 
 # ------------------------------------------------------------ failures ----
 print("Never in the way")
@@ -146,6 +178,10 @@ broken.parent.mkdir(parents=True)
 broken.write_text("{ not json", encoding="utf-8")
 store = ls.Lessons(broken)
 check("a corrupt file reads as empty rather than raising", store.all(), [])
+check("an unlocked read leaves the corrupt bytes in place",
+      broken.exists() and broken.read_text(encoding="utf-8"), "{ not json")
+check("and does not quarantine anything",
+      list(broken.parent.glob("lessons.json.corrupt-*")), [])
 store.add("Fresh start.")
 check("the next write starts clean", [l["lesson"] for l in store.all()], ["Fresh start."])
 truthy("but the corrupt file is kept aside, not destroyed",

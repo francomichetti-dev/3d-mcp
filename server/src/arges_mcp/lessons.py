@@ -80,11 +80,14 @@ class Lessons:
         self.max_lessons = max_lessons
 
     # ------------------------------------------------------------ reading --
-    def _load(self):
-        """The stored list. A corrupt file is moved aside and reads as empty.
+    def _load(self, quarantine=False):
+        """The stored list. A corrupt file reads as empty.
 
-        It is moved aside rather than overwritten: lessons are somebody's
-        accumulated work, and a bad byte should not cost all of them.
+        Only a writer re-reading under the lock may move it aside. Otherwise
+        a reader that read corrupt bytes could rename a writer's valid
+        replacement out of the way (found in review).
+        Keeping the bad file preserves somebody's accumulated work instead
+        of overwriting the only copy when a bad byte stops it parsing.
         """
         try:
             raw = self.path.read_text(encoding="utf-8")
@@ -96,11 +99,12 @@ class Lessons:
             if not isinstance(lessons, list):
                 raise ValueError("no lessons list")
         except ValueError:
-            aside = Path(str(self.path) + ".corrupt-" + time.strftime("%Y%m%d-%H%M%S"))
-            try:
-                os.replace(self.path, aside)
-            except OSError:
-                pass
+            if quarantine:
+                aside = Path(str(self.path) + ".corrupt-" + time.strftime("%Y%m%d-%H%M%S"))
+                try:
+                    os.replace(self.path, aside)
+                except OSError:
+                    pass
             return []
         return [item for item in lessons if isinstance(item, dict) and item.get("lesson")]
 
@@ -141,7 +145,7 @@ class Lessons:
         now = time.time()
         stamp = time.strftime("%Y-%m-%dT%H:%M:%S")
         with self._locked():
-            lessons = self._load()
+            lessons = self._load(quarantine=True)
             for item in lessons:
                 if item.get("id") == lesson_id:
                     item["confirmed"] = int(item.get("confirmed") or 0) + 1
@@ -167,7 +171,7 @@ class Lessons:
     def forget(self, lesson_id):
         """Remove a lesson. True if it was there."""
         with self._locked():
-            lessons = self._load()
+            lessons = self._load(quarantine=True)
             kept = [item for item in lessons if item.get("id") != lesson_id]
             if len(kept) == len(lessons):
                 return False

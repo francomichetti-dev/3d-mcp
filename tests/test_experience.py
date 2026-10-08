@@ -15,7 +15,13 @@ import stat
 import sys
 import tempfile
 import textwrap
+import threading
 from pathlib import Path
+
+try:
+    import fcntl
+except ImportError:
+    fcntl = None
 
 HERE = Path(__file__).resolve().parent
 REPO = HERE.parent
@@ -206,6 +212,52 @@ truthy("the live file stays near its cap", small.path.stat().st_size <= 200 + 10
 seen = [r["n"] for r in small.read()]
 check("reading spans the rotation, oldest first", seen, sorted(seen))
 check("and ends with the newest", seen[-1], 19)
+
+# Both writers used to see the full file, then the second rotation replaced
+# the history with the first writer's fresh line. Events force that ordering;
+# with a lock, the second writer instead stops at flock until the first has
+# rotated and appended. The timeouts only keep a broken test from hanging.
+if fcntl is not None:
+    shared = xp.ExperienceLog(SANDBOX / "shared" / "experience.jsonl", max_bytes=100)
+    shared.append({"n": 0, "pad": "x" * 100})
+    reached = threading.Event()
+    results = []
+    real_stat, real_flock = Path.stat, fcntl.flock
+
+    def append_other():
+        try:
+            results.append(shared.append({"n": 1}))
+        finally:
+            reached.set()
+
+    other = threading.Thread(target=append_other)
+
+    def contended_flock(fd, operation):
+        if threading.current_thread() is other and operation == fcntl.LOCK_EX:
+            try:
+                return real_flock(fd, operation | fcntl.LOCK_NB)
+            except BlockingIOError:
+                reached.set()
+        return real_flock(fd, operation)
+
+    def stat_then_append(self, *args, **kwargs):
+        snapshot = real_stat(self, *args, **kwargs)
+        if self == shared.path and threading.current_thread() is not other:
+            other.start()
+            truthy("the other writer finishes or reaches the held lock",
+                   reached.wait(5))
+        return snapshot
+
+    Path.stat, fcntl.flock = stat_then_append, contended_flock
+    try:
+        check("the rotating writer succeeds", shared.append({"n": 2}), True)
+        other.join(5)
+        check("the other writer finishes after the lock is released", other.is_alive(), False)
+    finally:
+        Path.stat, fcntl.flock = real_stat, real_flock
+    check("the other writer succeeds too", results, [True])
+    check("two writers cannot rotate away the full previous log",
+          [r["n"] for r in shared.read()], [0, 2, 1])
 
 blocked = SANDBOX / "blocked"
 blocked.mkdir()
