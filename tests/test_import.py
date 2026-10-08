@@ -162,12 +162,23 @@ def box(lo, hi):
 added = []
 
 
+class Bodies(Collection):
+    """A component's bodies: add() appends a new, generically named body, as
+    Fusion does (a copy arrives as Body1, Body2...)."""
+
+    def add(self, body, base=None):
+        added.append(("body", body))
+        new = NS(name="Body" + str(len(self) + 1))
+        self.append(new)
+        return new
+
+
 def new_component_factory(root, occ_name):
     def add_new_component(matrix):
         comp = NS(name="Component1",
                   meshBodies=NS(add=lambda path, units, base=None:
                                 added.append(("mesh", path, units)) or Collection([NS()])),
-                  bRepBodies=NS(add=lambda body, base=None: added.append(("body", body))),
+                  bRepBodies=Bodies(),
                   features=NS(baseFeatures=NS(add=lambda: NS(
                       startEdit=lambda: added.append("start"),
                       finishEdit=lambda: added.append("finish")))))
@@ -329,15 +340,17 @@ check("by meshBodies.add", out["method"], "mesh")
 print("Copying from another open document")
 
 
-def document(name, bodies=1, saved=False):
-    src_root = NS(bRepBodies=Collection([NS(name=f"{name}-body{i}") for i in range(bodies)]),
+def document(name, bodies=1, saved=False, body_names=None):
+    names = body_names or [f"{name}-body{i}" for i in range(bodies)]
+    src_root = NS(bRepBodies=Collection([NS(name=n, boundingBox=box((0, 0, 0), (3.6, 3.6, 8.05)))
+                                         for n in names]),
                   allOccurrences=Collection())
     des = NS(rootComponent=src_root)
     return NS(name=name, products=NS(itemByProductType=lambda t: des),
               dataFile=NS(id="x") if saved else None)
 
 
-motor_tab = document("Untitled", bodies=1)
+motor_tab = document("Untitled", body_names=["Motor_XD37"])
 other_untitled = document("Untitled", bodies=0)
 wheels = document("tank-wheels", bodies=11, saved=True)
 added.clear()
@@ -348,6 +361,12 @@ listing_out = run(common.OPEN_DOCUMENTS_BODY, {}, ns)
 check("open documents are listed with references that tell same-named ones apart",
       [(d["ref"], d["bodies"]) for d in listing_out["documents"]],
       [("tank-wheels", 11), ("Untitled #2", 1), ("Untitled #3", 0)])
+# The replay that found this: the model saw "Untitled #2, 1 body" and could
+# not tell that tab was the motor, so the motor never arrived.
+motor_entry = [d for d in listing_out["documents"] if d["ref"] == "Untitled #2"][0]
+check("each tab says what is in it, so the right one can be recognised",
+      motor_entry["body_names"], ["Motor_XD37"])
+check("and how big it is", motor_entry["size_mm"], [36.0, 36.0, 80.5])
 check("the design being imported into is not offered as a source",
       any(d["ref"] == "Untitled #1" for d in listing_out["documents"]), False)
 
@@ -357,6 +376,13 @@ check("copying takes the bodies of the named tab",
       ["start", ("body", ("copy", motor_tab.products.itemByProductType("d").rootComponent.bRepBodies[0])),
        "finish"])
 check("into a new component", out["occurrences"], ["motor:1"])
+# The replay that found this: tank-wheels arrived as Body1..Body11, so the
+# organising step that followed had nothing to go on.
+check("the copies keep their names", out["bodies"], ["Motor_XD37"])
+# Verified live: a name set inside the base feature's edit does not survive
+# finishEdit, so the result reads the names back rather than trusting them.
+check("as read back from the component, not as intended",
+      [b.name for b in root.occurrences[-1].component.bRepBodies], ["Motor_XD37"])
 check("and says it is geometry without history", out["method"], "copied bodies (no history)")
 raises("an ambiguous name is refused, listing the references",
        lambda: run(common.COPY_BODY, {"document": "Untitled", "name": ""}, ns),

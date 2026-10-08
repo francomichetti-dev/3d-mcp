@@ -70,6 +70,13 @@ green. Stop and ask at every gate.
         Untitled.f3d)
       - `fusion_import` finds a CAD file by name in the usual folders and
         imports it in one call
+- [x] **3b'. Replay test** (2026-10-08): the session that lost the motor,
+      re-run through the live panel in a scratch design. 80 s, 11 tool calls,
+      no Bash, and no file in Downloads changed (the save went to
+      Untitled-1.f3d). The original session took over ten minutes and
+      overwrote the motor. The replay also found two gaps, both fixed and
+      verified live: open tabs are now listed with their body names and size,
+      so the motor tab is recognisable; and copied bodies keep their names.
 - [ ] **3c. Import from the panel**: drop a CAD file on the panel and it is
       imported at once, with a line in the chat saying what arrived, and the
       model told on its next turn. **Gate.**

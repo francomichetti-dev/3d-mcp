@@ -619,8 +619,18 @@ def _fx_open_documents(_p):
         if des is None:
             continue
         root = des.rootComponent
-        bodies = root.bRepBodies.count + sum(o.bRepBodies.count for o in root.allOccurrences)
-        out.append({"ref": ref, "bodies": bodies, "saved": d.dataFile is not None})
+        bodies = list(root.bRepBodies) + [b for o in root.allOccurrences for b in o.bRepBodies]
+        # Names and size, because a reference alone does not say which tab is
+        # which: every unsaved tab is called Untitled, and a model shown
+        # "Untitled #2, 1 body" did not recognise the motor it was looking for.
+        size = None
+        if bodies:
+            boxes = [b.boundingBox for b in bodies]
+            lo = [min(getattr(bb.minPoint, a) for bb in boxes) for a in "xyz"]
+            hi = [max(getattr(bb.maxPoint, a) for bb in boxes) for a in "xyz"]
+            size = [round((h - l) * 10, 3) + 0.0 for l, h in zip(lo, hi)]
+        out.append({"ref": ref, "bodies": len(bodies), "body_names": [b.name for b in bodies[:8]],
+                    "size_mm": size, "saved": d.dataFile is not None})
     return {"documents": out}
 
 
@@ -653,17 +663,27 @@ def _fx_copy(_p):
     if not bodies:
         raise RuntimeError(repr(ref) + " has no solid bodies to copy")
     tbm = adsk.fusion.TemporaryBRepManager.get()
-    copies = [tbm.copy(b) for b in bodies]
+    copies = [(b.name, tbm.copy(b)) for b in bodies]
 
     def add_copies(comp, base):
-        for body in copies:
+        for _, body in copies:
             if base is not None:
                 comp.bRepBodies.add(body, base)
             else:
                 comp.bRepBodies.add(body)
     occ = _fx_new_component(des, name, add_copies)
+    # A copy arrives as Body1, Body2..., and the names are what the organising
+    # that usually follows an import works from. They are set only now: a
+    # name set inside the base feature's edit does not survive finishEdit
+    # (verified on 2704). The result reads them back rather than trusting them.
+    for (source_name, _), body in zip(copies, occ.component.bRepBodies):
+        try:
+            body.name = source_name
+        except Exception:
+            pass
     return {"ok": True, "from_document": ref, "method": "copied bodies (no history)",
-            "occurrences": [occ.name], "copied": len(copies)}
+            "occurrences": [occ.name], "copied": len(copies),
+            "bodies": [b.name for b in occ.component.bRepBodies]}
 
 
 result = _fx_copy(_fx_params)
