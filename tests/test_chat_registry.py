@@ -1087,7 +1087,8 @@ check("labelled by the version the CLI names",
       [m["label"] for m in models], ["Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5"])
 check("its default comes first, and 'default' itself is not repeated as an entry",
       models[0]["id"], "opus")
-truthy("each keeps its description for the tooltip", models[1]["description"].startswith("Fable 5.1"))
+check("each keeps its description for the tooltip, without repeating the version",
+      models[1]["description"], "Most capable for your hardest and longest-running tasks")
 check("nothing about the account is kept", "account" in json.dumps(models), False)
 
 older = svc.models_from_server_info(CLI_2_1_223)
@@ -1097,6 +1098,33 @@ check("a model with no effort levels is recorded as having none",
       older[-1]["efforts"], [])
 for junk in (None, {}, {"models": "nope"}, {"models": [None, 3, {"value": ""}]}):
     check(f"junk reads as no models: {junk!r}", svc.models_from_server_info(junk), [])
+
+# The CLI updated itself from 2.1.294 to 2.1.295 during the session that built
+# this, and moved the version from the description into displayName, turned the
+# description into a tagline, and started listing older pinned versions too.
+# A label parser that knew one shape produced "For complex work and everyday ta".
+CLI_2_1_295 = {"models": [
+    {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)",
+     "description": "Opus 5.5 · Best for everyday, complex tasks"},
+    {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus 5.5",
+     "description": "For complex work and everyday tasks"},
+    {"value": "fable", "resolvedModel": "claude-fable-5-1", "displayName": "Fable 5.1",
+     "description": "For your toughest challenges"},
+    {"value": "claude-haiku-4-5-20251001", "resolvedModel": "claude-haiku-4-5-20251001",
+     "displayName": "Haiku 4.5", "description": "Fastest for quick answers"},
+    {"value": "claude-mythos-5-1", "resolvedModel": "claude-mythos-5-1", "displayName": "Mythos 5.1",
+     "description": ""},
+    {"value": "claude-newfamily-6-2[1m]", "resolvedModel": "claude-newfamily-6-2[1m]",
+     "displayName": "", "description": ""},
+]}
+newer = svc.models_from_server_info(CLI_2_1_295)
+check("the newer shape labels by display name",
+      [m["label"] for m in newer][:4], ["Opus 5.5", "Fable 5.1", "Haiku 4.5", "Mythos 5.1"])
+check("and with nothing to go on, a label is built from the model id",
+      newer[-1]["label"], "Newfamily 6.2 (1M)")
+check("a tagline is kept as the description",
+      newer[0]["description"], "For complex work and everyday tasks")
+check("the default still comes first", newer[0]["id"], "opus")
 
 fallback_ids = [m for m, _ in svc.MODELS]
 check("the fallback names families, never versions, so it cannot go stale",

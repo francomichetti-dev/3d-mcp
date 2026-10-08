@@ -384,6 +384,28 @@ def find_claude_cli() -> str | None:
     return None
 
 
+def _model_label(display: str, description: str, resolved: str) -> str:
+    """A short name naming the version, from whichever shape the CLI used.
+
+    The shape changed under this code within one day: 2.1.294 put the version
+    in the description ("Opus 5.5 · Best for ...") and a bare family in
+    displayName; 2.1.295 put it in displayName ("Opus 5.5") and made the
+    description a tagline. So: a display name that carries a version, else the
+    description's leading part, else a name built from the resolved model id.
+    """
+    # A version is a number standing alone ("5.5"), not the 1 in "1M context".
+    if re.search(r"(?<![\w.])\d+(?:\.\d+)?(?![\w.])", display):
+        return display.strip()
+    if " · " in description:
+        return description.split(" · ")[0].strip()
+    match = re.match(r"claude-([a-z]+)-(\d+)(?:-(\d{1,2}))?(?:-\d{8})?(\[1m\])?$", resolved)
+    if match:
+        family, major, minor, wide = match.groups()
+        return (family.capitalize() + " " + major + ("." + minor if minor else "")
+                + (" (1M)" if wide else ""))
+    return display.strip() or resolved
+
+
 def models_from_server_info(info: Any) -> list[dict[str, Any]]:
     """The dropdown's entries from the CLI's initialize response.
 
@@ -408,7 +430,9 @@ def models_from_server_info(info: Any) -> list[dict[str, Any]]:
             continue
         seen.add(resolved)
         description = str(m.get("description") or "")
-        label = description.split(" · ")[0].strip() or str(m.get("displayName") or value)
+        label = _model_label(str(m.get("displayName") or ""), description, resolved)
+        if " · " in description:
+            description = description.split(" · ", 1)[1]
         efforts = m.get("supportedEffortLevels")
         out.append({"id": value, "label": label[:32], "description": description[:160],
                     "efforts": [str(e) for e in efforts] if isinstance(efforts, list) else [],
