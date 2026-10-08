@@ -84,6 +84,12 @@ green. Stop and ask at every gate.
       The source-hash gate binding was verified live (`gated=yes`). Follow-up
       from the user's session: a second import of the same source is refused
       unless `allow_duplicate=true`.
+- [x] **4b. Learn from successes** (2026-10-08, Franco's request: "record
+      success and quick resolution also"): recipes (`fusion_learn(when=...)`)
+      matched against each request and attached to it in the panel, or
+      returned by `fusion_state(query=...)`; a nudge on a success after two or
+      more failures; built-ins `selection` and `remove` (Codex lane), verified
+      live. The first real recipe: "delete the one I selected".
 - [ ] **3c. Import from the panel**: drop a CAD file on the panel and it is
       imported at once, with a line in the chat saying what arrived, and the
       model told on its next turn. **Gate.**
