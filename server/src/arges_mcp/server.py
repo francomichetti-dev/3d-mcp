@@ -905,8 +905,10 @@ def fusion_run(
         raise ToolError(f"The fast command {name!r} changed after the panel checked it. "
                         "Nothing was run; call it again to have the new version checked.")
     _check_view(screenshot)
-    log.info("fusion_run: %s (%s) args=%s screenshot=%s", name, found.origin,
-             json.dumps(args or {})[:300], screenshot)
+    # "gated" says whether the panel's gate stamped the call; from Claude Code,
+    # which has no gate, it is always no.
+    log.info("fusion_run: %s (%s) args=%s screenshot=%s gated=%s", name, found.origin,
+             json.dumps(args or {})[:300], screenshot, "yes" if source_sha else "no")
     # The source is not logged: it is already on disk under the command's name,
     # and a copy per call would crowd the log's real history out.
     return _run_and_report(
