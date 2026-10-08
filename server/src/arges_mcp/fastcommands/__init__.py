@@ -34,6 +34,7 @@ source, the same way it gates fusion_execute by its code.
 """
 
 import ast
+import hashlib
 import os
 import re
 import tempfile
@@ -214,6 +215,12 @@ class Library:
             return False
         os.replace(target, self.user_dir / f"{name}.py.prev")
         return True
+
+
+def source_sha(source):
+    """The hash the panel's gate stamps on a fast-command call, so the server
+    runs exactly the source that was checked and not a later replacement."""
+    return hashlib.sha256(str(source).encode("utf-8")).hexdigest()[:16]
 
 
 def default_library():

@@ -92,16 +92,39 @@ PY
 # Exit 1, naming them, while any design has a turn running or paused. A
 # restart kills every turn, and one was killed 50 seconds after it started.
 check_idle() {
-    local working
-    working="$(curl -fsS --max-time 3 "${SERVICE}/health" 2>/dev/null | python3 -c '
+    # Only "nothing is listening" means idle: no service, no turn to kill. An
+    # error, a timeout, a garbled answer or a service too old to report its
+    # turns all mean "cannot tell", and that refuses. A guard that read a
+    # failure as "idle" was found in review.
+    local body rc verdict
+    body="$(curl -sS --max-time 3 -w '\n%{http_code}' "${SERVICE}/health" 2>/dev/null)"
+    rc=$?
+    if [ "${rc}" -eq 7 ]; then
+        return 0
+    fi
+    if [ "${rc}" -ne 0 ]; then
+        printf 'Cannot tell whether a turn is running (the service did not answer: curl %s).\n' "${rc}" >&2
+        return 1
+    fi
+    verdict="$(printf '%s' "${body}" | python3 -c '
 import json, sys
+text = sys.stdin.read()
+body, _, status = text.rpartition("\n")
 try:
-    print(", ".join(w.get("name") or w.get("key") or "?" for w in json.load(sys.stdin).get("working") or []))
+    data = json.loads(body) if status.strip() == "200" else None
 except ValueError:
-    pass
-' 2>/dev/null || true)"
-    if [ -n "${working}" ]; then
-        printf 'A turn is running or paused in: %s\n' "${working}" >&2
+    data = None
+if not isinstance(data, dict) or not isinstance(data.get("working"), list):
+    print("unknown")
+else:
+    print(", ".join(w.get("name") or w.get("key") or "?" for w in data["working"]))
+' 2>/dev/null || printf 'unknown')"
+    if [ "${verdict}" = "unknown" ]; then
+        printf 'Cannot tell whether a turn is running (no usable answer from %s/health).\n' "${SERVICE}" >&2
+        return 1
+    fi
+    if [ -n "${verdict}" ]; then
+        printf 'A turn is running or paused in: %s\n' "${verdict}" >&2
         return 1
     fi
     return 0

@@ -54,7 +54,9 @@ what is being replaced.
 
 For the chat panel: `scripts/fusion-chat.sh --restart`. It refuses while any design has a turn
 running or paused, because a restart kills them all, and once one was killed 50 seconds after it
-started. `--force` overrides it. The palette caches its page, so re-pointing it at the service is
+started. It also refuses when the service cannot say, whether it errors, times out or is too old to
+report its turns. It goes ahead without asking only when no service is running. `--force` overrides
+it. The palette caches its page, so re-pointing it at the service is
 what forces a reload.
 
 On the Rhino side there is no hot reload, and what you restart depends on the file:

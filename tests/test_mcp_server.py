@@ -219,7 +219,7 @@ check("and the person's file is untouched throughout",
 a.write_bytes(b"edited by hand since the tool wrote it")
 moved = common.mirror_path(MIRROR, "Untitled", "doc:a")
 check("a mirror somebody changed is no longer the tool's to replace", moved == a, False)
-check("so the state goes to a free name instead", moved.exists(), False)
+check("so the state goes to a free name instead", moved.name, "Untitled-3.f3d")
 moved.write_bytes(b"x")
 common.record_mirror(moved, "doc:a")
 moved.unlink()
@@ -229,6 +229,29 @@ check("a mirror the person deleted is simply written again",
 (MIRROR / "tower.f3d").write_text("theirs")
 check("with no document identity at all, a foreign file is still never the target",
       common.mirror_path(MIRROR, "tower", None).name, "tower-1.f3d")
+
+# Review finding (Codex, 2026-10-08): with no identity, "" became a shared
+# owner, so a second unidentified document overwrote the first one's mirror.
+lone = common.mirror_path(MIRROR, "lonely", None)
+lone.write_bytes(b"first unidentified design")
+common.record_mirror(lone, None)
+check("without an identity, a save never replaces an earlier file",
+      common.mirror_path(MIRROR, "lonely", None) == lone, False)
+
+# Review finding: two processes could both pick the same unwritten path
+# before either exported, and the second export overwrote the first. A path
+# is now reserved the moment it is picked.
+r1 = common.mirror_path(MIRROR, "racer", "doc:r1")
+r2 = common.mirror_path(MIRROR, "racer", "doc:r2")
+check("a path picked for one document is reserved before anything is written", r1 == r2, False)
+check("and the same document asking again gets its own reservation",
+      common.mirror_path(MIRROR, "racer", "doc:r1"), r1)
+common.release_mirror(r2, "doc:r2")
+check("a reservation whose save failed is released, not left as an empty file", r2.exists(), False)
+r1.write_bytes(b"saved")
+common.record_mirror(r1, "doc:r1")
+common.release_mirror(r1, "doc:r1")
+check("but a real save is never released", r1.read_bytes(), b"saved")
 check("an unnamed document still gets a file", common.mirror_path(MIRROR, "", "doc:z").name,
       "design.f3d")
 check("the mirror is a Fusion archive", a.suffix, ".f3d")
@@ -243,6 +266,23 @@ check("a corrupt ledger makes nothing look like the tool's",
 ids = common.IDENTITY_BODY
 truthy("the identity snippet reads the same attribute the add-in stamps",
        "attributes.itemByName" in ids and "dataFile" in ids)
+
+# Review finding: identity and export are two bridge calls, and a tab switch
+# between them exported the new tab into the old tab's mirror. The export now
+# checks, on Fusion's main thread, that the document is still the one the
+# path was chosen for.
+from types import SimpleNamespace as _NS  # noqa: E402
+
+_exported = []
+_other = _NS(attributes=_NS(itemByName=lambda g, n: _NS(value="doc:B")),
+             rootComponent=_NS(), exportManager=_NS(execute=lambda o: _exported.append(o)))
+_ns = {"adsk": _NS(fusion=_NS(Design=_NS(cast=lambda p: p))), "ui": _NS(), "design": _other,
+       "app": _NS(activeProduct=_other, activeDocument=_NS(dataFile=None))}
+exec(compile(common.snippet(common.EXPORT_BODY, {"format": "f3d", "name": "", "path": "/x/a.f3d",
+                                                 "expect_key": "doc:A"}), "<t>", "exec"), _ns, _ns)
+check("a save aimed at one document refuses to write another", _ns["result"]["ok"], False)
+truthy("saying the document changed", "changed" in _ns["result"]["error"])
+check("and nothing was exported", _exported, [])
 
 # ------------------------------------------------------------------ config ----
 print("Stored configuration")
@@ -515,6 +555,8 @@ try:
     # "Untitled" for every unsaved document, which is how one overwrote a file.
     first = [p for path, p in bridge_log if path == "/execute"][0]["code"]
     truthy("the document's identity is asked for first", "_fx_identity" in first)
+    truthy("and the export is told which document it must be",
+           "doc:tower" in [p for path, p in bridge_log if path == "/execute"][-1]["code"])
 
     # Nothing open: it must still write something rather than raise.
     bridge_log.clear()

@@ -283,6 +283,9 @@ def resolve_import(spec, roots, home=None):
     else:
         path = None
     if path is not None:
+        # Absolute before anything else: a relative path means one thing here
+        # and another in Fusion, whose working directory is its own.
+        path = Path(os.path.abspath(path))
         if path.is_dir():
             raise ValueError(f"{path} is a folder, not a file")
         if not path.is_file():
@@ -329,6 +332,31 @@ def _ledger_path():
     return state_dir() / LEDGER_NAME
 
 
+class _LedgerLock:
+    """Exclusive across processes for one read-modify-write of the ledger.
+
+    Choosing a path, reserving it and recording a save all go through this:
+    Claude Code's MCP server and every panel session share one ledger, and two
+    of them picking the same unwritten path before either had exported was a
+    way to overwrite a mirror (found in review).
+    """
+
+    def __enter__(self):
+        lock_path = Path(str(_ledger_path()) + ".lock")
+        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        self.fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        if fcntl is not None:
+            fcntl.flock(self.fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        try:
+            if fcntl is not None:
+                fcntl.flock(self.fd, fcntl.LOCK_UN)
+        finally:
+            os.close(self.fd)
+
+
 def _load_ledger():
     """The ledger, or an empty one. Corrupt reads as empty, which is the safe
     direction: nothing looks like the tool's, so nothing is overwritten."""
@@ -343,15 +371,35 @@ def _load_ledger():
     return {"version": 1, "docs": docs, "files": files}
 
 
+def _save_ledger(ledger):
+    # Bounded: drop records of files that no longer exist once it grows.
+    if len(ledger["files"]) > MAX_LEDGER_FILES:
+        for stale in [p for p in ledger["files"] if not os.path.lexists(p)]:
+            ledger["files"].pop(stale, None)
+            if len(ledger["files"]) <= MAX_LEDGER_FILES:
+                break
+    path = _ledger_path()
+    tmp_fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".saves-")
+    with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
+        json.dump(ledger, fh, indent=1)
+    os.replace(tmp, path)
+
+
 def _signature(path):
     st = os.stat(path)
     return [st.st_size, st.st_mtime_ns]
 
 
 def _is_ours(ledger, path, key):
-    """Did this tool write `path` for this document, with nothing changed since?"""
+    """Did this tool write `path` for this document, with nothing changed since?
+
+    A document with no identity owns nothing. Treating "" as an owner let one
+    unidentified document overwrite another's mirror (found in review).
+    """
+    if not key:
+        return False
     record = ledger["files"].get(str(path))
-    if not isinstance(record, dict) or record.get("doc") != (key or ""):
+    if not isinstance(record, dict) or record.get("doc") != key:
         return False
     if not os.path.lexists(path):
         return True               # ours, and deleted since: free to write again
@@ -363,26 +411,53 @@ def _is_ours(ledger, path, key):
         return False
 
 
+def _reserve(ledger, path, key):
+    """Create `path` empty, exclusively, and record it as this document's.
+
+    The empty file is what makes the reservation visible to every other
+    process, the next one choosing a name included. A save that then fails
+    gives it back with release_mirror.
+    """
+    try:
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+        os.close(fd)
+    except FileExistsError:
+        pass                      # ours already (a mirror deleted and re-picked)
+    ledger["files"][str(path)] = {"doc": key or "", "sig": _signature(path),
+                                  "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
+    if key:
+        ledger["docs"][key] = str(path)
+
+
 def mirror_path(folder, document_name, document_key):
     """Where a document's saved state goes. Never a file this tool did not write.
 
     The same document gets the same file every time, so the mirror tracks the
     current state rather than piling up copies. A file the person put there, a
     mirror they edited by hand, and another document's mirror are all left
-    alone. The state goes to the next free name instead (tower-1.f3d).
+    alone. The state goes to the next free name instead (tower-1.f3d), which is
+    reserved before this returns.
     """
     folder = Path(folder)
     folder.mkdir(parents=True, exist_ok=True)
-    ledger = _load_ledger()
     key = document_key or ""
-    known = ledger["docs"].get(key) if key else None
-    if known and Path(known).parent == folder and _is_ours(ledger, known, key):
-        return Path(known)
-    stem = slug(document_name or "") or "design"
-    for attempt in range(0, 1000):
-        target = folder / (stem + ("-" + str(attempt) if attempt else "") + "." + SAVE_FORMAT)
-        if not os.path.lexists(target) or _is_ours(ledger, target, key):
-            return target
+    with _LedgerLock():
+        ledger = _load_ledger()
+        known = ledger["docs"].get(key) if key else None
+        if known and Path(known).parent == folder and _is_ours(ledger, known, key):
+            if not os.path.lexists(known):
+                _reserve(ledger, Path(known), key)
+                _save_ledger(ledger)
+            return Path(known)
+        stem = slug(document_name or "") or "design"
+        for attempt in range(0, 1000):
+            target = folder / (stem + ("-" + str(attempt) if attempt else "") + "." + SAVE_FORMAT)
+            if _is_ours(ledger, target, key):
+                return target
+            if not os.path.lexists(target):
+                _reserve(ledger, target, key)
+                _save_ledger(ledger)
+                return target
     raise ValueError(f"{folder} already holds 999 files named {stem}*.{SAVE_FORMAT}")
 
 
@@ -393,33 +468,33 @@ def record_mirror(path, document_key):
     left it. Any later change by somebody else no longer matches it.
     """
     try:
-        sig = _signature(path)
-        lock_path = Path(str(_ledger_path()) + ".lock")
-        lock_path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
-        try:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_EX)
+        with _LedgerLock():
             ledger = _load_ledger()
             key = document_key or ""
-            ledger["files"][str(path)] = {"doc": key, "sig": sig,
+            ledger["files"][str(path)] = {"doc": key, "sig": _signature(path),
                                           "at": time.strftime("%Y-%m-%dT%H:%M:%S")}
             if key:
                 ledger["docs"][key] = str(path)
-            # Bounded: drop the oldest records of files that no longer exist.
-            if len(ledger["files"]) > MAX_LEDGER_FILES:
-                for stale in [p for p in ledger["files"] if not os.path.lexists(p)]:
-                    ledger["files"].pop(stale, None)
-                    if len(ledger["files"]) <= MAX_LEDGER_FILES:
-                        break
-            tmp_fd, tmp = tempfile.mkstemp(dir=lock_path.parent, prefix=".saves-")
-            with os.fdopen(tmp_fd, "w", encoding="utf-8") as fh:
-                json.dump(ledger, fh, indent=1)
-            os.replace(tmp, _ledger_path())
-        finally:
-            if fcntl is not None:
-                fcntl.flock(fd, fcntl.LOCK_UN)
-            os.close(fd)
+            _save_ledger(ledger)
+    except (OSError, ValueError, TypeError):
+        pass
+
+
+def release_mirror(path, document_key):
+    """Give back a reservation whose save failed. Never raises.
+
+    Only an empty file still matching the reservation is removed: a failed
+    save must not leave an empty Untitled-1.f3d in somebody's Downloads, and a
+    real save must never be deleted by this.
+    """
+    try:
+        with _LedgerLock():
+            ledger = _load_ledger()
+            if (_is_ours(ledger, path, document_key) and os.path.lexists(path)
+                    and os.path.getsize(path) == 0):
+                os.unlink(path)
+                ledger["files"].pop(str(path), None)
+                _save_ledger(ledger)
     except (OSError, ValueError, TypeError):
         pass
 
@@ -503,13 +578,24 @@ def _fx_new_component(des, name, add):
     occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
     if name:
         occ.component.name = name
-    if des.designType == adsk.fusion.DesignTypes.ParametricDesignType:
-        base = occ.component.features.baseFeatures.add()
-        base.startEdit()
-        add(occ.component, base)
-        base.finishEdit()
-    else:
-        add(occ.component, None)
+    try:
+        if des.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+            base = occ.component.features.baseFeatures.add()
+            base.startEdit()
+            try:
+                add(occ.component, base)
+            finally:
+                # An edit left open would swallow whatever the next call does.
+                base.finishEdit()
+        else:
+            add(occ.component, None)
+    except Exception:
+        # Nothing half-made is left behind: the failure is the result.
+        try:
+            occ.deleteMe()
+        except Exception:
+            pass
+        raise
     return occ
 '''
 
@@ -566,6 +652,10 @@ def _fx_import(_p):
             raise RuntimeError("importToTarget returned False")
         if not occurrences:
             occurrences = [o for o in root.occurrences if o.name not in before]
+        if not occurrences:
+            # Reported as success with nothing to show for it, and autosaved,
+            # until a review caught it.
+            raise RuntimeError("Fusion reported the import done but nothing arrived")
     except Exception as exc:
         reason = str(exc)
     if reason is None:
@@ -724,6 +814,27 @@ def _fx_export(_p):
     if des is None:
         return {"ok": False, "error": "no active Fusion design — open or create one and switch to the Design workspace"}
 
+    # A save picks its path from the document's identity in one call and
+    # exports in the next. A tab switch in between once meant the new tab was
+    # written into the old tab's mirror (found in review), so the export
+    # checks, on Fusion's main thread, that it is still the same document.
+    expected = _p.get("expect_key")
+    if expected:
+        key = None
+        try:
+            attr = des.attributes.itemByName(__DOC_ATTR_GROUP__, __DOC_ATTR_NAME__)
+            key = attr.value if attr is not None and attr.value else None
+        except Exception:
+            key = None
+        if key is None:
+            try:
+                if app.activeDocument.dataFile is not None:
+                    key = "file:" + app.activeDocument.dataFile.id
+            except Exception:
+                key = None
+        if key != expected:
+            return {"ok": False, "error": "the open document changed between choosing where to save it and saving; nothing was written"}
+
     root = des.rootComponent
 
     if not name:
@@ -813,4 +924,5 @@ def _fx_export(_p):
 
 
 result = _fx_export(_fx_params)
-'''
+'''.replace(
+    "__DOC_ATTR_GROUP__", repr(DOC_ATTR_GROUP)).replace("__DOC_ATTR_NAME__", repr(DOC_ATTR_NAME))

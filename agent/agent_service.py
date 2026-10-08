@@ -149,6 +149,8 @@ MODELS_PATH = STATE_DIR / "models.json"
 # Connecting the CLI only to read its handshake takes a few seconds; a CLI that
 # has not answered by this is treated as unable to say.
 MODEL_PROBE_TIMEOUT = 60.0
+# How long a new chat waits for that first answer before starting anyway.
+MODEL_PROBE_WAIT = 20.0
 
 # How hard the model thinks before answering. Worth exposing beside the model
 # because the two trade against each other: a smaller model at high effort can
@@ -333,6 +335,23 @@ def gated_code(tool_name: str, tool_input: dict[str, Any]) -> str:
         # Unknown: the server refuses it without running anything.
         return command.source if command is not None else ""
     return ""
+
+
+def bind_tool_input(tool_name: str, tool_input: dict[str, Any]) -> dict[str, Any] | None:
+    """The input to run instead, or None to leave the call as it is.
+
+    A fast command is gated by its source, and the server reads that source
+    again to run it. Between the two reads another process could replace it,
+    and the replacement would run unchecked (found in review). So the call is
+    stamped with the hash of the source the gate read, and the server runs
+    only that.
+    """
+    if not tool_name.endswith("fusion_run"):
+        return None
+    source = gated_code(tool_name, tool_input)
+    if not source:
+        return None
+    return {**tool_input, "source_sha": fusion_commands.source_sha(source)}
 
 
 def destructive_reason(tool_name: str, tool_input: dict[str, Any]) -> str | None:
@@ -769,8 +788,16 @@ class Session:
         # through would edit the wrong design; refusing it would make the model
         # think the operation failed and start improvising around it.
         await self._await_own_design()
+        bound = bind_tool_input(tool_name, tool_input)
         reason = destructive_reason(tool_name, tool_input)
         if reason is None:
+            if bound is not None:
+                return {"hookSpecificOutput": {
+                    "hookEventName": "PreToolUse",
+                    "permissionDecision": "allow",
+                    "permissionDecisionReason": "checked by the Fusion Chat gate",
+                    "updatedInput": bound,
+                }}
             return {}          # no opinion — normal permission flow continues
 
         request_id = uuid.uuid4().hex
@@ -790,11 +817,14 @@ class Session:
             self.pending.pop(request_id, None)
 
         if approved:
-            return {"hookSpecificOutput": {
+            output = {
                 "hookEventName": "PreToolUse",
                 "permissionDecision": "allow",
                 "permissionDecisionReason": "approved in the Fusion Chat panel",
-            }}
+            }
+            if bound is not None:
+                output["updatedInput"] = bound
+            return {"hookSpecificOutput": output}
         return {"hookSpecificOutput": {
             "hookEventName": "PreToolUse",
             "permissionDecision": "deny",
@@ -927,6 +957,7 @@ class Session:
             env={"MCP_TOOL_TIMEOUT": "180000"},
         )
     async def start(self) -> None:
+        await self.registry.wait_for_models()
         resume = self.registry.store.get(self.key).get("session_id")
         for attempt in (resume, None):
             try:
@@ -1363,6 +1394,10 @@ class Registry:
         self._compressing: set[str] = set()
         self.catalog = ModelCatalog()
         self.cli_path = find_claude_cli()
+        # Set once the first model probe has answered or failed. A session
+        # that connected before it kept a CLI and model the picker had moved
+        # on from (found in review), so sessions wait for it, briefly.
+        self.models_ready = asyncio.Event()
         log.info("chat sessions run %s", self.cli_path or "the CLI bundled with the SDK")
 
     # -- event fan-out ----------------------------------------------------- #
@@ -1489,6 +1524,17 @@ class Registry:
         cannot be driven by this SDK, the sessions fall back to the bundled CLI
         rather than failing to start.
         """
+        try:
+            await self._probe_for_models()
+        finally:
+            self.models_ready.set()
+
+    async def wait_for_models(self, timeout: float = MODEL_PROBE_WAIT) -> None:
+        """Wait for the first model probe, but never hang a chat on it."""
+        with contextlib.suppress(asyncio.TimeoutError):
+            await asyncio.wait_for(self.models_ready.wait(), timeout)
+
+    async def _probe_for_models(self) -> None:
         attempts = [self.cli_path] + ([None] if self.cli_path else [])
         for cli in attempts:
             try:
@@ -2071,7 +2117,11 @@ async def _write_file(request: web.Request, fmt: str, filename: str,
 
     outcome = await _bridge_execute(fusion_common.snippet(
         fusion_common.EXPORT_BODY,
-        {"format": fmt, "name": "", "path": str(target)}))
+        {"format": fmt, "name": "", "path": str(target),
+         # The export refuses if the tab changed since the identity was read.
+         "expect_key": (key or "") if overwrite else ""}))
+    if not outcome.get("ok") and overwrite:
+        fusion_common.release_mirror(target, key)
     if not outcome.get("ok"):
         # A traceback from inside Fusion is the useful part; keep it readable.
         error = (outcome.get("error") or outcome.get("traceback")

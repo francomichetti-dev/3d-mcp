@@ -594,13 +594,20 @@ def _write_state_file() -> dict[str, Any]:
     folder = common.save_dir_from()
     name, key = _document_identity()
     target = common.mirror_path(folder, name or "design", key)
-    outcome = _run_snippet(
-        _EXPORT_BODY,
-        {"format": common.SAVE_FORMAT, "name": "", "path": str(target)},
-    )
+    try:
+        outcome = _run_snippet(
+            _EXPORT_BODY,
+            {"format": common.SAVE_FORMAT, "name": "", "path": str(target),
+             "expect_key": key or ""},
+        )
+    except BaseException:
+        common.release_mirror(target, key)
+        raise
     if outcome.get("ok"):
         outcome["saved"] = True
         common.record_mirror(outcome.get("path") or target, key)
+    else:
+        common.release_mirror(target, key)
     return outcome
 
 
@@ -852,6 +859,7 @@ def fusion_run(
     command: str = "",
     args: dict[str, Any] | None = None,
     screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
+    source_sha: str = "",
 ) -> Any:
     """Run a fast command: saved, proven code, called by name in one step.
 
@@ -875,6 +883,8 @@ def fusion_run(
     or `learn` on a failure. A command that changes the design is saved
     afterwards like any change; a read-only one is not, since there is
     nothing new to save.
+
+    `source_sha` is filled in by the chat panel's safety gate; leave it empty.
     """
     library = fastcommands.default_library()
     name = (command or "").strip()
@@ -888,6 +898,12 @@ def fusion_run(
     if args is not None and not isinstance(args, dict):
         raise ToolError("`args` must be a JSON object (the command's `p`). "
                         "Nothing was run.")
+    # The panel's gate checks a command's source and stamps its hash here. A
+    # command replaced between that check and this read would otherwise run
+    # without ever having been checked (found in review).
+    if source_sha and fastcommands.source_sha(found.source) != source_sha:
+        raise ToolError(f"The fast command {name!r} changed after the panel checked it. "
+                        "Nothing was run; call it again to have the new version checked.")
     _check_view(screenshot)
     log.info("fusion_run: %s (%s) args=%s screenshot=%s", name, found.origin,
              json.dumps(args or {})[:300], screenshot)

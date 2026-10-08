@@ -336,6 +336,14 @@ try:
            ToolError, "NOT run")
     check("and in none of those cases did anything reach Fusion", sent, [])
 
+    sent.clear()
+    raises("a command changed since the panel's gate read it is not run",
+           lambda: srv.fusion_run("bbox", source_sha="0" * 16), ToolError, "changed")
+    check("and nothing reached Fusion", sent, [])
+    srv.fusion_run("bbox", source_sha=fc.source_sha(builtins["bbox"].source))
+    check("the checked source runs", len(sent), 1)
+
+    sent.clear()
     out = srv.fusion_run("bbox", args={"bodies": ["Plate"]})
     check("a command runs and returns the bridge's result", out["result"], {"bodies": {}})
     check("as one call", len(sent), 1)

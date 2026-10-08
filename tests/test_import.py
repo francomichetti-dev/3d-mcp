@@ -127,6 +127,20 @@ raises("a file that cannot be imported is refused",
        lambda: common.resolve_import(str(downloads / "photo.png"), roots), ValueError, "import")
 raises("a directory is refused",
        lambda: common.resolve_import(str(downloads / "folder.f3d"), roots), ValueError)
+# Review finding: a relative path was checked against this process's working
+# directory and then handed to Fusion as given, where it means something else.
+here = os.getcwd()
+os.chdir(SANDBOX)
+try:
+    (SANDBOX / "parts").mkdir(exist_ok=True)
+    (SANDBOX / "parts" / "rel.step").write_bytes(b"x")
+    got = common.resolve_import("parts/rel.step", roots)
+finally:
+    os.chdir(here)
+truthy("a relative path is made absolute before Fusion sees it", got.is_absolute())
+check("pointing at the same file (macOS reports /var as /private/var)",
+      got.resolve(), (SANDBOX / "parts" / "rel.step").resolve())
+
 same_name = make(desktop / "motor-RECOVERED.f3d", 1)
 check("with the same name in two folders, the newest wins",
       common.resolve_import("motor-RECOVERED.f3d", roots), same_name)
@@ -184,6 +198,7 @@ def new_component_factory(root, occ_name):
                       finishEdit=lambda: added.append("finish")))))
         occ = NS(name=occ_name, component=comp, bRepBodies=Collection(),
                  boundingBox=box((0, 0, 0), (0, 0, 0)))
+        occ.deleteMe = lambda: root.occurrences.remove(occ)
         root.occurrences.append(occ)
         return occ
     return add_new_component
@@ -325,6 +340,18 @@ raises("a file that vanished on the way is an error",
                                        "name": "", "units": "mm"}, fusion(Root())),
        RuntimeError, "gone")
 
+# Review finding (Codex, 2026-10-08): an importManager that "succeeds" with
+# nothing to show for it reported ok with no occurrences, and was autosaved.
+class EmptyImport(ImportManager):
+    def importToTarget2(self, options, target):
+        return Collection()
+
+
+root = Root()
+raises("an import that brings nothing in is a refusal, not a success",
+       lambda: run_import({"path": str(motor), "format": "f3d", "name": "", "units": "mm"},
+                          fusion(root, im=EmptyImport(root))), RuntimeError, "nothing")
+
 mesh_file = make(downloads / "scan.stl", 1)
 added.clear()
 root = Root(occ_name="scan:1")
@@ -334,6 +361,30 @@ check("a mesh goes in through a base feature in a parametric design",
       added, ["start", ("mesh", str(mesh_file), "in-unit"), "finish"])
 check("as its own component", out["occurrences"], ["scan:1"])
 check("by meshBodies.add", out["method"], "mesh")
+
+# Review finding: a failed add skipped finishEdit, leaving the base feature
+# open and a half-made component in the design.
+added.clear()
+root = Root(occ_name="broken:1")
+
+
+def failing_factory(root):
+    make = new_component_factory(root, "broken:1")
+
+    def add_new_component(matrix):
+        occ = make(matrix)
+        occ.component.meshBodies.add = lambda *a: (_ for _ in ()).throw(RuntimeError("bad mesh"))
+        return occ
+    return add_new_component
+
+
+root.occurrences.addNewComponent = failing_factory(root)
+raises("a mesh that fails to load still raises",
+       lambda: run_import({"path": str(mesh_file), "format": "mesh", "name": "", "units": "mm"},
+                          fusion(root)), RuntimeError, "bad mesh")
+check("but the base feature's edit is closed", added, ["start", "finish"])
+check("and the half-made component is removed",
+      [o.name for o in root.occurrences], ["chassis:1"])
 
 
 # -------------------------------------------- copying from an open tab ----

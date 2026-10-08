@@ -10,6 +10,7 @@ import os
 import stat
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -77,6 +78,8 @@ def fresh_registry(tmpdir):
     r._compressing = set()
     r.catalog = svc.ModelCatalog(Path(tmpdir) / "models.json")
     r.cli_path = None
+    r.models_ready = asyncio.Event()
+    r.models_ready.set()                 # the probe has answered, as after startup
     return r
 
 
@@ -1306,16 +1309,82 @@ async def health_checks():
 
 asyncio.run(health_checks())
 
+
+# Review finding: a session that connected before the first model probe kept
+# whatever CLI and model it started with, while the picker moved on. Sessions
+# now wait for the first probe, briefly.
+async def models_ready_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        r.models_ready = asyncio.Event()
+        started = time.monotonic()
+        await r.wait_for_models(timeout=0.05)
+        truthy("waiting gives up rather than hanging when the probe never answers",
+               time.monotonic() - started < 1)
+
+        async def probe(cli):
+            return []
+        real_probe = svc.probe_models
+        svc.probe_models = probe
+        try:
+            await r.refresh_models()
+        finally:
+            svc.probe_models = real_probe
+        truthy("a finished probe, even an empty one, releases the waiters", r.models_ready.is_set())
+
+
+asyncio.run(models_ready_checks())
+import inspect  # noqa: E402
+start_src = inspect.getsource(svc.Session.start)
+truthy("a session waits for the first model probe before it connects",
+       "wait_for_models" in start_src
+       and start_src.index("wait_for_models") < start_src.index("ClaudeSDKClient("))
+
+
+# Review finding: the panel's gate read a fast command's source, and the
+# server read it again to run it. A command replaced in between ran unchecked.
+# The gate now stamps the hash of what it checked onto the call, and the server
+# runs only that.
+print("A fast command runs exactly what the gate checked")
+
+with tempfile.TemporaryDirectory() as d:
+    real_state_dir = svc.fusion_common.state_dir
+    svc.fusion_common.state_dir = lambda: Path(d)
+    try:
+        bbox = svc.fusion_commands.default_library().get("bbox")
+        bound = svc.bind_tool_input("mcp__fusion__fusion_run", {"command": "bbox", "args": {}})
+        check("a fast command call carries the hash of the source the gate read",
+              bound, {"command": "bbox", "args": {},
+                      "source_sha": svc.fusion_commands.source_sha(bbox.source)})
+        check("other tools are left as they are",
+              svc.bind_tool_input("mcp__fusion__fusion_execute", {"code": "x"}), None)
+        check("as is listing the commands",
+              svc.bind_tool_input("mcp__fusion__fusion_run", {}), None)
+
+        async def through_the_hook():
+            r = fresh_registry(d)
+            r.current = {"key": "k", "name": "tower", "design": True}
+            session = svc.Session("k", "tower", r)
+            return await session._pre_tool_use(
+                {"tool_name": "mcp__fusion__fusion_run",
+                 "tool_input": {"command": "bbox"}}, "id", None)
+        out = asyncio.run(through_the_hook())["hookSpecificOutput"]
+        check("the hook allows a harmless command with the stamped input",
+              (out["permissionDecision"], out["updatedInput"]["source_sha"]),
+              ("allow", svc.fusion_commands.source_sha(bbox.source)))
+    finally:
+        svc.fusion_common.state_dir = real_state_dir
+
 import subprocess  # noqa: E402
 from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
 import threading  # noqa: E402
 
 
-def fake_service(answer):
+def fake_service(answer, status=200):
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self):
-            body = json.dumps(answer).encode()
-            self.send_response(200)
+            body = answer.encode() if isinstance(answer, str) else json.dumps(answer).encode()
+            self.send_response(status)
             self.send_header("Content-Type", "application/json")
             self.end_headers()
             self.wfile.write(body)
@@ -1332,8 +1401,13 @@ for label, answer, want_code, want_text in [
     ("a running turn blocks a restart", {"ok": True, "working": [{"key": "a", "name": "Untitled"}]},
      1, "Untitled"),
     ("an idle service allows it", {"ok": True, "working": []}, 0, ""),
+    # Review finding (Codex, 2026-10-08): a failed or garbled answer read as
+    # "idle", and the restart went ahead without knowing.
+    ("a service that errors is not assumed idle", {"ok": False}, 1, ""),
+    ("nor one that answers garbage", "not json at all", 1, ""),
+    ("nor one too old to report its turns", {"ok": True, "agent": True}, 1, ""),
 ]:
-    server = fake_service(answer)
+    server = fake_service(answer, status=500 if answer == {"ok": False} else 200)
     env = dict(os.environ, ARGES_CHAT_PORT=str(server.server_address[1]))
     run = subprocess.run(["bash", SCRIPT, "--check-idle"], env=env, capture_output=True,
                          text=True, timeout=30)
@@ -1341,6 +1415,14 @@ for label, answer, want_code, want_text in [
     check(label, run.returncode, want_code)
     if want_text:
         truthy("naming the design", want_text in run.stderr + run.stdout)
+# Nothing listening at all is the one failure that does mean idle: there is no
+# service, so there is no turn to kill.
+with _socket.socket() as _probe:
+    _probe.bind(("127.0.0.1", 0))
+    _free_port = _probe.getsockname()[1]
+run = subprocess.run(["bash", SCRIPT, "--check-idle"], capture_output=True, text=True, timeout=30,
+                     env=dict(os.environ, ARGES_CHAT_PORT=str(_free_port)))
+check("with no service running, there is nothing to kill", run.returncode, 0)
 truthy("and --restart goes through that check before stopping anything",
        "--check-idle" in Path(SCRIPT).read_text().split("--restart)", 1)[1].split(";;", 1)[0])
 
