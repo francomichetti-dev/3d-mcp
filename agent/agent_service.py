@@ -2156,6 +2156,12 @@ async def handle_health(request: web.Request) -> web.Response:
         "document": (registry.current or {}).get("name"),
         "session": session is not None,
         "designs": len(registry.sessions),
+        # Every design with a turn running or paused behind another, not only
+        # the active one. A restart kills all of them, and once killed one
+        # that had started 50 seconds earlier with nothing here to say so.
+        # fusion-chat.sh --restart refuses while this is not empty.
+        "working": [{"key": key, "name": s.name}
+                    for key, s in registry.sessions.items() if s.busy],
     })
 
 

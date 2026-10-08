@@ -52,8 +52,10 @@ A syntax error is refused with 400 and the running bridge is left untouched. Cha
 `Arges.py` or the manifest still need **Stop/Run** in Fusion, because the loader itself is
 what is being replaced.
 
-For the chat panel: restart the service (`scripts/fusion-chat.sh --stop` then run it again). The
-palette caches its page, so re-pointing it at the service is what forces a reload.
+For the chat panel: `scripts/fusion-chat.sh --restart`. It refuses while any design has a turn
+running or paused, because a restart kills them all, and once one was killed 50 seconds after it
+started. `--force` overrides it. The palette caches its page, so re-pointing it at the service is
+what forces a reload.
 
 On the Rhino side there is no hot reload, and what you restart depends on the file:
 

@@ -5,6 +5,8 @@
 #   scripts/fusion-chat.sh          start the agent service (if needed) and show the panel
 #   scripts/fusion-chat.sh --stop   hide the panel and stop the service
 #   scripts/fusion-chat.sh --status report what is and isn't running
+#   scripts/fusion-chat.sh --restart  stop and start, refusing while a turn runs
+#   scripts/fusion-chat.sh --check-idle  exit 1 while any turn is running
 #
 # Idempotent: safe to run repeatedly. Opens the palette through the bridge, so
 # it never requires stopping and re-running the add-in.
@@ -87,7 +89,38 @@ PY
 
 # --- subcommands -------------------------------------------------------------
 
+# Exit 1, naming them, while any design has a turn running or paused. A
+# restart kills every turn, and one was killed 50 seconds after it started.
+check_idle() {
+    local working
+    working="$(curl -fsS --max-time 3 "${SERVICE}/health" 2>/dev/null | python3 -c '
+import json, sys
+try:
+    print(", ".join(w.get("name") or w.get("key") or "?" for w in json.load(sys.stdin).get("working") or []))
+except ValueError:
+    pass
+' 2>/dev/null || true)"
+    if [ -n "${working}" ]; then
+        printf 'A turn is running or paused in: %s\n' "${working}" >&2
+        return 1
+    fi
+    return 0
+}
+
 case "${1:-}" in
+    --check-idle)
+        check_idle && { info "no turn is running"; exit 0; }
+        exit 1
+        ;;
+    --restart)
+        # For deploying a change: stop and start, but never under a turn.
+        if [ "${2:-}" != "--force" ]; then
+            "${BASH_SOURCE[0]}" --check-idle >/dev/null \
+                || die "not restarting: a restart would kill that turn. Wait for it to finish, or pass --force."
+        fi
+        "${BASH_SOURCE[0]}" --stop
+        exec "${BASH_SOURCE[0]}"
+        ;;
     --stop)
         step "Stopping Fusion Chat"
         hide_palette
@@ -107,7 +140,7 @@ case "${1:-}" in
         exit 0
         ;;
     -h|--help)
-        sed -n '3,10p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+        sed -n '3,12p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
         exit 0
         ;;
 esac

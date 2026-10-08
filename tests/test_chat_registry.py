@@ -1272,6 +1272,78 @@ async def save_button_checks():
 
 asyncio.run(save_button_checks())
 
+
+# --------------------------------------------- restarting without harm ----
+# A deploy restarted the service 50 seconds after the person sent a message,
+# and killed the turn it had just started. Nothing said a turn was running:
+# /health reported only the active design. Now it names every design with a
+# turn running or paused, and `fusion-chat.sh --restart` refuses while there is
+# one, through `--check-idle`, which is what is tested here. --restart itself
+# would kill whatever agent service is running, the real one included.
+print("Restarting never kills a turn")
+
+
+class _Busy:
+    def __init__(self, name, busy):
+        self.name, self.busy = name, busy
+        self.ready = asyncio.Event()
+        self.start_error = None
+
+
+async def health_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        r.current = {"key": "b", "name": "scratch", "design": True}
+        r.sessions = {"a": _Busy("Untitled", True), "b": _Busy("scratch", False)}
+        request = type("R", (), {"app": {"registry": r}})()
+        body = json.loads((await svc.handle_health(request)).text)
+        check("health names every design with a turn running or paused, not just the active one",
+              body["working"], [{"key": "a", "name": "Untitled"}])
+        r.sessions["a"].busy = False
+        body = json.loads((await svc.handle_health(request)).text)
+        check("and none when all are idle", body["working"], [])
+
+
+asyncio.run(health_checks())
+
+import subprocess  # noqa: E402
+from http.server import BaseHTTPRequestHandler, HTTPServer  # noqa: E402
+import threading  # noqa: E402
+
+
+def fake_service(answer):
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            body = json.dumps(answer).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
+
+
+SCRIPT = str(REPO_ROOT / "scripts" / "fusion-chat.sh")
+for label, answer, want_code, want_text in [
+    ("a running turn blocks a restart", {"ok": True, "working": [{"key": "a", "name": "Untitled"}]},
+     1, "Untitled"),
+    ("an idle service allows it", {"ok": True, "working": []}, 0, ""),
+]:
+    server = fake_service(answer)
+    env = dict(os.environ, ARGES_CHAT_PORT=str(server.server_address[1]))
+    run = subprocess.run(["bash", SCRIPT, "--check-idle"], env=env, capture_output=True,
+                         text=True, timeout=30)
+    server.shutdown()
+    check(label, run.returncode, want_code)
+    if want_text:
+        truthy("naming the design", want_text in run.stderr + run.stdout)
+truthy("and --restart goes through that check before stopping anything",
+       "--check-idle" in Path(SCRIPT).read_text().split("--restart)", 1)[1].split(";;", 1)[0])
+
 # -------------------------------------------- switching mid-build ----------
 # Switching designs used to kill the running turn outright. It now holds it at
 # its next tool call instead, so the build keeps its context, its plan and its
