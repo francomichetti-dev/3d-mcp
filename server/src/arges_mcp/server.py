@@ -826,6 +826,11 @@ def _run_and_report(tool: str, code: str, *, record_code: str,
     else:
         extra.update(_recall(result))
     _remember(tool, record_code, result, seconds, **extra)
+    return _with_screenshot(result, screenshot)
+
+
+def _with_screenshot(result: dict[str, Any], screenshot: str | None) -> Any:
+    """The result, plus the viewport when asked for and the code succeeded."""
     if screenshot is None or not result.get("ok"):
         # A failed script wants its traceback read, not photographed; the
         # geometry may be half-changed and the next step is fixing the code.
@@ -899,44 +904,78 @@ def fusion_import(
     path: str = "",
     name: str = "",
     units: Literal["mm", "cm", "m", "in", "ft"] = "mm",
+    from_document: str = "",
     screenshot: Literal["front", "top", "right", "iso", "fit"] | None = None,
 ) -> Any:
-    """Bring a CAD file into the open design as a new component, in one call.
+    """Bring a CAD file, or another open tab's design, into the open design as a new component.
 
-    Call it with no path first if you do not know exactly where the file is:
-    it lists the importable files (f3d/f3z, STEP, IGES, SAT, SMT, STL, OBJ,
-    3MF) in the save folder, Downloads, Desktop and Documents, newest first.
-    Never search for files with a shell; this is faster and sees the same
-    folders.
+    Call it with no arguments first if you are not sure where things are: it
+    lists the importable files (f3d/f3z, STEP, IGES, SAT, SMT, STL, OBJ, 3MF)
+    in the save folder, Downloads, Desktop and Documents, newest first, and
+    the other designs open in Fusion as tabs ("Untitled #2", with their body
+    counts). Never search for files with a shell; this is faster and sees the
+    same folders.
 
-    `path` is a full path, a ~ path, or just a file name such as
-    "motor.f3d" or even "motor", found in those folders (newest wins). The
-    file is only read, never moved or changed. It arrives as its own component
-    at the origin, named `name` (default: the file's name), and the result
-    says what arrived: {"ok": true, "result": {"occurrences": ["motor:1"],
-    "bodies": n, "size_mm": [x, y, z]}}. Position and join it in later steps.
-    `units` matters only for mesh files (STL carries no units): it says how to
-    read the numbers in them.
+    `path` is a full path, a ~ path, or just a file name such as "motor.f3d"
+    or even "motor", found in those folders (newest wins). The file is only
+    read, never changed. `from_document` instead copies the solid bodies of
+    another open tab, named as the listing names it: geometry without history.
+    Use it when Fusion refuses the file. On an expired subscription it refuses
+    .f3d and STEP imports, and the refusal says so. Mesh files (STL, OBJ,
+    3MF) always import; `units` says how to read them, since STL carries none.
 
-    `screenshot` works as on fusion_execute: the picture comes back with the
-    result. A failed import comes back as a traceback, like any failing code.
+    Either way the result arrives as its own component at the origin, named
+    `name` (default: the file's name), and the result says what arrived,
+    measured in a fresh call so the size is real: {"ok": true, "result":
+    {"occurrences": ["motor:1"], "method": ..., "measured": {"motor:1":
+    {"bodies", "meshes", "size_mm"}}}}. Position and join it in later steps.
+    A refused import comes back as a traceback, like any failing code.
     """
     roots = common.import_roots([EXPORT_DIR])
-    if not (path or "").strip():
-        return {"ok": True, "files": common.importable_files(roots),
-                "searched": [str(r) for r in roots]}
-    try:
-        source = common.resolve_import(path, roots)
-    except ValueError as exc:
-        raise ToolError(f"{exc}. Nothing was imported.") from None
+    path, from_document = (path or "").strip(), (from_document or "").strip()
+    if path and from_document:
+        raise ToolError("Pass a file `path` or `from_document`, not both. Nothing was imported.")
+    if not path and not from_document:
+        listing: dict[str, Any] = {"ok": True, "files": common.importable_files(roots),
+                                   "searched": [str(r) for r in roots]}
+        try:
+            # Fusion may be closed; the files on disk are still worth listing.
+            found = _run_snippet(common.OPEN_DOCUMENTS_BODY, {})
+            if isinstance(found.get("documents"), list):
+                listing["open_documents"] = found["documents"]
+        except Exception as exc:                          # noqa: BLE001
+            log.info("fusion_import: open documents not listed (%r)", exc)
+        return listing
     _check_view(screenshot)
-    fmt = common.import_format(source.name)
-    label = (name or "").strip() or source.stem
-    log.info("fusion_import: %s (%s) as %r", source, fmt, label)
-    code = common.snippet(common.IMPORT_BODY, {"path": str(source), "format": fmt,
-                                               "name": label, "units": units})
-    return _run_and_report("fusion_import", code, record_code="", screenshot=screenshot,
-                           file=str(source), format=fmt)
+    if from_document:
+        label = (name or "").strip()
+        log.info("fusion_import: copying from open document %r as %r", from_document, label)
+        code = common.snippet(common.COPY_BODY, {"document": from_document, "name": label})
+        extra: dict[str, Any] = {"from_document": from_document}
+    else:
+        try:
+            source = common.resolve_import(path, roots)
+        except ValueError as exc:
+            raise ToolError(f"{exc}. Nothing was imported.") from None
+        fmt = common.import_format(source.name)
+        label = (name or "").strip() or source.stem
+        log.info("fusion_import: %s (%s) as %r", source, fmt, label)
+        code = common.snippet(common.IMPORT_BODY,
+                              common.import_params(source, fmt, label, units))
+        extra = {"file": str(source), "format": fmt}
+    result = _run_and_report("fusion_import", code, record_code="", screenshot=None, **extra)
+    imported = result.get("result") if result.get("ok") else None
+    if isinstance(imported, dict) and imported.get("occurrences"):
+        # Read in the import's own call, a new occurrence's box is all zeros
+        # (measured live), so the size comes from a call of its own.
+        try:
+            measured = _run_snippet(common.MEASURE_BODY,
+                                    {"occurrences": imported["occurrences"]})
+            if "ok" not in measured:
+                imported["measured"] = measured
+        except Exception as exc:                          # noqa: BLE001
+            imported["measure_error"] = f"imported, but measuring failed: {exc}"
+    return _with_screenshot(result, screenshot)
 
 
 @mcp.tool

@@ -475,10 +475,50 @@ result = _fx_identity(_fx_params)
 IDENTITY_PARAMS = {"group": DOC_ATTR_GROUP, "attr": DOC_ATTR_NAME}
 
 
-# Brings one file into the open design as a new component, reporting what
-# arrived. Failures raise, as any failing code does, so they come back as a
-# traceback with lessons, and no autosave writes a half-imported design.
-IMPORT_BODY = '''
+# What a refused import says. Measured on Fusion 2704 with an expired
+# subscription (2026-10-08): importManager refuses archives and STEP files into
+# an unsaved design, importToNewDocument refuses a local file "while expired",
+# and TemporaryBRepManager.createFromFile rejects a STEP. Copying bodies from
+# another open document and adding a mesh with meshBodies.add both still work,
+# so the message points at those. It names no file, so its error signature is
+# the same for every file and one lesson can cover them all.
+IMPORT_REFUSED = (
+    "Fusion refused this import ({reason}). It refuses imports into an unsaved design, and on an "
+    "expired subscription it refuses archive and STEP imports outright. What still works: if the "
+    "design is open in another Fusion tab, fusion_import(from_document=...) copies its bodies "
+    "(fusion_import() lists the open tabs); mesh files (STL, OBJ, 3MF) always import."
+)
+
+def import_params(path, fmt, name="", units="mm"):
+    """What IMPORT_BODY is given: the file, how to read it, and what to say if refused."""
+    return {"path": str(path), "format": fmt, "name": name, "units": units,
+            "refused": IMPORT_REFUSED}
+
+
+# A new component holding whatever `add` puts in it: inside a base feature when
+# the design keeps history (bodies and meshes need one there), directly when not.
+_NEW_COMPONENT = '''
+def _fx_new_component(des, name, add):
+    root = des.rootComponent
+    occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
+    if name:
+        occ.component.name = name
+    if des.designType == adsk.fusion.DesignTypes.ParametricDesignType:
+        base = occ.component.features.baseFeatures.add()
+        base.startEdit()
+        add(occ.component, base)
+        base.finishEdit()
+    else:
+        add(occ.component, None)
+    return occ
+'''
+
+# Brings one file into the open design as a new component. Failures raise, as
+# any failing code does, so they come back as a traceback with lessons and the
+# autosave does not write a half-imported design. No size is reported: read in
+# the same call, a new occurrence's box is stale (measured: all zeros), so the
+# server measures it in a call of its own (MEASURE_BODY).
+IMPORT_BODY = _NEW_COMPONENT + '''
 def _fx_import(_p):
     import os
 
@@ -489,66 +529,166 @@ def _fx_import(_p):
     if not os.path.isfile(path):
         raise RuntimeError("the file to import is gone: " + path)
     root = des.rootComponent
-    before = set(o.name for o in root.occurrences)
-    occurrences = []
+
+    def report(method, occurrences):
+        return {"ok": True, "file": path, "format": fmt, "method": method,
+                "occurrences": [o.name for o in occurrences]}
 
     if fmt == "mesh":
-        # Meshes have no import options on older Fusion; they are added to a
-        # component of their own, inside a base feature when the design keeps
-        # history (meshBodies.add requires one there).
         units = getattr(adsk.fusion.MeshUnits, {
             "mm": "MillimeterMeshUnit", "cm": "CentimeterMeshUnit", "m": "MeterMeshUnit",
             "in": "InchMeshUnit", "ft": "FootMeshUnit"}[_p.get("units") or "mm"])
-        occ = root.occurrences.addNewComponent(adsk.core.Matrix3D.create())
-        if name:
-            occ.component.name = name
-        parametric = des.designType == adsk.fusion.DesignTypes.ParametricDesignType
-        if parametric:
-            base = occ.component.features.baseFeatures.add()
-            base.startEdit()
-            occ.component.meshBodies.add(path, units, base)
-            base.finishEdit()
-        else:
-            occ.component.meshBodies.add(path, units)
-        occurrences = [occ]
-    else:
-        im = app.importManager
-        make = {"f3d": im.createFusionArchiveImportOptions,
+
+        def add_mesh(comp, base):
+            if base is not None:
+                comp.meshBodies.add(path, units, base)
+            else:
+                comp.meshBodies.add(path, units)
+        return report("mesh", [_fx_new_component(des, name, add_mesh)])
+
+    im = app.importManager
+    before = set(o.name for o in root.occurrences)
+    occurrences, reason = [], None
+    try:
+        make = {"f3d": getattr(im, "createFusionArchiveImportOptions", None),
                 "step": getattr(im, "createSTEPImportOptions", None),
                 "iges": getattr(im, "createIGESImportOptions", None),
                 "sat": getattr(im, "createSATImportOptions", None),
                 "smt": getattr(im, "createSMTImportOptions", None)}.get(fmt)
         if make is None:
-            raise RuntimeError("this Fusion cannot import " + fmt + " files")
+            raise RuntimeError("this Fusion has no " + fmt + " importer")
         options = make(path)
         to_target2 = getattr(im, "importToTarget2", None)
         if callable(to_target2):
             got = to_target2(options, root)
             occurrences = [got.item(i) for i in range(got.count)] if got else []
         elif not im.importToTarget(options, root):
-            raise RuntimeError("Fusion refused to import " + path)
+            raise RuntimeError("importToTarget returned False")
         if not occurrences:
             occurrences = [o for o in root.occurrences if o.name not in before]
+    except Exception as exc:
+        reason = str(exc)
+    if reason is None:
         if name and len(occurrences) == 1:
             occurrences[0].component.name = name
+        return report("importManager", occurrences)
 
-    bodies = 0
-    lows, highs = [], []
-    for occ in occurrences:
-        bodies += occ.bRepBodies.count + getattr(occ.component.meshBodies, "count", 0)
-        bb = occ.boundingBox
-        lows.append((bb.minPoint.x, bb.minPoint.y, bb.minPoint.z))
-        highs.append((bb.maxPoint.x, bb.maxPoint.y, bb.maxPoint.z))
-    size = None
-    if lows:
-        lo = [min(c) for c in zip(*lows)]
-        hi = [max(c) for c in zip(*highs)]
-        size = [round((h - l) * 10, 3) + 0.0 for l, h in zip(lo, hi)]
-    return {"ok": True, "file": path, "format": fmt,
-            "occurrences": [o.name for o in occurrences], "bodies": bodies, "size_mm": size}
+    if fmt in ("step", "iges", "sat", "smt"):
+        # Solids can also be read straight from the file, without importManager.
+        try:
+            solids = adsk.fusion.TemporaryBRepManager.get().createFromFile(path)
+            bodies = [solids.item(i) for i in range(solids.count)]
+            if bodies:
+                def add_bodies(comp, base):
+                    for body in bodies:
+                        if base is not None:
+                            comp.bRepBodies.add(body, base)
+                        else:
+                            comp.bRepBodies.add(body)
+                return report("createFromFile", [_fx_new_component(des, name, add_bodies)])
+        except Exception as exc:
+            reason = reason + "; reading it directly: " + str(exc)
+    raise RuntimeError(_p["refused"].replace("{reason}", " ".join(reason.split())))
 
 
 result = _fx_import(_fx_params)
+'''
+
+# The other open documents, each with a reference that tells same-named ones
+# apart ("Untitled #2"): every unsaved document is called Untitled.
+_DOCUMENT_REFS = '''
+def _fx_document_refs():
+    docs = list(app.documents)
+    counts, seen, refs = {}, {}, []
+    for d in docs:
+        counts[d.name] = counts.get(d.name, 0) + 1
+    for d in docs:
+        seen[d.name] = seen.get(d.name, 0) + 1
+        refs.append((d.name if counts[d.name] == 1 else d.name + " #" + str(seen[d.name]), d))
+    return refs
+'''
+
+OPEN_DOCUMENTS_BODY = _DOCUMENT_REFS + '''
+def _fx_open_documents(_p):
+    active = app.activeDocument
+    out = []
+    for ref, d in _fx_document_refs():
+        if d == active:
+            continue
+        des = adsk.fusion.Design.cast(d.products.itemByProductType("DesignProductType"))
+        if des is None:
+            continue
+        root = des.rootComponent
+        bodies = root.bRepBodies.count + sum(o.bRepBodies.count for o in root.allOccurrences)
+        out.append({"ref": ref, "bodies": bodies, "saved": d.dataFile is not None})
+    return {"documents": out}
+
+
+result = _fx_open_documents(_fx_params)
+'''
+
+# Copies another open document's solid bodies into a new component: geometry
+# without history. On an expired subscription this is the one way to bring in
+# a design that only exists as an open tab or as an .f3d Fusion will not import.
+COPY_BODY = _NEW_COMPONENT + _DOCUMENT_REFS + '''
+def _fx_copy(_p):
+    ref, name = _p["document"], _p["name"]
+    des = adsk.fusion.Design.cast(app.activeProduct)
+    if des is None:
+        raise RuntimeError("no active Fusion design to copy into: open or create one first")
+    active = app.activeDocument
+    refs = _fx_document_refs()
+    found = [d for r, d in refs if r == ref]
+    if not found:
+        same = [r for r, d in refs if r.split(" #")[0] == ref]
+        if len(same) > 1:
+            raise RuntimeError(repr(ref) + " is open more than once; pass one of: " + ", ".join(same))
+        raise RuntimeError("no open document " + repr(ref) + "; open: "
+                           + ", ".join(r for r, d in refs if d != active))
+    source = found[0]
+    if source == active:
+        raise RuntimeError(repr(ref) + " is the design being imported into; it cannot be copied into itself")
+    sroot = adsk.fusion.Design.cast(source.products.itemByProductType("DesignProductType")).rootComponent
+    bodies = list(sroot.bRepBodies) + [b for o in sroot.allOccurrences for b in o.bRepBodies]
+    if not bodies:
+        raise RuntimeError(repr(ref) + " has no solid bodies to copy")
+    tbm = adsk.fusion.TemporaryBRepManager.get()
+    copies = [tbm.copy(b) for b in bodies]
+
+    def add_copies(comp, base):
+        for body in copies:
+            if base is not None:
+                comp.bRepBodies.add(body, base)
+            else:
+                comp.bRepBodies.add(body)
+    occ = _fx_new_component(des, name, add_copies)
+    return {"ok": True, "from_document": ref, "method": "copied bodies (no history)",
+            "occurrences": [occ.name], "copied": len(copies)}
+
+
+result = _fx_copy(_fx_params)
+'''
+
+# Run in a call of its own after an import, when the new geometry reads true.
+MEASURE_BODY = '''
+def _fx_measure(_p):
+    des = adsk.fusion.Design.cast(app.activeProduct)
+    wanted = set(_p["occurrences"])
+    out = {}
+    for o in des.rootComponent.occurrences:
+        if o.name in wanted:
+            bb = o.boundingBox
+            out[o.name] = {
+                "bodies": o.bRepBodies.count,
+                "meshes": getattr(o.component.meshBodies, "count", 0),
+                "size_mm": [round((h - l) * 10, 3) + 0.0 for l, h in (
+                    (bb.minPoint.x, bb.maxPoint.x), (bb.minPoint.y, bb.maxPoint.y),
+                    (bb.minPoint.z, bb.maxPoint.z))],
+            }
+    return out
+
+
+result = _fx_measure(_fx_params)
 '''
 
 

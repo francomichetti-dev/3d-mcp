@@ -108,9 +108,12 @@ general (sizes and names from `p`), with a `usage` the next session can follow.
 ## Importing files
 
 To bring in a file the person mentions ("the motor in Downloads"), call
-`fusion_import()` with no path to list the CAD files in Downloads, Desktop
-and the save folder, then `fusion_import("motor.f3d")`; a bare name works. It
-arrives as a new component at the origin, and the result reports its size.
+`fusion_import()` with no arguments to list the CAD files in Downloads,
+Desktop and the save folder, and the other open tabs. Then call
+`fusion_import("motor.f3d")`; a bare name works. It arrives as a new
+component at the origin, measured. If Fusion refuses the file (it refuses
+.f3d and STEP on an expired subscription), `fusion_import(from_document=
+"Untitled #2")` copies an open tab's bodies instead; meshes always import.
 Never search the disk with a shell, and never write to the person's files.
 
 ## Injected names

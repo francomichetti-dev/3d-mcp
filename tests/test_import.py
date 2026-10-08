@@ -134,7 +134,15 @@ same_name.unlink()
 
 
 # ------------------------------------------------------ inside Fusion ----
-# The import snippet, run as Fusion would run it, against stand-ins.
+# The snippets, run as Fusion would run them, against stand-ins built to match
+# what was measured on Fusion 2704 with an expired subscription (2026-10-08):
+#
+#   importManager into an unsaved design, f3d or STEP   RuntimeError
+#   importToNewDocument from a local file               "... while expired"
+#   TemporaryBRepManager.createFromFile on a STEP       "invalid argument filename"
+#   copying bodies from another open document          works
+#   meshBodies.add of an STL inside a base feature     works
+#   a size read in the same call as the import         0, stale; read it next call
 print("Bringing it in")
 
 
@@ -151,6 +159,25 @@ def box(lo, hi):
     return NS(minPoint=NS(x=lo[0], y=lo[1], z=lo[2]), maxPoint=NS(x=hi[0], y=hi[1], z=hi[2]))
 
 
+added = []
+
+
+def new_component_factory(root, occ_name):
+    def add_new_component(matrix):
+        comp = NS(name="Component1",
+                  meshBodies=NS(add=lambda path, units, base=None:
+                                added.append(("mesh", path, units)) or Collection([NS()])),
+                  bRepBodies=NS(add=lambda body, base=None: added.append(("body", body))),
+                  features=NS(baseFeatures=NS(add=lambda: NS(
+                      startEdit=lambda: added.append("start"),
+                      finishEdit=lambda: added.append("finish")))))
+        occ = NS(name=occ_name, component=comp, bRepBodies=Collection(),
+                 boundingBox=box((0, 0, 0), (0, 0, 0)))
+        root.occurrences.append(occ)
+        return occ
+    return add_new_component
+
+
 def occurrence(name, bodies=1):
     comp = NS(name=name.split(":")[0], meshBodies=Collection())
     return NS(name=name, component=comp, bRepBodies=Collection([NS()] * bodies),
@@ -158,13 +185,15 @@ def occurrence(name, bodies=1):
 
 
 class Root:
-    def __init__(self):
+    def __init__(self, occ_name="new:1"):
         self.occurrences = Collection([occurrence("chassis:1")])
+        self.occurrences.addNewComponent = new_component_factory(self, occ_name)
+        self.bRepBodies = Collection()
 
 
 class ImportManager:
-    def __init__(self, root, modern=True, accept=True):
-        self.root, self.accept, self.calls = root, accept, []
+    def __init__(self, root, modern=True, accept=True, raises=None):
+        self.root, self.accept, self.raises, self.calls = root, accept, raises, []
         if not modern:
             self.importToTarget2 = None
 
@@ -177,89 +206,172 @@ class ImportManager:
         return NS(kind="step", path=path)
 
     def importToTarget2(self, options, target):
+        if self.raises:
+            raise RuntimeError(self.raises)
         new = occurrence("motor:1", bodies=2)
         target.occurrences.append(new)
         return Collection([new])
 
     def importToTarget(self, options, target):
+        if self.raises:
+            raise RuntimeError(self.raises)
         if not self.accept:
             return False
         target.occurrences.append(occurrence("motor:1", bodies=2))
         return True
 
 
-def run_import(params, im=None, root=None, parametric=True):
-    root = root or Root()
-    im = im or ImportManager(root)
+def fusion(root, im=None, parametric=True, documents=(), from_file=None):
     design = NS(rootComponent=root, designType=1 if parametric else 0)
+    active = NS(name="Untitled", products=NS(itemByProductType=lambda t: design), dataFile=None)
+
+    def create_from_file(path):
+        if from_file is None:
+            raise RuntimeError("3 : invalid argument filename")
+        return Collection(from_file)
+
     fake_adsk = NS(fusion=NS(Design=NS(cast=lambda product: product),
                              DesignTypes=NS(ParametricDesignType=1, DirectDesignType=0),
                              MeshUnits=NS(MillimeterMeshUnit="mm-unit", CentimeterMeshUnit="cm-unit",
                                           MeterMeshUnit="m-unit", InchMeshUnit="in-unit",
-                                          FootMeshUnit="ft-unit")),
+                                          FootMeshUnit="ft-unit"),
+                             TemporaryBRepManager=NS(get=lambda: NS(
+                                 copy=lambda body: ("copy", body),
+                                 createFromFile=create_from_file))),
                    core=NS(Matrix3D=NS(create=lambda: "identity")))
-    app = NS(importManager=im, activeProduct=design)
-    ns = {"adsk": fake_adsk, "app": app, "ui": NS(), "design": design}
-    exec(compile(common.snippet(common.IMPORT_BODY, params), "<fusion_execute>", "exec"), ns, ns)
-    return ns["result"], im, root
+    app = NS(importManager=im or ImportManager(root), activeProduct=design,
+             activeDocument=active, documents=Collection([active, *documents]))
+    return {"adsk": fake_adsk, "app": app, "ui": NS(), "design": design}
 
 
-out, im, root = run_import({"path": str(motor), "format": "f3d", "name": "Motor", "units": "mm"})
-check("an archive imports through the archive options", im.calls, [("archive", str(motor))])
+def run(body, params, ns):
+    exec(compile(common.snippet(body, params), "<fusion_execute>", "exec"), ns, ns)
+    return ns["result"]
+
+
+def run_import(params, ns):
+    """IMPORT_BODY with the parameters the server builds."""
+    return run(common.IMPORT_BODY, common.import_params(
+        params["path"], params["format"], params["name"], params["units"]), ns)
+
+
+root = Root()
+ns = fusion(root)
+out = run_import({"path": str(motor), "format": "f3d", "name": "Motor", "units": "mm"}, ns)
+check("an archive imports through the archive options", ns["app"].importManager.calls,
+      [("archive", str(motor))])
 check("and reports the occurrence it made", out["occurrences"], ["motor:1"])
 check("renamed as asked", root.occurrences[-1].component.name, "Motor")
-check("with its body count", out["bodies"], 2)
-check("and its size in millimetres", out["size_mm"], [37.0, 75.0, 37.0])
-check("nothing that was there before is reported as new",
-      "chassis:1" in out["occurrences"], False)
+check("through importManager", out["method"], "importManager")
+check("nothing that was there before is reported as new", "chassis:1" in out["occurrences"], False)
+check("no size from the same call: it would be stale", "size_mm" in out, False)
 
-out, im, root = run_import({"path": str(motor), "format": "f3d", "name": "", "units": "mm"},
-                           im=ImportManager(Root(), modern=False))
+root = Root()
+out = run_import({"path": str(motor), "format": "f3d", "name": "", "units": "mm"},
+          fusion(root, im=ImportManager(root, modern=False)))
 check("an older Fusion without importToTarget2 still reports what arrived",
       out["occurrences"], ["motor:1"])
 check("and keeps the imported name when none is given", root.occurrences[-1].component.name, "motor")
 
-# A failure raises, like any failing code: it comes back as a traceback, with
-# lessons or a learn nudge, and no autosave of a half-imported design.
-refused = ImportManager(Root(), modern=False, accept=False)
-raises("a refused import raises instead of claiming success",
+# The expired-subscription case, measured live: importManager refuses.
+root = Root()
+refusing = ImportManager(root, raises="2 : InternalValidationError : pResult")
+try:
+    run_import({"path": str(motor), "format": "f3d", "name": "", "units": "mm"},
+        fusion(root, im=refusing))
+    message = ""
+except RuntimeError as exc:
+    message = str(exc)
+truthy("a refused archive raises, rather than claiming success", "refused" in message)
+truthy("saying what still works: copying from an open tab", "from_document" in message)
+truthy("or a mesh export", "STL" in message)
+check("and the message names no file, so one lesson matches every file",
+      str(motor) in message or "motor-RECOVERED" in message, False)
+
+root = Root(occ_name="bracket:1")
+solids = [NS(name="b1"), NS(name="b2")]
+out = run_import({"path": str(bracket), "format": "step", "name": "Bracket", "units": "mm"},
+          fusion(root, im=ImportManager(root, raises="2 : InternalValidationError : pResult"),
+                 from_file=solids))
+check("a refused STEP falls back to reading the file's solids directly",
+      out["method"], "createFromFile")
+check("into a component of its own", out["occurrences"], ["bracket:1"])
+
+root = Root()
+raises("and when that fails too, it says so, with the same guidance",
+       lambda: run_import({"path": str(bracket), "format": "step", "name": "",
+                                       "units": "mm"},
+                   fusion(root, im=ImportManager(root, raises="2 : InternalValidationError : pResult"))),
+       RuntimeError, "from_document")
+
+root = Root()
+refused = ImportManager(root, modern=False, accept=False)
+raises("an importToTarget that returns False is a refusal too",
        lambda: run_import({"path": str(motor), "format": "f3d", "name": "", "units": "mm"},
-                          im=refused), RuntimeError, "refused")
-raises("so does a file that vanished on the way",
-       lambda: run_import({"path": str(SANDBOX / "gone.f3d"), "format": "f3d", "name": "",
-                           "units": "mm"}), RuntimeError, "gone.f3d")
+                   fusion(root, im=refused)), RuntimeError, "refused")
+raises("a file that vanished on the way is an error",
+       lambda: run_import({"path": str(SANDBOX / "gone.f3d"), "format": "f3d",
+                                       "name": "", "units": "mm"}, fusion(Root())),
+       RuntimeError, "gone")
 
-# Mesh: no import options in older APIs; meshBodies.add inside a base feature
-# in a parametric design.
 mesh_file = make(downloads / "scan.stl", 1)
-added = []
-
-
-class MeshRoot(Root):
-    def __init__(self):
-        super().__init__()
-        outer = self
-
-        def add_new_component(matrix):
-            comp = NS(name="Component1", meshBodies=NS(add=lambda path, units, base=None:
-                                                       added.append((path, units, base)) or Collection([NS()])),
-                      features=NS(baseFeatures=NS(add=lambda: NS(
-                          startEdit=lambda: added.append("start"),
-                          finishEdit=lambda: added.append("finish")))))
-            occ = NS(name="scan:1", component=comp, bRepBodies=Collection(),
-                     boundingBox=box((0, 0, 0), (1, 1, 1)))
-            outer.occurrences.append(occ)
-            return occ
-
-        self.occurrences.addNewComponent = add_new_component
-
-
-out, _, _ = run_import({"path": str(mesh_file), "format": "mesh", "name": "Scan", "units": "in"},
-                       root=MeshRoot())
+added.clear()
+root = Root(occ_name="scan:1")
+out = run_import({"path": str(mesh_file), "format": "mesh", "name": "Scan", "units": "in"},
+          fusion(root))
 check("a mesh goes in through a base feature in a parametric design",
-      [a if isinstance(a, str) else a[:2] for a in added],
-      ["start", (str(mesh_file), "in-unit"), "finish"])
+      added, ["start", ("mesh", str(mesh_file), "in-unit"), "finish"])
 check("as its own component", out["occurrences"], ["scan:1"])
+check("by meshBodies.add", out["method"], "mesh")
+
+
+# -------------------------------------------- copying from an open tab ----
+print("Copying from another open document")
+
+
+def document(name, bodies=1, saved=False):
+    src_root = NS(bRepBodies=Collection([NS(name=f"{name}-body{i}") for i in range(bodies)]),
+                  allOccurrences=Collection())
+    des = NS(rootComponent=src_root)
+    return NS(name=name, products=NS(itemByProductType=lambda t: des),
+              dataFile=NS(id="x") if saved else None)
+
+
+motor_tab = document("Untitled", bodies=1)
+other_untitled = document("Untitled", bodies=0)
+wheels = document("tank-wheels", bodies=11, saved=True)
+added.clear()
+root = Root(occ_name="motor:1")
+ns = fusion(root, documents=[wheels, motor_tab, other_untitled])
+
+listing_out = run(common.OPEN_DOCUMENTS_BODY, {}, ns)
+check("open documents are listed with references that tell same-named ones apart",
+      [(d["ref"], d["bodies"]) for d in listing_out["documents"]],
+      [("tank-wheels", 11), ("Untitled #2", 1), ("Untitled #3", 0)])
+check("the design being imported into is not offered as a source",
+      any(d["ref"] == "Untitled #1" for d in listing_out["documents"]), False)
+
+out = run(common.COPY_BODY, {"document": "Untitled #2", "name": "motor"}, ns)
+check("copying takes the bodies of the named tab",
+      [a for a in added if isinstance(a, str) or a[0] == "body"],
+      ["start", ("body", ("copy", motor_tab.products.itemByProductType("d").rootComponent.bRepBodies[0])),
+       "finish"])
+check("into a new component", out["occurrences"], ["motor:1"])
+check("and says it is geometry without history", out["method"], "copied bodies (no history)")
+raises("an ambiguous name is refused, listing the references",
+       lambda: run(common.COPY_BODY, {"document": "Untitled", "name": ""}, ns),
+       RuntimeError, "Untitled #2")
+raises("so is copying the design into itself",
+       lambda: run(common.COPY_BODY, {"document": "Untitled #1", "name": ""}, ns),
+       RuntimeError, "into itself")
+raises("and a tab that is not open",
+       lambda: run(common.COPY_BODY, {"document": "gearbox", "name": ""}, ns),
+       RuntimeError, "tank-wheels")
+
+measured = run(common.MEASURE_BODY, {"occurrences": ["chassis:1"]},
+               fusion(Root()))
+check("the size is measured in a call of its own, in millimetres",
+      measured["chassis:1"]["size_mm"], [37.0, 75.0, 37.0])
 
 
 # -------------------------------------------------------------- wiring ----
@@ -276,37 +388,64 @@ real_bridge = srv._bridge_request
 sent = []
 
 
-def bridge(answer):
+def bridge(answer, docs=None):
     def request(method, path, payload=None):
         if path == "/health":
             return {"ok": True, "document": "tower", "bridge_version": "1"}
-        sent.append((payload or {}).get("code", ""))
+        code = (payload or {}).get("code", "")
+        sent.append(code)
+        if "_fx_open_documents" in code:
+            return {"ok": True, "result": {"documents": docs or []}, "stdout": ""}
+        if "_fx_measure" in code:
+            return {"ok": True, "result": {"motor:1": {"bodies": 1, "meshes": 0,
+                                                       "size_mm": [36.0, 36.0, 80.5]}},
+                    "stdout": ""}
         return dict(answer)
     return request
 
 
 try:
+    srv._bridge_request = bridge({}, docs=[{"ref": "Untitled #2", "bodies": 1, "saved": False}])
     listing = srv.fusion_import()
     check("with no file, it lists what can be imported",
           [f["name"] for f in listing["files"]][:3],
           ["scan.stl", "bracket.STEP", "motor-RECOVERED.f3d"])
     truthy("and says where it looked", listing["searched"])
+    check("and which other open tabs it can copy from",
+          listing["open_documents"], [{"ref": "Untitled #2", "bodies": 1, "saved": False}])
+
+    srv._bridge_request = bridge(RuntimeError("bridge down"))
+    def down(method, path, payload=None):
+        raise ToolError("Fusion not running")
+    srv._bridge_request = down
+    check("a listing still works with Fusion closed, just without the tabs",
+          len(srv.fusion_import()["files"]) > 0, True)
 
     sent.clear()
-    srv._bridge_request = bridge({"ok": True, "result": {"ok": True, "occurrences": ["motor:1"]},
-                                  "stdout": ""})
+    srv._bridge_request = bridge({"ok": True, "result": {"ok": True, "occurrences": ["motor:1"],
+                                                         "method": "importManager"}, "stdout": ""})
     raises("an unknown file is refused", lambda: srv.fusion_import("nope.f3d"), ToolError,
            "motor-RECOVERED.f3d")
+    raises("a file and a tab at once is refused",
+           lambda: srv.fusion_import("motor", from_document="Untitled #2"), ToolError)
     check("without anything reaching Fusion", sent, [])
 
     out = srv.fusion_import("motor-RECOVERED")
     check("a bare name imports", out["result"]["occurrences"], ["motor:1"])
-    truthy("with the path passed as data", str(motor) in sent[-1])
-    truthy("the import body ran", "_fx_import" in sent[-1])
-    truthy("named after the file unless told otherwise", "motor-RECOVERED" in sent[-1])
-    rec = xp.default_log().read()[-1]
-    check("the log records it as an import", (rec["tool"], rec["ok"]), ("fusion_import", True))
+    truthy("with the path passed as data", any(str(motor) in c for c in sent))
+    truthy("the import body ran", any("_fx_import" in c for c in sent))
+    truthy("named after the file unless told otherwise", any("motor-RECOVERED" in c for c in sent))
+    check("then measured in a fresh call, so the size is real",
+          out["result"]["measured"]["motor:1"]["size_mm"], [36.0, 36.0, 80.5])
+    rec = [r for r in xp.default_log().read() if r.get("tool") == "fusion_import"][-1]
+    check("the log records it as an import", rec["ok"], True)
     check("of which file", rec.get("file"), str(motor))
+
+    sent.clear()
+    out = srv.fusion_import(from_document="Untitled #2", name="motor")
+    truthy("from_document copies from the open tab", any("_fx_copy" in c for c in sent))
+    check("and is measured the same way", out["result"]["measured"]["motor:1"]["size_mm"],
+          [36.0, 36.0, 80.5])
 finally:
     srv._bridge_request = real_bridge
     os.environ.pop("ARGES_AUTOSAVE", None)

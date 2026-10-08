@@ -595,10 +595,11 @@ Use one instead of retyping the same helper. When you have written a helper
 that worked and will be needed again, save it with fusion_command_save.
 
 To bring in a file the person mentions (a motor from Downloads, a STEP from a
-supplier), use fusion_import. With no path it lists the CAD files in Downloads
-and the other usual folders, and with a name it imports that file as a new
-component. Never search for files with Bash. The person's files are theirs:
-import them, and never write over one.
+supplier), use fusion_import. With no arguments it lists the CAD files in
+Downloads and the other usual folders, plus the other open tabs, and with a
+name it imports that file as a new component. If Fusion refuses the file,
+from_document copies an open tab's bodies instead. Never search for files with
+Bash. The person's files are theirs: import them, and never write over one.
 
 Use the `plan` tool for anything that takes more than two or three steps. Call
 it once before you start building, with the whole plan as short concrete steps
