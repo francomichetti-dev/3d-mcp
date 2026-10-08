@@ -33,7 +33,9 @@ import json
 import logging
 import os
 import re
+import shutil
 import sys
+import tempfile
 import time
 import uuid
 from pathlib import Path
@@ -125,22 +127,28 @@ MAX_SDK_MESSAGE_BYTES = 32 * 1024 * 1024
 # Consecutive transport failures before the service stops rebuilding the
 # client and asks for a restart instead of retrying silently forever.
 MAX_TRANSPORT_RETRIES = 3
-# The models offered in the panel, best-first. Kept short deliberately: this
-# is a dropdown beside a text box, not a catalogue, and a CAD turn is long
-# enough that the interesting choice is capability versus speed.
+# The models the panel offers come from the Claude Code CLI itself (see
+# ModelCatalog below). This is only the fallback, shown until the CLI has
+# answered, and it lists family aliases rather than versions: the CLI resolves
+# "opus" to the newest Opus it knows. The list it replaced named versions, and
+# went stale the day a new model shipped: the panel offered Opus 5 while the
+# person's own Claude Code ran Opus 5.5.
 #
-# scripts/rhino/rhino-chat.py carries the same list — it runs on Rhino's own
-# Python and cannot import from here — and tests/test_consistency.py pins the
-# two together, because a model id that exists on one side and not the other
-# fails at the moment somebody switches, not at review.
+# scripts/rhino/rhino-chat.py carries the same list (it runs on Rhino's own
+# Python and cannot import from here) and tests/test_consistency.py pins the
+# two together.
 MODELS = [
-    ("claude-opus-5", "Opus 5"),
-    ("claude-fable-5", "Fable 5"),
-    ("claude-sonnet-5", "Sonnet 5"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
 ]
 DEFAULT_MODEL = MODELS[0][0]
-MODEL_IDS = frozenset(m for m, _ in MODELS)
+# The last list the CLI reported, so the dropdown is right the moment the
+# service starts, before this start's probe has answered.
+MODELS_PATH = STATE_DIR / "models.json"
+# Connecting the CLI only to read its handshake takes a few seconds; a CLI that
+# has not answered by this is treated as unable to say.
+MODEL_PROBE_TIMEOUT = 60.0
 
 # How hard the model thinks before answering. Worth exposing beside the model
 # because the two trade against each other: a smaller model at high effort can
@@ -336,6 +344,136 @@ def destructive_reason(tool_name: str, tool_input: dict[str, Any]) -> str | None
         if re.search(pattern, code):
             return reason
     return None
+
+
+# --------------------------------------------------------------------------
+# Models: what the CLI can actually run
+#
+# Two things went stale together. The dropdown was a list typed into this file,
+# and the sessions ran the Claude Code CLI bundled inside the SDK package,
+# frozen at the SDK's release. Measured on 2026-10-08: the bundled CLI (2.1.223)
+# offered Opus 5, Fable 5, Sonnet 5 and Haiku 4.5, while the person's own CLI
+# (2.1.294), through the same SDK, offered Opus 5.5, Fable 5.1, Sonnet 5.5 and
+# Haiku 5.5. So the service runs the person's own CLI, which updates itself,
+# and asks it which models it offers. The answer arrives with the SDK's
+# initialize handshake, which costs no tokens.
+# --------------------------------------------------------------------------
+
+
+def find_claude_cli() -> str | None:
+    """The person's own claude CLI, or None for the SDK's bundled copy.
+
+    ARGES_CLAUDE_CLI names one explicitly, or is "bundled" to opt out. Then
+    PATH, then the places the installers write to. PATH alone is not enough:
+    the service is started from inside Fusion, whose environment rarely
+    includes ~/.local/bin.
+    """
+    override = (os.environ.get("ARGES_CLAUDE_CLI") or "").strip()
+    if override.lower() == "bundled":
+        return None
+    home = Path("~").expanduser()
+    candidates = [override, shutil.which("claude") or "",
+                  str(home / ".local" / "bin" / "claude"),
+                  str(home / ".claude" / "local" / "claude"),
+                  "/opt/homebrew/bin/claude", "/usr/local/bin/claude"]
+    for path in candidates:
+        if path and os.path.isfile(path) and os.access(path, os.X_OK):
+            return path
+        if path and path == override:
+            log.warning("ARGES_CLAUDE_CLI=%s is not an executable; searching instead", path)
+    return None
+
+
+def models_from_server_info(info: Any) -> list[dict[str, Any]]:
+    """The dropdown's entries from the CLI's initialize response.
+
+    Each keeps the CLI's own id (an alias like "opus" stays an alias, so it
+    keeps meaning "the newest Opus"), a label naming the version the CLI
+    resolves it to, and the effort levels it takes. The "default" entry is not
+    repeated: the model it resolves to goes first instead. Nothing else from
+    the response is kept; it also carries the account's email address.
+    """
+    raw = info.get("models") if isinstance(info, dict) else None
+    if not isinstance(raw, list):
+        return []
+    entries = [m for m in raw if isinstance(m, dict)
+               and isinstance(m.get("value"), str) and m["value"].strip()]
+    default = next((m.get("resolvedModel") for m in entries if m["value"] == "default"), None)
+    out: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for m in entries:
+        value = m["value"].strip()
+        resolved = str(m.get("resolvedModel") or value)
+        if value == "default" or resolved in seen:
+            continue
+        seen.add(resolved)
+        description = str(m.get("description") or "")
+        label = description.split(" · ")[0].strip() or str(m.get("displayName") or value)
+        efforts = m.get("supportedEffortLevels")
+        out.append({"id": value, "label": label[:32], "description": description[:160],
+                    "efforts": [str(e) for e in efforts] if isinstance(efforts, list) else [],
+                    "resolved": resolved})
+    # Stable, so the CLI's own order holds for everything after the default.
+    out.sort(key=lambda entry: 0 if entry["resolved"] == default else 1)
+    return out
+
+
+async def probe_models(cli_path: str | None) -> list[dict[str, Any]]:
+    """Connect the CLI just long enough to read its model list. No tokens."""
+    client = ClaudeSDKClient(options=ClaudeAgentOptions(
+        cli_path=cli_path, setting_sources=[], cwd=str(REPO),
+        max_buffer_size=MAX_SDK_MESSAGE_BYTES))
+    try:
+        await asyncio.wait_for(client.connect(), timeout=MODEL_PROBE_TIMEOUT)
+        info = await client.get_server_info()
+    finally:
+        with contextlib.suppress(Exception):
+            await client.disconnect()
+    return models_from_server_info(info)
+
+
+class ModelCatalog:
+    """The models on offer: the CLI's last answer, else the alias fallback."""
+
+    def __init__(self, path: Path = MODELS_PATH) -> None:
+        self.path = path
+        self.models = self._load() or [
+            {"id": m, "label": label, "description": "", "efforts": None}
+            for m, label in MODELS]
+
+    def _load(self) -> list[dict[str, Any]]:
+        try:
+            data = json.loads(self.path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return []
+        models = data.get("models") if isinstance(data, dict) else None
+        if not isinstance(models, list):
+            return []
+        return [m for m in models if isinstance(m, dict) and isinstance(m.get("id"), str)]
+
+    def ids(self) -> list[str]:
+        return [m["id"] for m in self.models]
+
+    def default(self) -> str:
+        return self.models[0]["id"]
+
+    def get(self, model_id: str) -> dict[str, Any] | None:
+        return next((m for m in self.models if m["id"] == model_id), None)
+
+    def update(self, models: list[dict[str, Any]], cli: str) -> None:
+        """Adopt a probe's answer. An empty answer never empties the dropdown."""
+        if not models:
+            return
+        self.models = models
+        try:
+            self.path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self.path.parent, prefix=".models-")
+            with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                json.dump({"version": 1, "cli": cli, "checked": time.strftime("%Y-%m-%dT%H:%M:%S"),
+                           "models": models}, fh, indent=1)
+            os.replace(tmp, self.path)
+        except OSError as exc:
+            log.warning("could not cache the model list: %s", exc)
 
 
 # --------------------------------------------------------------------------
@@ -673,7 +811,10 @@ class Session:
             append = append + CORE_CONTEXT_PREAMBLE % core
         return ClaudeAgentOptions(
             model=self.registry.model(),
-            effort=self.registry.effort(),
+            effort=self.registry.session_effort(),
+            # The person's own CLI, which updates itself, rather than the copy
+            # frozen inside the SDK package; see find_claude_cli.
+            cli_path=self.registry.cli_path,
             # The SDK reads the CLI's output as NDJSON and refuses any single
             # line longer than this, raising CLIJSONDecodeError. Its default is
             # 1 MiB, which is too small for a CAD session: a screenshot comes
@@ -1181,6 +1322,9 @@ class Registry:
         self.http = httpx.AsyncClient(trust_env=False, timeout=10.0)
         self._dirty = False
         self._compressing: set[str] = set()
+        self.catalog = ModelCatalog()
+        self.cli_path = find_claude_cli()
+        log.info("chat sessions run %s", self.cli_path or "the CLI bundled with the SDK")
 
     # -- event fan-out ----------------------------------------------------- #
     #
@@ -1280,12 +1424,49 @@ class Registry:
         session at all.
         """
         chosen = self.store.data.get("model")
-        return chosen if chosen in MODEL_IDS else DEFAULT_MODEL
+        return chosen if chosen in self.catalog.ids() else self.catalog.default()
 
     def effort(self) -> str:
         """The chosen effort, or the default if the stored one is unknown."""
         chosen = self.store.data.get("effort")
         return chosen if chosen in EFFORT_IDS else DEFAULT_EFFORT
+
+    def session_effort(self) -> str | None:
+        """The effort to start a session with, or None for the CLI's default.
+
+        Left out for a model the CLI says takes no effort level (Haiku 4.5 on
+        an older CLI), rather than sending a flag the model would refuse.
+        """
+        supported = (self.catalog.get(self.model()) or {}).get("efforts")
+        effort = self.effort()
+        if supported is None or effort in supported:
+            return effort
+        return None
+
+    async def refresh_models(self) -> None:
+        """Ask the CLI which models it offers, and tell the open panel.
+
+        The probe doubles as a compatibility check. If the person's own CLI
+        cannot be driven by this SDK, the sessions fall back to the bundled CLI
+        rather than failing to start.
+        """
+        attempts = [self.cli_path] + ([None] if self.cli_path else [])
+        for cli in attempts:
+            try:
+                found = await probe_models(cli)
+            except Exception as exc:                      # noqa: BLE001
+                log.warning("model probe through %s failed: %r",
+                            cli or "the bundled CLI", exc)
+                continue
+            if cli != self.cli_path:
+                log.warning("chat sessions fall back to the bundled CLI")
+                self.cli_path = cli
+            if found:
+                self.catalog.update(found, cli=cli or "bundled")
+                log.info("models offered: %s", ", ".join(
+                    f"{m['label']} ({m['id']})" for m in found))
+                self.publish(self.document_event())
+            return
 
     async def apply_settings(self, model: str | None = None,
                              effort: str | None = None) -> bool:
@@ -1299,7 +1480,7 @@ class Registry:
         separately would tear every session down twice for one intent.
         """
         wanted = {}
-        if model is not None and model in MODEL_IDS and model != self.model():
+        if model is not None and model in self.catalog.ids() and model != self.model():
             wanted["model"] = model
         if effort is not None and effort in EFFORT_IDS and effort != self.effort():
             wanted["effort"] = effort
@@ -1441,7 +1622,9 @@ class Registry:
             # Sent with every document event so the panel never has to hardcode
             # the list, and so a reconnecting panel shows the right selection.
             "model": self.model(),
-            "models": [{"id": m, "label": label} for m, label in MODELS],
+            "models": [{"id": m["id"], "label": m["label"],
+                        "description": m.get("description") or ""}
+                       for m in self.catalog.models],
             "effort": self.effort(),
             # A turn paused behind another design. The panel shows it and
             # disables Send, because starting work here would queue behind it.
@@ -1505,7 +1688,8 @@ class Registry:
             # Deliberately not the chosen model: this is a one-shot background
             # summariser, not the conversation, and its output is read by the
             # next session rather than by a person.
-            model=DEFAULT_MODEL,
+            model=self.catalog.default(),
+            cli_path=self.cli_path,
             cwd=str(REPO),
             resume=session_id,
             fork_session=True,
@@ -1707,13 +1891,13 @@ async def handle_settings(request: web.Request) -> web.Response:
     body = await request.json()
     model = body.get("model")
     effort = body.get("effort")
-    if model is not None and model not in MODEL_IDS:
+    registry: Registry = request.app["registry"]
+    if model is not None and model not in registry.catalog.ids():
         return web.json_response(
             {"ok": False, "error": f"unknown model {model!r}"}, status=400)
     if effort is not None and effort not in EFFORT_IDS:
         return web.json_response(
             {"ok": False, "error": f"unknown effort {effort!r}"}, status=400)
-    registry: Registry = request.app["registry"]
     changed = await registry.apply_settings(model=model, effort=effort)
     return web.json_response({"ok": True, "changed": changed,
                               "model": registry.model(),
@@ -1929,14 +2113,18 @@ async def on_startup(app: web.Application) -> None:
     # palette shows a blank page while the first poll is in flight, and a slow
     # bridge would mean the service never serves at all.
     app["watcher"] = asyncio.create_task(registry.watch())
+    # In the background for the same reason: the panel shows the cached list
+    # at once and updates when the CLI answers.
+    app["models_probe"] = asyncio.create_task(registry.refresh_models())
 
 
 async def on_cleanup(app: web.Application) -> None:
-    watcher: asyncio.Task | None = app.get("watcher")
-    if watcher is not None:
-        watcher.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await watcher
+    for name in ("watcher", "models_probe"):
+        task: asyncio.Task | None = app.get(name)
+        if task is not None:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
     registry: Registry | None = app.get("registry")
     if registry is not None:
         await registry.close()

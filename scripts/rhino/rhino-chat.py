@@ -72,15 +72,16 @@ AUTH_HEADER = "X-Arges-Bridge-Token"
 # that has not been updated yet. Servers accept either; clients send both.
 LEGACY_AUTH_HEADER = "X-Fusion-Bridge-Token"
 
-# The same list the Fusion panel offers, duplicated because this file runs on
-# Rhino's own Python and cannot import from the package. tests/test_consistency
-# pins the two together: a model id that exists on one side and not the other
-# fails when somebody switches, not at review.
+# The same list the Fusion panel falls back to, duplicated because this file
+# runs on Rhino's own Python and cannot import from the package.
+# tests/test_consistency pins the two together. Family aliases, not versions:
+# the claude CLI resolves "opus" to the newest Opus it knows, and the CLI
+# updates itself, so this list cannot go stale. The one it replaced named
+# versions and was still offering Opus 5 after Opus 5.5 had shipped.
 MODELS = [
-    ("claude-opus-5", "Opus 5"),
-    ("claude-fable-5", "Fable 5"),
-    ("claude-sonnet-5", "Sonnet 5"),
-    ("claude-haiku-4-5-20251001", "Haiku 4.5"),
+    ("opus", "Opus"),
+    ("sonnet", "Sonnet"),
+    ("haiku", "Haiku"),
 ]
 DEFAULT_MODEL = MODELS[0][0]
 MODEL_IDS = frozenset(m for m, _ in MODELS)

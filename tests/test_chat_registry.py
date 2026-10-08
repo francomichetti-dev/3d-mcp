@@ -75,6 +75,8 @@ def fresh_registry(tmpdir):
     r.bridge_ok = None
     r._dirty = False
     r._compressing = set()
+    r.catalog = svc.ModelCatalog(Path(tmpdir) / "models.json")
+    r.cli_path = None
     return r
 
 
@@ -991,17 +993,17 @@ async def settings_checks():
 
         r.store.data.pop("model"); r.store.data.pop("effort")
         check("a change is applied and persisted",
-              await r.apply_settings(model="claude-sonnet-5", effort="max"), True)
-        check("both took", (r.model(), r.effort()), ("claude-sonnet-5", "max"))
+              await r.apply_settings(model="sonnet", effort="max"), True)
+        check("both took", (r.model(), r.effort()), ("sonnet", "max"))
         check("and survive a reload",
-              svc.Store(Path(d) / "chats.json").data.get("model"), "claude-sonnet-5")
+              svc.Store(Path(d) / "chats.json").data.get("model"), "sonnet")
 
         check("re-applying the same values changes nothing",
-              await r.apply_settings(model="claude-sonnet-5", effort="max"), False)
+              await r.apply_settings(model="sonnet", effort="max"), False)
         check("and junk is ignored rather than stored",
               await r.apply_settings(model="nonsense", effort="nonsense"), False)
         check("leaving the real values alone",
-              (r.model(), r.effort()), ("claude-sonnet-5", "max"))
+              (r.model(), r.effort()), ("sonnet", "max"))
 
         # The reason both live behind one call: each rebuilds every session, so
         # changing them separately would tear each conversation down twice.
@@ -1018,13 +1020,169 @@ async def settings_checks():
 
         idle, running = _Session(False), _Session(True)
         r.sessions = {"a": idle, "b": running}
-        await r.apply_settings(model="claude-opus-5", effort="low")
+        await r.apply_settings(model="opus", effort="low")
         check("one rebuild for a combined change", len(rebuilt), 1)
         check("the idle session was rebuilt", rebuilt[0], idle)
         truthy("and the running turn was left alone", running not in rebuilt)
 
 
 asyncio.run(settings_checks())
+
+
+# ------------------------------------------------ models from the CLI ----
+# The dropdown used to be a list typed into this file. It went stale the day a
+# new model shipped: the panel offered Opus 5 while the person's own Claude
+# Code already ran Opus 5.5. Worse, the sessions ran the CLI bundled inside the
+# SDK package, frozen at the SDK's release, so even a correct list could not
+# have run the new models. Now the service runs the person's own CLI, which
+# updates itself, and asks that CLI which models it offers. The typed-in list
+# survives only as a fallback, made of family aliases that the CLI resolves to
+# the newest model of each family, so it cannot go stale.
+print("Models come from the CLI")
+
+# Shapes captured from real CLIs over the SDK's initialize handshake.
+CLI_2_1_294 = {"models": [
+    {"value": "default", "resolvedModel": "claude-opus-5-5", "displayName": "Default (recommended)",
+     "description": "Opus 5.5 · Best for everyday, complex tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "opus", "resolvedModel": "claude-opus-5-5", "displayName": "Opus",
+     "description": "Opus 5.5 · Best for everyday, complex tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "claude-fable-5-1[1m]", "resolvedModel": "claude-fable-5-1", "displayName": "Fable",
+     "description": "Fable 5.1 · Most capable for your hardest and longest-running tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "sonnet", "resolvedModel": "claude-sonnet-5-5", "displayName": "Sonnet",
+     "description": "Sonnet 5.5 · Efficient for routine tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "resolvedModel": "claude-haiku-5-5", "displayName": "Haiku",
+     "description": "Haiku 5.5 · Fastest for quick answers",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+], "account": {"email": "someone@example.com"}}
+CLI_2_1_223 = {"models": [
+    {"value": "default", "resolvedModel": "claude-opus-5[1m]", "displayName": "Default (recommended)",
+     "description": "Opus 5 with 1M context · Best for everyday, complex tasks"},
+    {"value": "opus[1m]", "resolvedModel": "claude-opus-5[1m]", "displayName": "Opus (1M context)",
+     "description": "Opus 5 with 1M context · Best for everyday, complex tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "sonnet", "resolvedModel": "claude-sonnet-5", "displayName": "Sonnet",
+     "description": "Sonnet 5 · Efficient for routine tasks",
+     "supportedEffortLevels": ["low", "medium", "high", "xhigh", "max"]},
+    {"value": "haiku", "resolvedModel": "claude-haiku-4-5-20251001", "displayName": "Haiku",
+     "description": "Haiku 4.5 · Fastest for quick answers"},
+]}
+
+models = svc.models_from_server_info(CLI_2_1_294)
+check("the CLI's own ids are what get passed back to it",
+      [m["id"] for m in models], ["opus", "claude-fable-5-1[1m]", "sonnet", "haiku"])
+check("labelled by the version the CLI names",
+      [m["label"] for m in models], ["Opus 5.5", "Fable 5.1", "Sonnet 5.5", "Haiku 5.5"])
+check("its default comes first, and 'default' itself is not repeated as an entry",
+      models[0]["id"], "opus")
+truthy("each keeps its description for the tooltip", models[1]["description"].startswith("Fable 5.1"))
+check("nothing about the account is kept", "account" in json.dumps(models), False)
+
+older = svc.models_from_server_info(CLI_2_1_223)
+check("an older CLI's list is read the same way",
+      [m["label"] for m in older], ["Opus 5 with 1M context", "Sonnet 5", "Haiku 4.5"])
+check("a model with no effort levels is recorded as having none",
+      older[-1]["efforts"], [])
+for junk in (None, {}, {"models": "nope"}, {"models": [None, 3, {"value": ""}]}):
+    check(f"junk reads as no models: {junk!r}", svc.models_from_server_info(junk), [])
+
+fallback_ids = [m for m, _ in svc.MODELS]
+check("the fallback names families, never versions, so it cannot go stale",
+      [m for m in fallback_ids if any(c.isdigit() for c in m)], [])
+
+with tempfile.TemporaryDirectory() as d:
+    path = Path(d) / "models.json"
+    catalog = svc.ModelCatalog(path)
+    check("with nothing cached, the fallback is offered",
+          catalog.ids(), fallback_ids)
+    check("and its first entry is the default", catalog.default(), fallback_ids[0])
+    catalog.update(models, cli="/somewhere/claude")
+    check("an update replaces the list", catalog.ids()[:2], ["opus", "claude-fable-5-1[1m]"])
+    check("and is cached, so the next start shows it before any probe",
+          svc.ModelCatalog(path).ids(), catalog.ids())
+    check("the cache is private", stat.S_IMODE(path.stat().st_mode), 0o600)
+    catalog.update([], cli="x")
+    check("an empty probe never empties the dropdown", catalog.ids()[0], "opus")
+    path.write_text("{ corrupt")
+    check("a corrupt cache falls back rather than raising",
+          svc.ModelCatalog(path).ids(), fallback_ids)
+
+    r = fresh_registry(d)
+    r.catalog.update(models, cli="x")
+    r.store.data["model"] = "claude-opus-5"           # what the old list stored
+    check("a model from the old typed-in list moves to the CLI's default",
+          r.model(), "opus")
+    event_models = r.document_event()["models"]
+    check("the panel is sent the CLI's list",
+          [m["id"] for m in event_models], [m["id"] for m in models])
+    truthy("with descriptions", all(m.get("description") for m in event_models))
+
+    r.catalog.update(older, cli="x")
+    r.store.data.update(model="haiku", effort="max")
+    check("effort is left out for a model that takes none", r.session_effort(), None)
+    r.store.data.update(model="sonnet")
+    check("and passed for one that does", r.session_effort(), "max")
+
+    session = svc.Session("k", "tower", r)
+    r.cli_path = "/opt/claude/bin/claude"
+    opts = session._options(None)
+    check("sessions run the person's own CLI", str(opts.cli_path), "/opt/claude/bin/claude")
+    check("with the chosen model", opts.model, "sonnet")
+
+
+# Finding the CLI: an override wins, "bundled" opts out, and otherwise PATH and
+# the installer's own location are searched, the way the Rhino window does.
+with tempfile.TemporaryDirectory() as d:
+    fake = Path(d) / "claude"
+    fake.write_text("#!/bin/sh\n")
+    fake.chmod(0o755)
+    saved_env = {k: os.environ.get(k) for k in ("ARGES_CLAUDE_CLI", "PATH")}
+    try:
+        os.environ["ARGES_CLAUDE_CLI"] = str(fake)
+        check("an explicit path wins", svc.find_claude_cli(), str(fake))
+        os.environ["ARGES_CLAUDE_CLI"] = "bundled"
+        check("'bundled' means the SDK's own copy", svc.find_claude_cli(), None)
+        os.environ.pop("ARGES_CLAUDE_CLI")
+        os.environ["PATH"] = d
+        check("otherwise it is found on PATH", svc.find_claude_cli(), str(fake))
+    finally:
+        for k, v in saved_env.items():
+            if v is None:
+                os.environ.pop(k, None)
+            else:
+                os.environ[k] = v
+
+
+async def refresh_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        published = []
+        r.publish = published.append
+        r.cli_path = "/new/claude"
+        tried = []
+
+        async def probe(cli):
+            tried.append(cli)
+            if cli == "/new/claude":
+                raise RuntimeError("protocol mismatch")
+            return models
+
+        real_probe = svc.probe_models
+        svc.probe_models = probe
+        try:
+            await r.refresh_models()
+        finally:
+            svc.probe_models = real_probe
+        check("a CLI that cannot be driven falls back to the bundled one",
+              (tried, r.cli_path), (["/new/claude", None], None))
+        check("which still supplies the list", r.catalog.ids()[0], "opus")
+        truthy("and the open panel is told", any(e.get("type") == "document" for e in published))
+
+
+asyncio.run(refresh_checks())
 
 # -------------------------------------------- switching mid-build ----------
 # Switching designs used to kill the running turn outright. It now holds it at

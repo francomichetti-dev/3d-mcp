@@ -131,6 +131,11 @@ Both buttons report the file, its size and its folder as a line in the conversat
 says so rather than reading as success. Neither needs the model's cooperation — they go straight to
 the same bridge and the same export code the tools use.
 
+The **model picker** lists what your own Claude Code offers, read from the CLI when the service
+starts and cached for the next start, so a new model appears without an update to this project. The
+panel runs your installed `claude` CLI, which updates itself, rather than the copy frozen inside the
+SDK package. Set `ARGES_CLAUDE_CLI` to a path to pick a different one, or to `bundled` to opt out.
+
 A **thinking orb** spins in the working banner while a turn runs, and its animation follows what is
 actually happening: a dotted outline morphing for sketching, a scan sweep for looking, a scramble
 that clicks back for fillets and holes. Stop sits beside it, because the indicator says "running"
@@ -386,7 +391,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1346 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
+**1378 assertions across sixteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 

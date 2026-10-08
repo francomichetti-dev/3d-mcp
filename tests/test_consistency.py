@@ -462,7 +462,12 @@ rhino_models = model_ids(RHINO_CHAT)
 truthy("the Fusion panel offers models", fusion_models)
 truthy("the Rhino window offers models", rhino_models)
 check("and they are the same list, in the same order", fusion_models, rhino_models)
-truthy("every id looks like a real model", all(m.startswith("claude-") for m, _ in fusion_models))
+# Aliases the CLI resolves to the newest model of each family. A version in
+# this list is what made the dropdown stale: it named Opus 5 for weeks after
+# Opus 5.5 shipped. The Fusion panel replaces it with the CLI's own list as
+# soon as the CLI answers; the Rhino window passes the alias straight through.
+check("every id is a family alias, never a version",
+      [m for m, _ in fusion_models if any(c.isdigit() for c in m)], [])
 truthy("every entry has a label short enough for a dropdown",
        all(0 < len(label) <= 16 for _, label in fusion_models))
 
@@ -496,7 +501,7 @@ check("and both default to the same level",
 truthy("the Rhino window passes --effort",
        '"--effort", settings["effort"]' in read(RHINO_CHAT))
 truthy("the Fusion session passes effort too",
-       "effort=self.registry.effort()" in read("agent/agent_service.py"))
+       "effort=self.registry.session_effort()" in read("agent/agent_service.py"))
 
 
 # -------------------------------------------------------- host pinning ------

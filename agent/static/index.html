@@ -493,6 +493,7 @@ function fillPicker(el, options, current) {
       const opt = document.createElement('option');
       opt.value = o.id;
       opt.textContent = o.label;
+      if (o.description) opt.title = o.description;
       el.appendChild(opt);
     });
   }
