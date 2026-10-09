@@ -106,7 +106,8 @@ solid), `timeline` (feature health; `problems_only`), `profiles` (pick a
 profile by area or centroid), `sketch_frame` (a sketch's axes in the world),
 `set_params` (create or update parameters), `selection` (what the person
 selected: "this", "the one I selected"), `remove` (remove it reversibly, as
-a timeline feature). `fusion_state` lists them with
+a timeline feature; `{"undo": [feature]}` puts it back; a part shared by
+several instances is refused until you ask). `fusion_state` lists them with
 any learned ones, and `fusion_run()` shows how to call each. When a helper
 you wrote works and will be needed again, save it with `fusion_command_save`:
 general (sizes and names from `p`), with a `usage` the next session can follow.

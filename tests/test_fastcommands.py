@@ -275,8 +275,12 @@ class RemoveFeatures(Collection):
     def add(self, entity):
         prefix = "RemoveInstance" if entity.objectType.endswith("::Occurrence") else "RemoveBody"
         feature = NS(name=f"{prefix}-{self.count + 1}", entity=entity)
+        feature.deleteMe = lambda: self.remove(feature) or True
         self.append(feature)
         return feature
+
+    def itemByName(self, name):
+        return next((f for f in self if f.name == name), None)
 
 
 def selection_design():
@@ -288,14 +292,45 @@ def selection_design():
                  assemblyContext=None, nativeObject=None, parentComponent=comp)
     root.bRepBodies = Collection([plate])
     comp.bRepBodies = Collection([shell])
-    occ = NS(name="Housing:1", objectType="adsk::fusion::Occurrence", component=comp,
-             assemblyContext=None)
+    occ = NS(name="Housing:1", fullPathName="Housing:1",
+             objectType="adsk::fusion::Occurrence", component=comp,
+             assemblyContext=None, nativeObject=None)
     proxy = body("Shell", (9, -1, 0), (11, 1, 2), objectType="adsk::fusion::BRepBody",
                  assemblyContext=occ, nativeObject=shell, parentComponent=comp)
     occ.bRepBodies = Collection([proxy])
     root.occurrences = Collection([occ])
     root.allOccurrences = Collection([occ])
+    root.allOccurrencesByComponent = lambda component: Collection(
+        occ for occ in root.allOccurrences if occ.component is component)
     return NS(rootComponent=root), plate, shell, proxy, occ
+
+
+def add_body_occurrence(design, name, native, context=None, native_occurrence=None):
+    path = context.fullPathName + "+" + name if context is not None else name
+    occ = NS(name=name, fullPathName=path, objectType="adsk::fusion::Occurrence",
+             component=native.parentComponent, assemblyContext=context,
+             nativeObject=native_occurrence)
+    proxy = body(native.name, (19, -1, 0), (21, 1, 2),
+                 objectType="adsk::fusion::BRepBody", assemblyContext=occ,
+                 nativeObject=native, parentComponent=native.parentComponent)
+    occ.bRepBodies = Collection([proxy])
+    design.rootComponent.allOccurrences.append(occ)
+    if context is None:
+        design.rootComponent.occurrences.append(occ)
+    return occ, proxy
+
+
+def nested_selection_design():
+    design, plate, shell, _, parent = selection_design()
+    parent.name = parent.fullPathName = "asm:1"
+    component = NS(name="Bin", features=NS(removeFeatures=RemoveFeatures()))
+    box = body("Box", (0, 0, 0), (1, 1, 1), objectType="adsk::fusion::BRepBody",
+               assemblyContext=None, nativeObject=None, parentComponent=component)
+    component.bRepBodies = Collection([box])
+    native = NS(name="bin:1", fullPathName="bin:1", objectType="adsk::fusion::Occurrence",
+                component=component, assemblyContext=None, nativeObject=None)
+    nested, proxy = add_body_occurrence(design, "bin:1", box, parent, native)
+    return design, plate, shell, parent, box, native, nested, proxy
 
 
 def run_selected(name, args, design, entities=()):
@@ -377,15 +412,40 @@ truthy("a named occurrence body is resolved to its native body",
        named_occ.component.features.removeFeatures[0].entity is named_native)
 
 mixed_design, mixed_root, mixed_native, mixed_proxy, mixed_occ = selection_design()
-another_occ = NS(name="Housing:2", objectType="adsk::fusion::Occurrence",
-                 component=mixed_occ.component, assemblyContext=None)
-another_proxy = body("Shell", (19, -1, 0), (21, 1, 2), objectType="adsk::fusion::BRepBody",
-                     assemblyContext=another_occ, nativeObject=mixed_native,
-                     parentComponent=mixed_occ.component)
-another_occ.bRepBodies = Collection([another_proxy])
-mixed_design.rootComponent.occurrences.append(another_occ)
-mixed_design.rootComponent.allOccurrences.append(another_occ)
+another_occ, another_proxy = add_body_occurrence(mixed_design, "Housing:2", mixed_native)
+removed = run_selected("remove", {"selection": True}, mixed_design, [mixed_proxy])
+check("one selected proxy refuses to remove an unselected instance's body", removed,
+      {"removed": [], "missing": [], "skipped": [],
+       "shared": [{"what": "Housing:1/Shell", "instances": ["Housing:1", "Housing:2"]}]})
+check("a refused shared body creates no feature in either component",
+      (mixed_design.rootComponent.features.removeFeatures.count,
+       mixed_occ.component.features.removeFeatures.count), (0, 0))
+check("naming the body still refuses a shared component", run_selected(
+    "remove", {"bodies": ["Housing:2/Shell"]}, mixed_design)["shared"],
+    [{"what": "Housing:2/Shell", "instances": ["Housing:1", "Housing:2"]}])
+check("a truthy string does not grant permission for every instance", run_selected(
+    "remove", {"selection": True, "all_instances": "false"}, mixed_design,
+    [mixed_proxy])["removed"], [])
+check("a native body selection is also subject to the shared-instance rule", run_selected(
+    "remove", {"selection": True}, mixed_design, [mixed_native])["shared"],
+    [{"what": "Shell", "instances": ["Housing:1", "Housing:2"]}])
+check("a shared refusal is de-duplicated and still permits an unrelated valid target",
+      run_selected("remove", {"selection": True, "bodies": ["Housing:2/Shell"]},
+                   mixed_design, [mixed_proxy, mixed_proxy, mixed_root]),
+      {"removed": [{"what": "Plate", "feature": "RemoveBody-1"}],
+       "missing": [], "skipped": [],
+       "shared": [{"what": "Housing:1/Shell", "instances": ["Housing:1", "Housing:2"]}]})
+mixed_design.rootComponent.features.removeFeatures.clear()
+removed = run_selected("remove", {"selection": True, "all_instances": True},
+                       mixed_design, [mixed_proxy])
+check("permission to remove all instances lists the unselected instance too", removed,
+      {"removed": [{"what": "Housing:1/Shell", "feature": "RemoveBody-1",
+                    "instances": ["Housing:1", "Housing:2"]}], "missing": [], "skipped": []})
+truthy("a permitted shared removal uses one native body",
+       mixed_occ.component.features.removeFeatures[0].entity is mixed_native)
+mixed_occ.component.features.removeFeatures.clear()
 removed = run_selected("remove", {"selection": True,
+                                  "all_instances": True,
                                   "bodies": ["Housing:1/Shell", "Housing:2/Shell", "Plate"],
                                   "occurrences": ["Housing:1"]}, mixed_design,
                        [mixed_proxy, another_proxy, mixed_root, mixed_occ])
@@ -399,13 +459,148 @@ run_selected("remove", {"selection": True}, fallback_design, [fallback_proxy])
 truthy("a proxy without nativeObject resolves by name in its own component",
        fallback_occ.component.features.removeFeatures[0].entity is fallback_native)
 
-nested_design, _, _, _, parent_occ = selection_design()
-nested_occ = NS(name="Nested:1", objectType="adsk::fusion::Occurrence",
-                assemblyContext=parent_occ, bRepBodies=Collection())
-nested_design.rootComponent.allOccurrences.append(nested_occ)
-check("only top-level occurrences can be removed", run_selected(
-    "remove", {"selection": True, "occurrences": ["Nested:1"]}, nested_design, [nested_occ]),
-    {"removed": [], "missing": ["Nested:1"], "skipped": ["Occurrence"]})
+nested_design, _, _, parent_occ, box, native_occ, nested_occ, nested_proxy = nested_selection_design()
+removed = run_selected("remove", {"occurrences": ["asm:1+bin:1"]}, nested_design)
+check("a nested occurrence can be removed by its full path", removed,
+      {"removed": [{"what": "asm:1+bin:1", "feature": "RemoveInstance-1"}],
+       "missing": [], "skipped": []})
+truthy("nested removal passes the native occurrence to its parent's features",
+       parent_occ.component.features.removeFeatures[0].entity is native_occ)
+check("nested removal does not use root features",
+      nested_design.rootComponent.features.removeFeatures.count, 0)
+parent_occ.component.features.removeFeatures.clear()
+removed = run_selected("remove", {"selection": True, "occurrences": ["bin:1"]},
+                       nested_design, [nested_occ, nested_occ])
+check("a unique bare occurrence name and its selection make one feature", removed,
+      {"removed": [{"what": "asm:1+bin:1", "feature": "RemoveInstance-1"}],
+       "missing": [], "skipped": []})
+parent_occ.component.features.removeFeatures.clear()
+second_parent, _ = add_body_occurrence(nested_design, "asm:2", parent_occ.component.bRepBodies[0])
+second_nested, second_box = add_body_occurrence(nested_design, "bin:1", box,
+                                               second_parent, native_occ)
+selected = run_selected("selection", {}, nested_design,
+                        [nested_proxy, second_box, nested_occ, second_nested, nested_occ])
+check("nested bodies with the same name keep both full paths in selection",
+      selected["bodies"], ["asm:1+bin:1/Box", "asm:2+bin:1/Box"])
+check("nested occurrence selections keep both full paths and de-duplicate repeats",
+      selected["occurrences"], ["asm:1+bin:1", "asm:2+bin:1"])
+check("selected items identify their occurrence by full path",
+      [item["occurrence"] for item in selected["items"]],
+      ["asm:1+bin:1", "asm:2+bin:1", "asm:1+bin:1", "asm:2+bin:1", "asm:1+bin:1"])
+ambiguous_occurrences = [{"name": "bin:1", "matches": ["asm:1+bin:1", "asm:2+bin:1"]}]
+check("a repeated nested occurrence name refuses every match", run_selected(
+    "remove", {"occurrences": ["bin:1"]}, nested_design),
+    {"removed": [], "ambiguous": ambiguous_occurrences})
+check("an ambiguous name prevents valid named bodies and selections from being removed",
+      run_selected("remove", {"selection": True, "all_instances": True,
+                               "bodies": ["Plate", "asm:1+bin:1/Box"],
+                               "occurrences": ["bin:1"]}, nested_design, [parent_occ]),
+      {"removed": [], "ambiguous": ambiguous_occurrences})
+check("ambiguity leaves root, parent and body feature collections untouched",
+      (nested_design.rootComponent.features.removeFeatures.count,
+       parent_occ.component.features.removeFeatures.count,
+       box.parentComponent.features.removeFeatures.count), (0, 0, 0))
+check("even an exact nested body path refuses a shared native removal", run_selected(
+    "remove", {"bodies": ["asm:2+bin:1/Box"]}, nested_design),
+    {"removed": [], "missing": [], "skipped": [],
+     "shared": [{"what": "asm:2+bin:1/Box", "instances": ["asm:1+bin:1", "asm:2+bin:1"]}]})
+top_bin, _ = add_body_occurrence(nested_design, "bin:1", box)
+check("a bare name cannot silently prefer a top-level occurrence", run_selected(
+    "remove", {"occurrences": ["bin:1"]}, nested_design),
+    {"removed": [], "ambiguous": [{"name": "bin:1",
+                                   "matches": ["asm:1+bin:1", "asm:2+bin:1", "bin:1"]}]})
+check("a selected top-level occurrence stays unambiguous and removes just that instance",
+      run_selected("remove", {"selection": True}, nested_design, [top_bin]),
+      {"removed": [{"what": "bin:1", "feature": "RemoveInstance-1"}],
+       "missing": [], "skipped": []})
+check("a selected child of a shared parent is refused with every affected child path",
+      run_selected("remove", {"selection": True}, nested_design, [nested_occ]),
+      {"removed": [], "missing": [], "skipped": [],
+       "shared": [{"what": "asm:1+bin:1", "instances": ["asm:1+bin:1", "asm:2+bin:1"]}]})
+removed = run_selected("remove", {"selection": True, "all_instances": True,
+                                  "occurrences": ["asm:2+bin:1"]}, nested_design,
+                       [nested_occ, second_nested])
+check("permitted shared children use one feature and report both affected paths", removed,
+      {"removed": [{"what": "asm:1+bin:1", "feature": "RemoveInstance-1",
+                    "instances": ["asm:1+bin:1", "asm:2+bin:1"]}],
+       "missing": [], "skipped": []})
+truthy("permitted shared children are removed through their native parent's features",
+       parent_occ.component.features.removeFeatures[0].entity is native_occ)
+
+collision_design, _, _, collision_proxy, collision_occ = selection_design()
+collision_root = body("Housing:1/Shell", (0, 0, 0), (1, 1, 1),
+                      objectType="adsk::fusion::BRepBody", assemblyContext=None,
+                      nativeObject=None, parentComponent=collision_design.rootComponent)
+collision_design.rootComponent.bRepBodies.append(collision_root)
+ambiguous_bodies = [{"name": "Housing:1/Shell", "matches": [
+    {"body": "Housing:1/Shell", "occurrence": None},
+    {"body": "Housing:1/Shell", "occurrence": "Housing:1"}]}]
+check("a root body named like an occurrence body path is ambiguous", run_selected(
+    "remove", {"bodies": ["Housing:1/Shell"]}, collision_design),
+    {"removed": [], "ambiguous": ambiguous_bodies})
+check("a valid name before an ambiguous body removes nothing", run_selected(
+    "remove", {"bodies": ["Plate", "Housing:1/Shell"], "occurrences": ["Housing:1"]},
+    collision_design), {"removed": [], "ambiguous": ambiguous_bodies})
+check("a valid name after an ambiguous body also removes nothing", run_selected(
+    "remove", {"bodies": ["Housing:1/Shell", "Plate"]}, collision_design),
+    {"removed": [], "ambiguous": ambiguous_bodies})
+check("body ambiguity leaves both components untouched",
+      (collision_design.rootComponent.features.removeFeatures.count,
+       collision_occ.component.features.removeFeatures.count), (0, 0))
+removed = run_selected("remove", {"selection": True}, collision_design, [collision_proxy])
+check("an actual selected proxy bypasses an ambiguous body name", removed,
+      {"removed": [{"what": "Housing:1/Shell", "feature": "RemoveBody-1"}],
+       "missing": [], "skipped": []})
+check("selecting the proxy leaves the colliding root body untouched",
+      collision_design.rootComponent.features.removeFeatures.count, 0)
+run_selected("remove", {"selection": True}, collision_design, [collision_root])
+truthy("selecting the colliding root body removes that exact entity",
+       collision_design.rootComponent.features.removeFeatures[0].entity is collision_root)
+
+
+# Undo. Live, deleting a nested removal through design.timeline failed, and
+# for the wrong reason: that timeline item's entity is the PARENT occurrence,
+# so deleteMe aimed at the whole asm:1 (Fusion refused). A Remove feature is
+# undone where it lives, in its own component's removeFeatures.
+print("Undoing a removal")
+undo_design, undo_plate, undo_shell, undo_proxy, undo_occ = selection_design()
+undo_root = undo_design.rootComponent
+undo_design.allComponents = Collection([undo_root, undo_occ.component])
+run_selected("remove", {"selection": True}, undo_design, [undo_proxy, undo_plate])
+# Fusion names a Remove feature after what it removed; the stand-in counts.
+undo_occ.component.features.removeFeatures[0].name = "RemoveBody-Shell"
+undo_root.features.removeFeatures[0].name = "RemoveBody-Plate"
+names = ["RemoveBody-Shell", "RemoveBody-Plate"]
+check("two removals, one in the root and one in the housing",
+      (undo_root.features.removeFeatures.count,
+       undo_occ.component.features.removeFeatures.count), (1, 1))
+undone = run_selected("remove", {"undo": [names[0]]}, undo_design)
+check("undo deletes that Remove feature in the component that holds it",
+      undone, {"restored": [names[0]], "missing": [], "ambiguous": []})
+check("and only that one",
+      (undo_root.features.removeFeatures.count,
+       undo_occ.component.features.removeFeatures.count), (1, 0))
+check("an unknown feature is reported, not raised",
+      run_selected("remove", {"undo": ["RemoveBody-99"]}, undo_design)["missing"],
+      ["RemoveBody-99"])
+undo_occ.component.features.removeFeatures.add(undo_shell)
+same = undo_root.features.removeFeatures[0].name
+undo_occ.component.features.removeFeatures[0].name = same
+check("a name held in two components undoes nothing and says where",
+      run_selected("remove", {"undo": [same]}, undo_design),
+      {"restored": [], "missing": [],
+       "ambiguous": [{"feature": same, "components": ["Root", "Housing"]}]})
+check("naming the component settles it",
+      run_selected("remove", {"undo": [{"feature": same, "component": "Housing"}]},
+                   undo_design)["restored"], [same])
+check("leaving the other in place",
+      (undo_root.features.removeFeatures.count,
+       undo_occ.component.features.removeFeatures.count), (1, 0))
+check("undo never removes anything as well",
+      run_selected("remove", {"undo": [same], "selection": True}, undo_design,
+                   [undo_proxy])["restored"], [same])
+check("so the selection is still there afterwards",
+      undo_occ.component.features.removeFeatures.count, 0)
 
 
 class Params(Collection):

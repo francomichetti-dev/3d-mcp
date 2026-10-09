@@ -502,3 +502,35 @@ feature back` when read after the fact, so you cannot introspect what a shell
 actually received — measure the resulting geometry instead. And
 `rootComponent.name` cannot be assigned (`RuntimeError: root component name
 cannot be changed`); it follows the document name.
+
+---
+
+### 13. Undo a feature in its own component, never through the timeline's entity
+
+**Probed on Fusion 2704.1.53 (2026-10-09), removing a component nested inside
+another.**
+
+`design.timeline.item(i).entity` is not always the feature. For a Remove feature
+added inside a subcomponent, it is the **parent occurrence**. So the usual undo,
+
+```python
+tl = design.timeline
+tl.item(tl.count - 1).entity.deleteMe()     # aims at the whole parent occurrence
+```
+
+tries to delete `asm:1` rather than the removal. This time Fusion refused it
+(`InternalValidationError : Xl::Utils::findObjectPath`); do not rely on that.
+
+**Rule: delete a feature through the component that owns it.**
+
+```python
+asm.features.removeFeatures.itemByName("RemoveInstance-bin:1").deleteMe()
+```
+
+The built-in fast command does this: `fusion_run("remove", {"undo": [feature
+name]})`, refusing if the name is in more than one component. The same applies to
+removing in the first place. A body or component used by several instances is
+shared: removing it from one removes it from all. `remove` refuses that unless
+`all_instances=true`, and names the instances so you can ask first. Names are
+full paths (`asm:1+bin:1/Box`), because `bin:1` alone can be two different
+things.

@@ -966,7 +966,7 @@ def fusion_run(
       sketch_frame  where a sketch's X/Y axes point in the world
       set_params    create or update user parameters by expression
       selection     what the person has selected ("this", "the one I selected")
-      remove        remove selected or named bodies/components, reversibly
+      remove        remove selected or named bodies/components; undo puts them back
     plus any commands saved with fusion_command_save. Prefer a command over
     retyping the same helper in fusion_execute: it is shorter, already
     debugged, and the same every session.
