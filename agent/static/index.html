@@ -954,7 +954,10 @@ async function submit() {
     restore(); return;
   }
   if (!r.ok) {
-    let msg = 'could not reach the agent service';
+    // It answered, so this is a refusal, never "could not reach": a 413 for
+    // three photos was once reported that way, which sent the search for the
+    // cause to the wrong place.
+    let msg = 'the agent service refused the message (HTTP ' + r.status + ')';
     try { msg = (await r.json()).error || msg; } catch (err) { /* keep default */ }
     status(msg, 'err');
     restore();

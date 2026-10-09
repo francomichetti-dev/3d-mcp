@@ -400,6 +400,67 @@ asyncio.run(rebinding_checks())
 check("the guard is middleware, so it covers every route",
       svc.pin_host in svc.build_app(7655).middlewares, True)
 
+# ------------------------------------------------------ message size ------
+# Seen 2026-10-09: three phone photos, already shrunk by the panel, came to
+# more than aiohttp's default 1 MB body. /send answered 413 in plain text
+# before reading them, and the panel called that "could not reach the agent
+# service". The cap has to fit the largest message the panel may send.
+print("A message with photos fits")
+
+
+async def message_size_checks():
+    from aiohttp import web, ClientSession
+
+    app = svc.build_app(7655)
+    app.on_startup.clear()
+    app.on_cleanup.clear()
+    runner = web.AppRunner(app)
+    await runner.setup()
+    with _socket.socket() as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    await web.TCPSite(runner, "127.0.0.1", port).start()
+
+    async def post(body):
+        async with ClientSession() as session:
+            async with session.post(
+                    f"http://127.0.0.1:{port}/send", data=body,
+                    headers={"Content-Type": "application/json",
+                             "Host": "127.0.0.1:7655"}) as reply:
+                try:
+                    answer = await reply.json(content_type=None)
+                except ValueError:
+                    answer = None
+                return reply.status, answer
+
+    # Every image at the size limit, each one refused for its type. The type
+    # is checked only after the whole body is parsed, so that refusal is the
+    # proof the service read the largest message there can be.
+    at_limit = _b64.b64encode(b"x" * svc.MAX_IMAGE_BYTES).decode()
+    largest = json.dumps({"prompt": "two bearings, grouped",
+                          "images": [{"name": f"IMG_{n}.jpg", "media_type": "image/bmp",
+                                      "data": at_limit}
+                                     for n in range(svc.MAX_IMAGES_PER_MESSAGE)]})
+    try:
+        status, answer = await post(largest)
+        check("the largest message the panel may send is read whole",
+              (status, (answer or {}).get("error")), (400, "unsupported image type 'image/bmp'"))
+
+        status, answer = await post(" " * (svc.MAX_SEND_BYTES + 1))
+        check("past the cap, the refusal is a 413", status, 413)
+        truthy("in JSON the panel can show", isinstance(answer, dict) and answer.get("ok") is False)
+        truthy("saying the message is too large",
+               "too large" in str((answer or {}).get("error")))
+
+        status, answer = await post("{not json")
+        check("a body that is not JSON is a 400", status, 400)
+        truthy("also answered in JSON", isinstance(answer, dict) and answer.get("error"))
+    finally:
+        await runner.cleanup()
+
+
+asyncio.run(message_size_checks())
+
 # ------------------------------------------------ transport recovery --------
 # A screenshot-heavy turn produced an NDJSON line over the SDK's 1 MiB default
 # and the transport raised CLIJSONDecodeError mid-build. The turn was caught
@@ -1321,7 +1382,6 @@ async def import_checks():
         route.method == "POST" and route.resource.canonical == "/fusion/import"
         for route in app.router.routes()))
     check("the import cap is 200 MB", svc.MAX_IMPORT_BYTES, 200 * 1024 * 1024)
-    check("JSON requests keep their existing cap", app._client_max_size, 1024 * 1024)
 
     with tempfile.TemporaryDirectory() as d:
         # Resolved: the importer records real paths (so a symlink is not a

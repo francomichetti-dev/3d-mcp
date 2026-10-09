@@ -214,6 +214,10 @@ RESUME_PROMPT = (
     "anything that is already built."
 )
 MAX_IMAGES_PER_MESSAGE = 8
+# The largest /send body the panel may produce: every image at the limit, as
+# base64, plus room for the prompt. aiohttp's default is 1 MB, and three phone
+# photos are past that even after the panel shrinks them (2026-10-09).
+MAX_SEND_BYTES = MAX_IMAGES_PER_MESSAGE * 4 * -(-MAX_IMAGE_BYTES // 3) + 1024 * 1024
 # id shape: <16 hex of the design key>/<32 hex>.<ext> — matched exactly when
 # serving, so a crafted id cannot walk out of the attachments directory.
 # \Z, not $. In Python `$` also matches immediately before a trailing newline,
@@ -1922,7 +1926,19 @@ def _decode_images(raw_images: Any) -> tuple[list[dict[str, Any]], str | None]:
 
 
 async def handle_send(request: web.Request) -> web.Response:
-    body = await request.json()
+    # Answered in JSON, because the panel shows the "error" field. aiohttp's own
+    # 413 is plain text, and the panel used to call it "could not reach".
+    try:
+        body = await request.json()
+    except web.HTTPRequestEntityTooLarge:
+        return web.json_response({"ok": False, "error": (
+            f"the message is too large: the limit is {MAX_SEND_BYTES // (1024 * 1024)} MB. "
+            "Send fewer or smaller images.")}, status=413)
+    except ValueError:
+        return web.json_response({"ok": False, "error": "the message was not valid JSON"},
+                                 status=400)
+    if not isinstance(body, dict):
+        return web.json_response({"ok": False, "error": "malformed message"}, status=400)
     prompt = (body.get("prompt") or "").strip()
     images, error = _decode_images(body.get("images"))
     if error is not None:
@@ -2504,7 +2520,9 @@ async def pin_host(request: web.Request, handler):
 
 
 def build_app(port: int = BIND_PORT) -> web.Application:
-    app = web.Application(middlewares=[pin_host])
+    # The import route streams its upload and has its own cap; this one is for
+    # the bodies read whole, of which /send with photos is the largest.
+    app = web.Application(middlewares=[pin_host], client_max_size=MAX_SEND_BYTES)
     app["allowed_hosts"] = allowed_hosts(port)
     app.router.add_get("/", handle_index)
     app.router.add_get("/thinking-orb-engine.js", handle_orb_engine)

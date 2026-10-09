@@ -397,6 +397,29 @@ truthy('and its inputs are not transparent over the log',
        /#cfg input, #cfg select\s*\{[^}]*background:\s*var\(--panel\)/.test(HTML));
 
 (async () => {
+  // Seen 2026-10-09: the service answered 413 in plain text to a message with
+  // three photos, and the panel said it "could not reach the agent service".
+  // It had reached it. Only a request that never got an answer may say that.
+  console.log('A refused message says why');
+  {
+    const h = start();
+    await flush();
+    h.sandbox.fetch = () => Promise.resolve({
+      ok: false, status: 413, json: () => Promise.reject(new SyntaxError('not JSON')) });
+    h.doc.getElementById('input').value = 'two bearings, grouped';
+    await h.doc.getElementById('send').onclick();
+    const said = h.doc.getElementById('log').textContent;
+    check('an answer is not reported as no answer', said.includes('could not reach'), false);
+    truthy('it gives the status the service answered', said.includes('413'));
+    check('and the message stays in the box to send again',
+          h.doc.getElementById('input').value, 'two bearings, grouped');
+
+    h.sandbox.fetch = () => Promise.reject(new TypeError('Failed to fetch'));
+    await h.doc.getElementById('send').onclick();
+    truthy('no answer at all still says so',
+           h.doc.getElementById('log').textContent.includes('could not reach the agent service'));
+  }
+
   console.log('Dropped CAD files');
   {
     const h = start();
