@@ -700,8 +700,15 @@ def _streak_reset() -> None:
         _streak["failures"] = 0
 
 
-def _streak_after(result: dict[str, Any]) -> None:
-    """Count a modelling call, and nudge on a hard-won success. Never raises."""
+def _streak_after(result: dict[str, Any], reads_only: bool = False) -> None:
+    """Count a modelling call, and nudge on a hard-won success. Never raises.
+
+    A call that only read the design is not part of the count either way:
+    reading the selection between two failed extrudes and the one that works
+    is looking, not fixing (found in review).
+    """
+    if reads_only:
+        return
     try:
         with _streak_lock:
             if not result.get("ok"):
@@ -715,7 +722,7 @@ def _streak_after(result: dict[str, Any]) -> None:
             result["learn"] = (
                 f"That worked after {failed} failed attempts. If what fixed it is "
                 "general, record the quick path so the next session goes straight "
-                "there: fusion_learn(when=\"<what was being attempted>\", "
+                "there: fusion_learn(when=\"<the request, in the person's words>\", "
                 "lesson=\"<what worked>\").")
     except Exception as exc:                              # noqa: BLE001
         log.warning("could not track the success streak: %r", exc)
@@ -916,7 +923,9 @@ def _run_and_report(tool: str, code: str, *, record_code: str,
         extra.update(_recall(result))
     if tool == "fusion_execute" and result.get("ok"):
         _repetition_hint(record_code, result)
-    _streak_after(result)
+    # A read-only fast command runs without the autosave; code that changed
+    # nothing says so in the envelope, when the add-in can tell.
+    _streak_after(result, reads_only=not autosave or result.get("changed") is False)
     _remember(tool, record_code, result, seconds, **extra)
     return _with_screenshot(result, screenshot)
 
@@ -1368,7 +1377,10 @@ def fusion_learn(lesson: str, error: str = "", tags: str = "",
         several attempts. Pass `when`, the request in the words a person would
         use ("delete the one I selected"), and as `lesson` the quick path:
         what to do immediately next time. The panel hands it back with any
-        request like it, and so does fusion_state(query=...).
+        request like it, and so does fusion_state(query=...). It comes back
+        only when most words of `when` are in the new request, so keep it to
+        the action and its object, as the person said it: "delete the one I
+        selected", not "the person refers to their selection".
 
     Record only what you verified (the fix worked), keep it general (true
     beyond this design, so no body names) and actionable ("pick the profile by

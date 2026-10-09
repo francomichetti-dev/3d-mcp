@@ -77,8 +77,16 @@ user with full control, all inherited.
 The experience log, `~/.arges/experience.jsonl`, records every `fusion_execute` call: whether it
 worked, the error if it did not, how long it took, and the first 4,000 characters of the code. That
 is how the tool learns from its own history, and the code in it is design data, so it gets the same
-`0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off. Lessons the
-model records with `fusion_learn` go to `~/.arges/lessons.json`, under the same rules.
+`0600` inside `0700` and is never sent anywhere. `ARGES_EXPERIENCE=0` turns it off.
+
+Lessons and recipes the model records with `fusion_learn` go to `~/.arges/lessons.json`, also
+`0600`. Unlike the log, they are meant to be read back by the model: a lesson rides on a failed
+call's result, and a recipe whose phrasing matches a request is attached to that request in the
+panel. So they reach Anthropic as part of the conversation, the way tool results do. They are text
+the model wrote, so they arrive marked as notes from earlier sessions, not as the person's words:
+each is cut to 400 characters when read, flattened to one line, and stripped of angle brackets, so
+a stored note cannot close that frame and continue as if the person were speaking. A recipe is
+recalled only when one of its recorded phrasings mostly matches the request.
 
 Learned fast commands, saved with `fusion_command_save`, are Python files in `~/.arges/commands/`
 that run inside Fusion when called, with the same privileges as `fusion_execute`. They are code the

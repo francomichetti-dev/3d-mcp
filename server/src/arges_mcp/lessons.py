@@ -84,29 +84,63 @@ def _tags(raw):
 # person said "delete the one I selected", and the recipe that answers it says
 # "remove", so the two shared only "select". Keys and values are stems.
 _SAME = {"delet": "remov", "eras": "remov", "erase": "remov",
-         "highlight": "select", "pick": "select", "chosen": "select"}
+         "highlight": "select", "pick": "select", "chosen": "select",
+         "chos": "select", "choos": "select"}
+# A word after one of these within this many words is something the request
+# says NOT to do, and must not count toward a recipe for doing it.
+_NEGATIONS = frozenset(("not", "never", "without", "dont", "no"))
+_NEGATION_REACH = 3
+
+
+def _stem(word):
+    """One word reduced far enough that "selected", "selection" and "select" meet.
+
+    Deliberately crude: plurals first ("bodies", "boxes"), else one common
+    suffix, then a trailing e, so "delete", "deleted" and "deleting" all
+    become "delet". A stemmer library would be better and would also be a
+    dependency; this is enough to recognise the same request said twice.
+    """
+    if word.endswith(("ies", "ied")) and len(word) > 4:
+        word = word[:-3] + "y"
+    elif word.endswith("es") and word[:-2].endswith(("x", "ss", "sh", "ch", "z")):
+        word = word[:-2]
+    elif not word.endswith(("ss", "us", "is")):
+        for suffix in ("ation", "ions", "ion", "ing", "ed", "s"):
+            if word.endswith(suffix) and len(word) - len(suffix) >= 3:
+                word = word[: -len(suffix)]
+                break
+    if word.endswith("e") and len(word) > 4:
+        word = word[:-1]
+    return _SAME.get(word, word)
 
 
 def _stems(text):
-    """Words reduced far enough that "selected", "selection" and "select" meet.
-
-    Deliberately crude: strip one common suffix, then a trailing e, so
-    "delete", "deleted" and "deleting" all become "delet". A stemmer library
-    would be better and would also be a dependency; this is enough to recognise
-    the same request said twice.
-    """
+    """The content words of `text`, stemmed, minus any it says not to do."""
+    words = _WORD.findall(str(text or "").lower().replace("n't", " not")
+                          .replace("n\u2019t", " not"))
     out = set()
-    for word in _WORD.findall(str(text or "").lower()):
-        if len(word) < 3 or word in _STOP:
+    negated_until = -1
+    for i, word in enumerate(words):
+        if word in _NEGATIONS:
+            negated_until = i + _NEGATION_REACH
             continue
-        for suffix in ("ation", "ions", "ion", "ing", "ed", "es", "s"):
-            if word.endswith(suffix) and len(word) - len(suffix) >= 4:
-                word = word[: -len(suffix)]
-                break
-        if word.endswith("e") and len(word) > 4:
-            word = word[:-1]
-        out.add(_SAME.get(word, word))
+        if i <= negated_until or len(word) < 3 or word in _STOP:
+            continue
+        out.add(_stem(word))
     return out
+
+
+def _applies(phrase, wanted):
+    """How many of a phrasing's words the request shares, or 0 if too few.
+
+    Each phrasing is judged on its own, and must be mostly present: at least
+    two of its words and at least half of them. A word from one phrasing and
+    another from the lesson's text is how "measure the selected body" once
+    recalled the recipe for deleting it (found in review).
+    """
+    words = _stems(phrase)
+    shared = len(words & wanted)
+    return shared if shared >= max(2, -(-len(words) // 2)) else 0
 
 
 def _when(raw):
@@ -175,20 +209,26 @@ class Lessons:
     def matching(self, text, limit=RECALL_LIMIT):
         """Lessons that fit a request, by the words it shares with them.
 
-        What a recipe says it answers (`when`) counts double: those phrasings
-        were written to be matched against requests like this one. Two shared
-        words at least, or a single word would recall half the store.
+        A recipe applies when one of its phrasings (`when`) does; its text
+        only ranks the recipes that apply. A lesson with no phrasings has only
+        its text, so it needs three shared words: two would bring back every
+        lesson that mentions a profile and a sketch. A wrong recall is worse
+        than none, since the model is told to use it.
         """
         wanted = _stems(text)
         if not wanted:
             return []
         scored = []
         for item in self.all():
-            when = wanted & _stems(" ".join(item.get("when") or []))
-            said = wanted & _stems(item.get("lesson"))
-            if len(when | said) < 2:
-                continue
-            scored.append((2 * len(when) + len(said), item))
+            said = len(wanted & _stems(item.get("lesson")))
+            phrasings = item.get("when") or []
+            if phrasings:
+                fit = max(_applies(phrase, wanted) for phrase in phrasings)
+                if not fit:
+                    continue
+                scored.append((2 * fit + said, item))
+            elif said >= 3:
+                scored.append((said, item))
         scored.sort(key=lambda pair: (-pair[0],) + _rank(pair[1]))
         return [item for _, item in scored[:limit]]
 

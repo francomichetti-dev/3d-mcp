@@ -136,9 +136,9 @@ store = ls.Lessons(SANDBOX / "recipes" / "lessons.json")
 RECIPE = ("Read ui.activeSelections (fusion_run('selection')): a selected face or edge "
           "belongs to entity.body. Remove reversibly with removeFeatures "
           "(fusion_run('remove', {'selection': true})).")
-added = store.add(RECIPE, when="the person refers to the one they selected")
+added = store.add(RECIPE, when="delete the one I selected")
 check("a recipe is stored with what it answers",
-      store.all()[0]["when"], ["the person refers to the one they selected"])
+      store.all()[0]["when"], ["delete the one I selected"])
 check("it is a general lesson, not tied to an error", added["sig"], "")
 
 found = store.matching("the one that ive selected, we need to delete")
@@ -162,6 +162,47 @@ check("what rides on a result says when it applies",
       ls.brief(store.all()[0]).get("when"), store.all()[0]["when"])
 check("an unreadable store matches nothing, without raising",
       ls.Lessons(SANDBOX / "nowhere" / "x" / "lessons.json").matching("delete the selected"), [])
+
+# A recipe recalled for the wrong request is worse than none: it tells the
+# model to do something nobody asked for. The review that found these matched
+# "measure the selected body" to the deletion recipe, through "select" in its
+# phrasing and "body" in its text. What a recipe answers is decided by its
+# phrasings alone, each on its own; its text only ranks the ones that apply.
+print("Recipes: never recalled for a different request")
+store = ls.Lessons(SANDBOX / "recipes-strict" / "lessons.json")
+delete = store.add(RECIPE, when=["delete the one I selected",
+                                 "the one I selected, we need to delete",
+                                 "remove what is highlighted"])
+ids = lambda text: [l["id"] for l in store.matching(text)]
+check("measuring the selection is not deleting it", ids("measure the selected body"), [])
+check("nor is copying it", ids("copy the selected body"), [])
+check("nor is a phrasing's word plus a word of the text",
+      ids("move the selected body up 5 mm"), [])
+check("a request that says not to does not get the recipe for doing it",
+      ids("do not delete the selected body"), [])
+check("nor does one that says don't",
+      ids("don't remove the highlighted parts yet"), [])
+check("a negation elsewhere in the request does not hide the match",
+      ids("don't ask which one, just delete what I selected"), [delete["id"]])
+check("the past tense of choosing is still selecting",
+      ids("delete what I chose"), [delete["id"]])
+check("and so is choosing", ids("erase the ones I am choosing"), [delete["id"]])
+check("a phrasing that shares one word recalls nothing, however long the request",
+      ids("select the hole and make it bigger, then check the selected faces"), [])
+
+store.add("Copy them with fusion_import(from_document=...): geometry without history.",
+          when="copy bodies from another tab")
+copy = store.all()[-1]
+check("plural and singular are the same word", ids("copy the body from the other tab"),
+      [copy["id"]])
+store.add("Box: one sketch rectangle, one extrude.", when="make boxes in a grid")
+check("boxes and box meet", ids("make a box grid"), [store.all()[-1]["id"]])
+store.add(PROFILE_FIX, error=PROFILE_TB)
+check("a plain lesson needs three shared words to be recalled by a request",
+      [l["lesson"] for l in store.matching("pick a profile")], [])
+check("and with them it still is",
+      [l["lesson"] for l in store.matching("which profile do I pick, by area or by index")],
+      [PROFILE_FIX])
 
 
 # ------------------------------------------------- shared between processes --
@@ -330,9 +371,9 @@ try:
 
     # Recipes through the tools: recorded with `when`, recalled by fusion_state
     # with the person's request as the query.
-    recipe = srv.fusion_learn(lesson=RECIPE, when="the person refers to the one they selected")
+    recipe = srv.fusion_learn(lesson=RECIPE, when="delete the one I selected")
     check("fusion_learn records a recipe", (recipe["ok"], recipe["when"]),
-          (True, ["the person refers to the one they selected"]))
+          (True, ["delete the one I selected"]))
 
     def state_bridge_q(method, path, payload=None):
         if path == "/health":
@@ -363,6 +404,29 @@ try:
            "2 failed attempts" in out.get("learn", "") and "when=" in out.get("learn", ""))
     out = srv.fusion_execute(code="d()")
     check("once: the next success is ordinary again", "learn" in out, False)
+
+    # Looking is not fixing. After two failed extrudes the model often reads
+    # the selection or the boxes before trying again; that read succeeding
+    # said "That worked after 2 failed attempts" and reset the count, so the
+    # extrude that finally worked got no nudge (found in review).
+    srv._streak_reset()
+    srv._bridge_request = bridge_answering({"ok": False, "traceback": PROFILE_TB, "stdout": ""})
+    srv.fusion_execute(code="a()")
+    srv.fusion_execute(code="a()")
+    srv._bridge_request = bridge_answering({"ok": True, "result": {}, "stdout": ""})
+    out = srv.fusion_run(command="bbox")
+    check("a read-only command between failures claims nothing", "learn" in out, False)
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": "",
+                                            "changed": False})
+    out = srv.fusion_execute(code="print(len(design.rootComponent.bRepBodies))")
+    check("nor does code that changed nothing", "learn" in out, False)
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": "",
+                                            "changed": True})
+    out = srv.fusion_execute(code="extrude()")
+    truthy("the change that finally worked still gets the nudge",
+           "2 failed attempts" in out.get("learn", ""))
+    truthy("asking for the request in the person's words",
+           "person's words" in out.get("learn", ""))
 
     # fusion_state is what a session reads first, so it is where the lessons
     # that have no error to trigger them get seen at all.
