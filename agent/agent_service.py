@@ -1609,6 +1609,13 @@ class Registry:
                 log.warning("chat sessions fall back to the bundled CLI")
                 self.cli_path = cli
             if found:
+                # Held on to before the list changes. The CLI's order is the
+                # account's and changes between two starts (Mythos 5.1 went
+                # from last to first on 2026-10-09); the model in use must not
+                # change with it. Picking another in the panel is how it does.
+                if "model" not in self.store.data:
+                    self.store.data["model"] = self.model()
+                    self.store.save()
                 self.catalog.update(found, cli=cli or "bundled")
                 log.info("models offered: %s", ", ".join(
                     f"{m['label']} ({m['id']})" for m in found))

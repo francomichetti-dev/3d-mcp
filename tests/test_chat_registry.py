@@ -1313,6 +1313,45 @@ async def refresh_checks():
 asyncio.run(refresh_checks())
 
 
+# Seen 2026-10-09: the same CLI, restarted in the afternoon, listed Mythos 5.1
+# first instead of last. The order is the account's, not the person's, and the
+# panel had been taking its first entry as the model whenever none was chosen.
+# One restart would have moved the next message to a model nobody picked.
+async def reorder_checks():
+    with tempfile.TemporaryDirectory() as d:
+        r = fresh_registry(d)
+        r.publish = lambda event: None
+        r.catalog.update(models, cli="x")
+        check("before: nothing chosen, the panel runs the first model", r.model(), "opus")
+
+        mythos = {"id": "claude-mythos-5-1", "label": "Mythos 5.1", "description": "",
+                  "efforts": ["low", "medium", "high", "xhigh", "max"]}
+        offered = [mythos] + models
+
+        async def probe(cli):
+            return offered
+
+        real_probe = svc.probe_models
+        svc.probe_models = probe
+        try:
+            await r.refresh_models()
+            check("a list in another order does not change the model", r.model(), "opus")
+            check("the new list is still offered", r.catalog.ids()[0], "claude-mythos-5-1")
+            check("and the model held on to is saved, so a restart keeps it",
+                  svc.Store(Path(d) / "chats.json").data.get("model"), "opus")
+
+            # Picking it in the panel is how the model changes.
+            await r.apply_settings(model="claude-mythos-5-1")
+            await r.refresh_models()
+            check("a model the person picked survives the next probe",
+                  r.model(), "claude-mythos-5-1")
+        finally:
+            svc.probe_models = real_probe
+
+
+asyncio.run(reorder_checks())
+
+
 # ----------------------------------------------- the Save button's file ----
 # The button shares the mirror with the autosave, and with it the rule that
 # destroyed a real file once: a save goes to "<folder>/<document>.f3d" only if
