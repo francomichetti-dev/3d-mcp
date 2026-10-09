@@ -397,6 +397,115 @@ truthy('and its inputs are not transparent over the log',
        /#cfg input, #cfg select\s*\{[^}]*background:\s*var\(--panel\)/.test(HTML));
 
 (async () => {
+  console.log('Dropped CAD files');
+  {
+    const h = start();
+    await flush();
+    h.sent.length = 0;
+    const step = { name: 'motor.step', type: '', size: 3 };
+    let finish;
+    h.sandbox.fetch = (url, opts) => {
+      h.sent.push({ url, opts });
+      return new Promise((res) => { finish = () => res({
+        ok: true, json: () => Promise.resolve({ ok: true, occurrences: ['motor:1'],
+          measured: { 'motor:1': { bodies: 2, size_mm: [42, 30, 30] } } }) }); });
+    };
+    h.fire('drop', { dataTransfer: { types: ['Files'], files: [step] } });
+    await flush();
+    check('a STEP drop uploads raw bytes to the importer',
+          h.sent.map((s) => s.url), ['/fusion/import?name=motor.step']);
+    check('the upload is a POST', h.sent[0]?.opts.method, 'POST');
+    check('the body is the file itself', h.sent[0]?.opts.body, step);
+    check('CAD files never enter the image tray', h.doc.getElementById('tray').children.length, 0);
+    truthy('the person sees the import start', h.doc.getElementById('log').textContent.includes('Importing motor.step…'));
+    finish(); await flush();
+    check('the HTTP result fills the status line', h.doc.getElementById('log').children.at(-1).textContent,
+          'Imported motor.step as motor:1 — 42 × 30 × 30 mm');
+    const lineCount = h.doc.getElementById('log').children.length;
+    h.deliver({ type: 'import', doc: 'design-1', file: 'motor.step', ok: true,
+                occurrences: ['motor:1'], measured: { 'motor:1': { bodies: 2, size_mm: [42, 30, 30] } } });
+    check('a delayed event does not duplicate the result line', h.doc.getElementById('log').children.length, lineCount);
+
+    h.fire('drop', { dataTransfer: { types: ['Files'], files: [png] } });
+    await flush();
+    check('an image still enters the tray', h.doc.getElementById('tray').children.length, 1);
+    check('an image makes no CAD request', h.sent.length, 1);
+    h.fire('drop', { dataTransfer: { types: ['Files'], files: [{ name: 'notes.txt', type: 'text/plain' }] } });
+    truthy('unsupported files say why', h.doc.getElementById('log').textContent.includes(
+      'notes.txt is not an image or a CAD file Fusion can import.'));
+
+    h.deliver({ type: 'document', key: 'design-1', name: 'tower', design: true,
+                transcript: [], plan: [], busy: true });
+    h.sent.length = 0;
+    h.fire('drop', { dataTransfer: { types: ['Files'], files: [step] } });
+    await flush();
+    check('a drop during a reply never uploads', h.sent.length, 0);
+    truthy('and says when to try again', h.doc.getElementById('log').textContent.includes(
+      'Wait for the current reply to finish, then drop motor.step again.'));
+  }
+  {
+    const h = start();
+    h.deliver({ type: 'import', doc: 'design-1', ok: true, file: 'motor.step',
+                occurrences: ['motor:1'], measured: { 'motor:1': { bodies: 2, size_mm: [42, 30, 30] } } });
+    const line = h.doc.getElementById('log').children.at(-1);
+    check('an import event says what arrived', line.textContent,
+          'Imported motor.step as motor:1 — 42 × 30 × 30 mm');
+    truthy('the import line is quiet like a notice', line.classList.contains('notice'));
+    h.deliver({ type: 'import', doc: 'design-1', ok: false, file: 'motor.step',
+                error: 'motor:1 is already in this design.' });
+    check('a refused import explains why', h.doc.getElementById('log').children.at(-1).textContent,
+          'Could not import motor.step: motor:1 is already in this design.');
+  }
+  {
+    const h = start();
+    await flush();
+    h.sent.length = 0;
+    let finish;
+    h.sandbox.fetch = (url, opts) => {
+      h.sent.push({ url, opts });
+      return new Promise((res) => { finish = () => res({ ok: true,
+        json: () => Promise.resolve({ ok: true, occurrences: ['motor:1'], measured: {} }) }); });
+    };
+    const drop = (name) => h.fire('drop', { dataTransfer: { types: ['Files'], files: [{ name, type: '' }] } });
+    drop('motor.STEP');
+    await flush();
+    drop('wheel.stl');
+    await flush();
+    check('separate drops share one upload queue', h.sent.length, 1);
+    check('extension matching ignores case', h.sent[0].url, '/fusion/import?name=motor.STEP');
+    h.deliver({ type: 'import', doc: 'design-1', file: 'motor.STEP', ok: true,
+                occurrences: ['motor:1'], measured: {} });
+    const count = h.doc.getElementById('log').children.length;
+    finish(); await flush();
+    check('the next file starts only after the first finishes', h.sent.length, 2);
+    check('an event before the HTTP response also fills one line',
+          h.doc.getElementById('log').children.length, count + 1);
+    finish(); await flush();
+    h.sandbox.fetch = (url, opts) => {
+      h.sent.push({ url, opts });
+      return Promise.resolve({ ok: false, status: 502,
+        json: () => Promise.resolve({ ok: false, error: 'Fusion is not reachable' }) });
+    };
+    drop('failed.step'); await flush();
+    check('the HTTP error is readable even without an event',
+          h.doc.getElementById('log').children.at(-1).textContent,
+          'Could not import failed.step: Fusion is not reachable');
+  }
+  {
+    const h = start();
+    await flush();
+    h.sent.length = 0;
+    h.fire('paste', { clipboardData: { files: [{ name: 'part.stp', type: '' }] } });
+    await flush();
+    check('a pasted CAD file uses the same importer', h.sent[0].url, '/fusion/import?name=part.stp');
+    const picker = h.doc.getElementById('file');
+    picker.files = [{ name: 'picked.iges', type: '' }];
+    picker.onchange(); await flush();
+    check('a picked CAD file uses the same importer', h.sent[1].url, '/fusion/import?name=picked.iges');
+  }
+  truthy('the picker accepts images and STEP', /id="file"[^>]*accept="image\/\*[^" ]*\.step/.test(HTML));
+  truthy('the attach title mentions CAD files', /id="attach"[^>]*title="[^"]*CAD/.test(HTML));
+
   {
     const h = harnessWithReplies({
       '/fusion/config': { ok: true, save_dir: '/Users/x/Downloads', format: 'step',

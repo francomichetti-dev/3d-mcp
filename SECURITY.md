@@ -34,6 +34,7 @@ There is exactly one, and it is the reason the above is tolerable:
 | --- | --- |
 | Bind address | `127.0.0.1` only, never `0.0.0.0`. Not reachable from your LAN. Both the Fusion listener (`7654`) and the Rhino broker (`7656`). |
 | Host header | Requests must carry a `Host` matching the service's own loopback address and port, so a browser on another site cannot drive it via DNS rebinding. On all three listeners: the Fusion bridge (`7654`), the chat service (`7655`) and the Rhino broker (`7656`). The chat service matters most and had it last — it holds the token and forwards to the bridge, so anything reaching it gets authenticated code execution without needing the token at all. |
+| Origin header | The chat service also refuses any request whose `Origin` is not its own. Without a rebinding at all, any page open in a browser can POST straight to `127.0.0.1:7655`, and that request carries the right `Host`; a plain-text body needs no preflight, and the service parses it as JSON regardless. A browser always sends `Origin` on a cross-site POST, so a foreign or `null` one is refused and logged. A request with no `Origin` is not from a browser page. Found while adding the CAD drop, which would otherwise have let any page import a file into the open design. |
 | Token | 64 hex chars generated at install, sent as `X-Arges-Bridge-Token`, compared with `hmac.compare_digest`. Stored `0600` in `~/.arges/`, which is `0700`. |
 | Fail closed | No token file, an empty one, or one that is only whitespace, and nothing is served. The Fusion add-in refuses to start and says so; the broker starts but answers every request `503`. Emptiness is checked explicitly, because `compare_digest(b"", b"")` is true — a truncated token file must not authorise a caller who presents nothing. |
 | Request cap | Body limited to 5 MB and at most 8 concurrent connections — on the Fusion listener and the Rhino broker alike, a connection past the cap is refused with `503` rather than given a thread. One job runs in the CAD at a time on both sides. |
@@ -94,6 +95,12 @@ model wrote, kept `0600`, and run only when called by name. A command's argument
 and are never spliced into its source. The chat panel gates `fusion_run` by the command's source,
 exactly as it gates `fusion_execute` by its code. Without that, saving a destructive snippet under
 a name would be a way around the gate.
+
+A CAD file dropped on the panel is copied to `~/.arges/imports/<hash of its contents>/<its name>`
+(folders `0700`, file `0600`; the name is reduced to a safe file name and can never pick the
+folder), at most 200 MB, streamed to disk, and removed again if it goes over. The bytes go to
+Fusion as a local file, never to Anthropic; the model is told the file's name and what arrived.
+`scripts/uninstall.sh --purge` removes the copies with the rest.
 
 `fusion_import` reads a file into Fusion and never writes to it. With no path it lists the CAD
 files at the top of the save folder, Downloads, Desktop and Documents. It reads nothing beyond

@@ -18,6 +18,10 @@ sys.path.insert(0, str(REPO_ROOT / "agent"))
 
 import agent_service as svc  # noqa: E402
 
+# Turn tests must never recall lessons from a person's real modelling sessions.
+_test_state = tempfile.TemporaryDirectory()
+svc.fusion_common.state_dir = lambda: Path(_test_state.name)
+
 PASS = FAIL = 0
 
 
@@ -334,11 +338,14 @@ async def rebinding_checks():
         port = probe.getsockname()[1]
     await web.TCPSite(runner, "127.0.0.1", port).start()
 
-    async def post(host, content_type):
+    async def post(host, content_type, origin=None, path="/send"):
+        headers = {"Content-Type": content_type, "Host": host}
+        if origin is not None:
+            headers["Origin"] = origin
         async with ClientSession() as session:
             async with session.post(
-                    f"http://127.0.0.1:{port}/send", data='{"prompt":"x"}',
-                    headers={"Content-Type": content_type, "Host": host}) as reply:
+                    f"http://127.0.0.1:{port}{path}", data='{"prompt":"x"}',
+                    headers=headers) as reply:
                 return reply.status
 
     try:
@@ -362,6 +369,26 @@ async def rebinding_checks():
         for host in ("127.0.0.1:7655", "localhost:7655"):
             status = await post(host, "application/json")
             check(f"the panel's own Host ({host}) is not blocked", status != 403, True)
+
+        # The other half: no rebinding at all. Any page the person has open can
+        # POST straight to http://127.0.0.1:7655, and that request carries the
+        # right Host. Only its Origin gives it away, and a browser always sends
+        # one on a cross-site POST. text/plain needs no preflight, and a dropped
+        # CAD file is just bytes.
+        for path in ("/send", "/fusion/import?name=x.stl", "/fusion/save"):
+            check(f"a page on another site cannot POST to {path.split('?')[0]}",
+                  await post("127.0.0.1:7655", "text/plain", "https://evil.example.com", path), 403)
+        check("nor can a sandboxed or file page (Origin: null)",
+              await post("127.0.0.1:7655", "text/plain", "null"), 403)
+        check("nor the right host on another port as the origin",
+              await post("127.0.0.1:7655", "text/plain", "http://127.0.0.1:9999"), 403)
+        for origin in ("http://127.0.0.1:7655", "http://localhost:7655"):
+            status = await post("127.0.0.1:7655", "application/json", origin)
+            check(f"the panel's own origin ({origin}) is not blocked", status != 403, True)
+        # curl, the scripts and the tests send no Origin; they are not a page
+        # that could have been tricked into sending this.
+        check("a request with no Origin is not a browser's, and is not blocked",
+              await post("127.0.0.1:7655", "application/json") != 403, True)
     finally:
         await runner.cleanup()
 
@@ -1274,6 +1301,282 @@ async def save_button_checks():
 
 
 asyncio.run(save_button_checks())
+
+
+# ---------------------------------------------------- dropped CAD files ----
+# Importing changes the live design before the next prompt. Both the person
+# and the model need the outcome, and a running turn must keep its design still.
+print("Dropped CAD files")
+
+
+async def import_checks():
+    import hashlib
+
+    handler = getattr(svc, "handle_fusion_import", None)
+    truthy("the panel has an import endpoint", handler is not None)
+    if handler is None:
+        return
+    app = svc.build_app(7655)
+    truthy("the import endpoint is routed", any(
+        route.method == "POST" and route.resource.canonical == "/fusion/import"
+        for route in app.router.routes()))
+    check("the import cap is 200 MB", svc.MAX_IMPORT_BYTES, 200 * 1024 * 1024)
+    check("JSON requests keep their existing cap", app._client_max_size, 1024 * 1024)
+
+    with tempfile.TemporaryDirectory() as d:
+        # Resolved: the importer records real paths (so a symlink is not a
+        # second identity), and on macOS the temp folder is a symlink itself.
+        state = Path(d).resolve() / "state"
+        r = fresh_registry(d)
+        active = {"key": "doc:mine", "name": "tower", "design": True}
+        r.current = active
+        events, calls, prompts = [], [], []
+        r.publish = events.append
+
+        async def resolve():
+            return active
+
+        async def pin(key):
+            pass
+
+        r.resolve_active, r.pin = resolve, pin
+        session = svc.Session("doc:mine", "tower", r)
+        r.sessions[session.key] = session
+        session.ready.set()
+
+        class Client:
+            async def query(self, prompt):
+                prompts.append(prompt)
+
+            async def receive_response(self):
+                if False:
+                    yield
+
+        session.client = Client()
+        measured = {"motor:1": {"bodies": 2, "meshes": 0, "size_mm": [42, 30, 30]}}
+        outcome = {"ok": True, "occurrences": ["motor:1"]}
+
+        async def bridge(code, timeout=120.0):
+            line = [line for line in code.splitlines() if line.startswith("_fx_params = ")][-1]
+            literal = line[len("_fx_params = _fx_json.loads("):-1]
+            params = json.loads(json.loads(literal))
+            calls.append((code, params))
+            return dict(outcome) if "_fx_import(" in code else dict(measured)
+
+        class Content:
+            async def iter_chunked(self, size):
+                for chunk in self.chunks:
+                    yield chunk
+
+        async def upload(name="motor.step", chunks=(b"CAD",), units=None):
+            content = Content()
+            content.chunks = chunks
+            query = {"name": name}
+            if units is not None:
+                query["units"] = units
+            request = type("R", (), {"app": {"registry": r}, "query": query,
+                                      "content": content})()
+            reply = await handler(request)
+            return reply.status, json.loads(reply.text)
+
+        real_bridge, real_state = svc._bridge_execute, svc.STATE_DIR
+        svc._bridge_execute, svc.STATE_DIR = bridge, state
+        try:
+            status, body = await upload(chunks=(b"C", b"AD"))
+            check("a STEP upload succeeds", status, 200)
+            check("the response includes the measured geometry", body,
+                  {"ok": True, "occurrences": ["motor:1"], "measured": measured})
+            target = Path(calls[0][1]["path"])
+            check("stored under its content hash", target,
+                  state / "imports" / hashlib.sha256(b"CAD").hexdigest()[:16] / "motor.step")
+            check("raw bytes survive streaming", target.read_bytes(), b"CAD")
+            check("the CAD copy is private", stat.S_IMODE(target.stat().st_mode), 0o600)
+            check("both import directories are private",
+                  [stat.S_IMODE(p.stat().st_mode) for p in (target.parent, target.parent.parent)],
+                  [0o700, 0o700])
+            check("the importer gets the shared parameters", calls[0][1],
+                  svc.fusion_common.import_params(target, "step", "motor", "mm", False))
+            check("measuring is a separate call", calls[1][1], {"occurrences": ["motor:1"]})
+            check("the import is announced on the right design", events[-1],
+                  dict(type="import", doc=session.key, file="motor.step", **body))
+            r.flush()
+            check("the import survives transcript replay",
+                  svc.Store(r.store.path).get(session.key)["transcript"][-1], events[-1])
+
+            await session.emit({"type": "user", "text": "put it here"})
+            await session.run_turn("put it here")
+            await session.run_turn("join it")
+            truthy("the next SDK prompt names the file and component",
+                   "dropped motor.step" in prompts[0] and "motor:1" in prompts[0])
+            truthy("the next SDK prompt names the bodies and live size",
+                   "2 bodies" in prompts[0] and "42 x 30 x 30 mm" in prompts[0])
+            check("the note is consumed exactly once", prompts[1], "join it")
+            check("the stored user text stays as typed", r.store.get(session.key)["transcript"][-1]["text"],
+                  "put it here")
+
+            calls.clear()
+            await upload()
+            check("the same bytes get the same source path", calls[0][1]["path"], str(target))
+            for name in ("../../x.step", ".hidden.stl", "x" * 500 + ".step", "..\\..\\x.step"):
+                calls.clear()
+                await upload(name)
+                path = Path(calls[0][1]["path"])
+                truthy("a hostile name stays under imports", path.is_relative_to(state / "imports"))
+                truthy("a hostile name has a safe leaf", not path.name.startswith(".")
+                       and len(path.name.encode()) <= 160 and "\\" not in path.name)
+                check("a hostile name keeps its extension", path.suffix, Path(name).suffix)
+                check("the event keeps the person's filename", events[-1]["file"], name)
+            calls.clear()
+            status, body = await upload("readme.txt")
+            check("unsupported extensions are a 400", status, 400)
+            truthy("the error lists the accepted formats", all(
+                ext in body["error"] for ext in svc.fusion_common.IMPORT_FORMATS))
+            check("a bad format never reaches Fusion", calls, [])
+            check("invalid mesh units are a 400", (await upload(units="yards"))[0], 400)
+            await upload("mesh.stl", units="in")
+            check("mesh units reach the importer", calls[0][1]["units"], "in")
+
+            session.busy = True
+            status, body = await upload()
+            check("a running turn refuses the drop", status, 409)
+            check("with the wait guidance", body["error"],
+                  "Wait for the current reply to finish, then drop the file again.")
+            session.busy = False
+            active = None
+            check("no open design is a 409", (await upload())[0], 409)
+            r.bridge_ok = False
+            status, body = await upload()
+            check("an unreachable Fusion is a 409", status, 409)
+            truthy("with the same setup guidance as Send", "Utilities → Add-Ins → Arges → Run" in body["error"])
+            active = r.current
+            r.bridge_ok = True
+
+            outcome = {"ok": False, "error": svc.fusion_common.IMPORT_REFUSED.format(reason="expired")}
+            calls.clear()
+            status, body = await upload()
+            check("a refusal reports failure", body["ok"], False)
+            check("the refusal keeps the shared guidance", body["error"], outcome["error"])
+            check("a refusal reports no arrivals", body["occurrences"], [])
+            check("a refusal never measures", len(calls), 1)
+            check("a refusal emits an import event", events[-1]["type"], "import")
+            check("a refusal event carries the error", events[-1]["error"], outcome["error"])
+            await session.run_turn("try again")
+            truthy("a refusal also reaches the model", "Fusion refused it:" in prompts[-1])
+            outcome = {"ok": False, "traceback": "motor:1 is already in this design.\nUse allow_duplicate=true."}
+            check("the duplicate guard's text is readable", (await upload())[1]["error"], outcome["traceback"])
+            # What the bridge really sends: a whole traceback, whose first line
+            # says nothing. The message is the exception's, which can run over
+            # two lines, as the duplicate guard's does.
+            outcome = {"ok": False, "traceback": (
+                "Traceback (most recent call last):\n"
+                '  File "<fusion_execute>", line 40, in <module>\n'
+                '  File "<fusion_execute>", line 31, in _fx_import\n'
+                "RuntimeError: motor:1 is already in this design.\n"
+                "This would be a second copy of something already in the design.")}
+            body = (await upload())[1]
+            check("a real traceback reaches the panel as its message",
+                  body["error"], "motor:1 is already in this design.\n"
+                                 "This would be a second copy of something already in the design.")
+            truthy("and the model gets the message, not 'Traceback'",
+                   "already in this design" in session.import_notes[-1]
+                   and "Traceback" not in session.import_notes[-1])
+            outcome = {"ok": True, "occurrences": []}
+            calls.clear()
+            await upload()
+            check("nothing arriving means no measure call", len(calls), 1)
+
+            async def broken_bridge(code, timeout=120.0):
+                raise RuntimeError("bridge connection broke")
+
+            svc._bridge_execute = broken_bridge
+            status, body = await upload()
+            check("an exception from the bridge becomes a 502", status, 502)
+            truthy("and stays readable", "bridge connection broke" in body["error"])
+            check("an exception is announced too", events[-1]["ok"], False)
+
+            svc._bridge_execute = bridge
+            outcome = {"ok": True, "occurrences": ["motor:1"]}
+            calls.clear()
+            measured = {"ok": False, "error": "measurement bridge failed"}
+            status, body = await upload()
+            check("a measurement bridge failure also becomes a 502", status, 502)
+            truthy("a failed measurement says geometry already arrived", "Imported as motor:1, but measuring failed" in body["error"])
+            check("a failed measurement is announced", events[-1]["ok"], False)
+            check("a failed measurement still names the geometry that arrived", body["occurrences"], ["motor:1"])
+            await session.run_turn("position it anyway")
+            truthy("the model knows a measurement failure left geometry in the design",
+                   "The geometry arrived" in prompts[-1])
+            measured = {"motor:1": {"bodies": 2, "meshes": 0, "size_mm": [42, 30, 30]}}
+
+            # These snippets must refuse before touching geometry if a tab
+            # switches in the gap after /document answered.
+            code = calls[0][0]
+            design = type("D", (), {"attributes": type("A", (), {
+                "itemByName": lambda *args: type("Mark", (), {"value": "doc:other"})()})()})()
+            env = {"app": type("App", (), {"activeDocument": type("Doc", (), {"name": "other"})(),
+                                           "activeProduct": design})(),
+                   "adsk": type("Adsk", (), {"fusion": type("Fusion", (), {
+                       "Design": type("Design", (), {"cast": staticmethod(lambda value: value)})})()})()}
+            error = None
+            try:
+                exec(code, env)
+            except RuntimeError as exc:
+                error = str(exc)
+            check("a tab switch inside the bridge refuses before import", error,
+                  "The active design changed — drop the file again.")
+
+            calls.clear()
+            resolutions = 0
+
+            async def switched():
+                nonlocal resolutions
+                resolutions += 1
+                return active if resolutions == 1 else dict(active, key="doc:other")
+
+            r.resolve_active = switched
+            status, body = await upload()
+            check("a tab switch during upload is a 409", status, 409)
+            check("a tab switch during upload never imports", calls, [])
+            r.resolve_active = resolve
+
+            # A prompt arriving during a slow upload must wait for the outcome
+            # and see its note, rather than start against half-imported geometry.
+            started, release = asyncio.Event(), asyncio.Event()
+
+            async def slow_bridge(code, timeout=120.0):
+                if "_fx_import(" in code:
+                    started.set()
+                    await release.wait()
+                return await bridge(code, timeout)
+
+            svc._bridge_execute = slow_bridge
+            task = asyncio.create_task(upload())
+            await asyncio.wait_for(started.wait(), timeout=3)
+            before = len(prompts)
+            turn = asyncio.create_task(session.run_turn("position it"))
+            await asyncio.sleep(0)
+            check("a new turn waits while an import is in flight", len(prompts), before)
+            check("a second import refuses while the first holds the design", (await upload())[0], 409)
+            release.set()
+            await asyncio.wait_for(task, timeout=3)
+            await asyncio.wait_for(turn, timeout=3)
+            truthy("the waiting prompt sees what arrived", "dropped motor.step" in prompts[-1])
+
+            svc.STATE_DIR = Path(d) / "oversize"
+            real_cap = svc.MAX_IMPORT_BYTES
+            svc.MAX_IMPORT_BYTES = 4
+            try:
+                status, body = await upload(chunks=(b"1234", b"5"))
+            finally:
+                svc.MAX_IMPORT_BYTES = real_cap
+            check("the streaming cap returns 413", status, 413)
+            check("an oversize upload leaves no file behind", [
+                p for p in svc.STATE_DIR.rglob("*") if p.is_file()], [])
+        finally:
+            svc._bridge_execute, svc.STATE_DIR = real_bridge, real_state
+
+
+asyncio.run(import_checks())
 
 
 # --------------------------------------------- restarting without harm ----

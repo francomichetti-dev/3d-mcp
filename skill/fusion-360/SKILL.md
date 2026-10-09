@@ -125,6 +125,12 @@ Importing the same file or tab twice is refused (copies stack invisibly at
 the origin); pass `allow_duplicate=true` only when a second copy is wanted.
 Never search the disk with a shell, and never write to the person's files.
 
+In the panel, the person can also drop a file on the chat. It is imported at
+once, and their next message arrives with a note saying what arrived ("imported
+as component motor:1: 2 bodies, 42 x 30 x 30 mm") or why Fusion refused it.
+That component is already in the design: position or join it as asked, and
+never import it again.
+
 ## Injected names
 
 `adsk` (with `adsk.core` and `adsk.fusion` imported), `app`, `ui`, `design` —

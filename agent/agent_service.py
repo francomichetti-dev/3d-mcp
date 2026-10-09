@@ -121,6 +121,7 @@ ALLOWED_IMAGE_TYPES = {
 # Anthropic rejects images over 5 MB. The panel downscales before uploading, so
 # reaching this means something genuinely oversized arrived.
 MAX_IMAGE_BYTES = 5 * 1024 * 1024
+MAX_IMPORT_BYTES = 200 * 1024 * 1024
 
 # Ceiling on one NDJSON line from the CLI. The SDK's own default is 1 MiB
 # and a screenshot-heavy turn goes past it; the add-in already refuses a
@@ -234,7 +235,7 @@ MAX_DESIGNS = 50
 MAX_TRANSCRIPT_EVENTS = 400
 # Events worth replaying when the panel switches back to a design. Excludes
 # turn_end, thinking and permission prompts, which only mean something live.
-PERSISTED_EVENTS = frozenset(("user", "text", "tool", "error", "notice"))
+PERSISTED_EVENTS = frozenset(("user", "text", "tool", "error", "notice", "import"))
 
 log = logging.getLogger("fusion-chat")
 
@@ -740,6 +741,7 @@ class Session:
         self.ready = asyncio.Event()
         self.start_error: str | None = None
         self.busy = False
+        self.import_notes: list[str] = []
         # Consecutive transport failures. Reset by any turn that reaches
         # the model at all, so an isolated blip never counts toward the
         # give-up threshold.
@@ -1140,7 +1142,10 @@ class Session:
             try:
                 # The note goes to the model only; the transcript already holds
                 # the person's words exactly as they typed them.
-                send_prompt, send_images = prompt + recall_note(prompt), images or []
+                notes = getattr(self, "import_notes", [])
+                send_prompt = prompt + recall_note(prompt) + "".join(notes)
+                notes.clear()
+                send_images = images or []
                 while True:
                     heard_from_model = False
                     try:
@@ -1507,7 +1512,7 @@ class Registry:
     async def resolve_active(self) -> dict[str, Any] | None:
         """The active design, stamping an identity if it does not have one yet.
 
-        Only reached when the person actually sends a message: merely looking at
+        Only reached when the person sends a message or imports: merely looking at
         a design must never mark it modified.
         """
         payload = await self._bridge("POST", "/document", json={})
@@ -2188,6 +2193,161 @@ async def _write_file(request: web.Request, fmt: str, filename: str,
     return web.json_response(outcome)
 
 
+async def _store_import(request: web.Request, name: str) -> Path:
+    # Treat both separator spellings as paths even on macOS. Truncate the stem
+    # alone so a long name cannot lose the extension Fusion uses to read it.
+    leaf = name.replace("\\", "/").rsplit("/", 1)[-1]
+    suffix = Path(leaf).suffix.lower()
+    stem = re.sub(r"[^a-zA-Z0-9_. -]", "_", leaf[:-len(suffix)]).lstrip(". ")
+    filename = (stem[:120] or "import") + suffix
+    root = STATE_DIR / "imports"
+    STATE_DIR.mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(STATE_DIR, 0o700)
+    root.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(root, 0o700)
+    fd, temp = tempfile.mkstemp(prefix=".upload-", dir=root)
+    try:
+        digest, size = hashlib.sha256(), 0
+        with os.fdopen(fd, "wb") as stream:
+            os.fchmod(stream.fileno(), 0o600)
+            async for chunk in request.content.iter_chunked(1024 * 1024):
+                size += len(chunk)
+                if size > MAX_IMPORT_BYTES:
+                    raise web.HTTPRequestEntityTooLarge(max_size=MAX_IMPORT_BYTES, actual_size=size)
+                digest.update(chunk)
+                stream.write(chunk)
+        folder = root / digest.hexdigest()[:16]
+        folder.mkdir(mode=0o700, exist_ok=True)
+        os.chmod(folder, 0o700)
+        target = folder / filename
+        # A stable path is also the Fusion duplicate guard's source identity.
+        os.replace(temp, target)
+        return target
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            os.unlink(temp)
+
+
+# The last "SomethingError: " line of a traceback starts the message, which
+# may run on below it: the duplicate guard's takes two lines.
+_EXCEPTION_LINE = re.compile(r"^[A-Za-z_][\w.]*(?:Error|Exception): ", re.M)
+
+
+def _failure_message(outcome: dict[str, Any], default: str = "Fusion refused the import.") -> str:
+    """What went wrong, in words: the bridge sends a refusal as a traceback,
+    whose first line ("Traceback (most recent call last):") says nothing."""
+    text = str(outcome.get("error") or outcome.get("traceback") or default)
+    if text.startswith("Traceback"):
+        found = list(_EXCEPTION_LINE.finditer(text))
+        if found:
+            text = text[found[-1].end():]
+    return text.strip() or default
+
+
+def _import_note(name: str, outcome: dict[str, Any]) -> str:
+    if not outcome["ok"]:
+        error = outcome["error"].splitlines()[0]
+        if outcome.get("occurrences"):
+            detail = ". " + error + ". The geometry arrived; position or join it as they ask."
+        else:
+            detail = "; Fusion refused it: " + error
+    else:
+        parts = []
+        for occurrence in outcome["occurrences"]:
+            measure = outcome["measured"].get(occurrence, {})
+            size = measure.get("size_mm")
+            detail = occurrence
+            if size:
+                detail += ": " + str(measure.get("bodies", 0)) + " bodies, "
+                detail += " x ".join(f"{n:g}" for n in size) + " mm"
+            parts.append(detail)
+        detail = ". It was imported as component " + "; ".join(parts)
+        detail += ". Position or join it as they ask."
+    return ("\n\n[Before this message the person dropped " + _note_text(name, 160)
+            + " onto the panel" + detail + "]")
+
+
+async def _import_execute(body: str, params: dict[str, Any], key: str) -> dict[str, Any]:
+    # A tab can change after /document answers, even between import and measure.
+    # Check inside the same bridge call, without changing another turn's pin.
+    fence = fusion_common.snippet(fusion_common.IDENTITY_BODY,
+                                 dict(fusion_common.IDENTITY_PARAMS, expect_key=key))
+    fence += '\nif result.get("key") != _fx_params["expect_key"]:\n'
+    fence += '    raise RuntimeError("The active design changed — drop the file again.")\n'
+    return await _bridge_execute(fence + fusion_common.snippet(body, params))
+
+
+async def handle_fusion_import(request: web.Request) -> web.Response:
+    name = request.query.get("name", "")
+    fmt = fusion_common.import_format(name)
+    if fmt is None:
+        error = ("Fusion cannot import that file. Accepted extensions: "
+                 + ", ".join(sorted(fusion_common.IMPORT_FORMATS)))
+        return web.json_response({"ok": False, "occurrences": [], "error": error}, status=400)
+    units = request.query.get("units", "mm")
+    if units not in fusion_common.MESH_UNITS:
+        return web.json_response({"ok": False, "occurrences": [], "error": "Units must be mm, cm, m, in or ft."}, status=400)
+    registry: Registry = request.app["registry"]
+    try:
+        active = await registry.resolve_active()
+    except Exception:                                      # noqa: BLE001
+        active = None
+        registry.bridge_ok = False
+    key = (active or {}).get("key")
+    if not key:
+        error = ("Fusion is not reachable — open Fusion, then Utilities → Add-Ins → Arges → Run."
+                 if registry.bridge_ok is False else
+                 "No design is open in Fusion — open or create one first.")
+        return web.json_response({"ok": False, "occurrences": [], "error": error}, status=409)
+    await registry.set_active(active)
+    session = registry.session_for(key, active.get("name"))
+    if session.busy or session.lock.locked():
+        return web.json_response({"ok": False, "occurrences": [], "error":
+                                  "Wait for the current reply to finish, then drop the file again."}, status=409)
+    # run_turn takes this lock too. A prompt arriving while bytes are streaming
+    # waits until the imported geometry and its note are both ready.
+    async with session.lock:
+        status, occurrences = 200, []
+        try:
+            target = await _store_import(request, name)
+            found = await registry.resolve_active()
+            if (found or {}).get("key") != key:
+                outcome = {"ok": False, "occurrences": [], "error": "The active design changed — drop the file again."}
+                status = 409
+            else:
+                outcome = await _import_execute(
+                    fusion_common.IMPORT_BODY,
+                    fusion_common.import_params(target, fmt, target.stem, units, allow_duplicate=False), key)
+                if not outcome.get("ok"):
+                    outcome = {"ok": False, "occurrences": [], "error": _failure_message(outcome)}
+                    status = 502
+                else:
+                    occurrences = outcome.get("occurrences") or []
+                    measured = {}
+                    if occurrences:
+                        # Measured in the import's own call, a new box is all
+                        # zeros. The MCP importer found this live in Fusion.
+                        try:
+                            measured = await _import_execute(
+                                fusion_common.MEASURE_BODY, {"occurrences": occurrences}, key)
+                            if "ok" in measured:
+                                raise RuntimeError(_failure_message(measured, "no measurement"))
+                        except Exception as exc:           # noqa: BLE001
+                            raise RuntimeError("Imported as " + ", ".join(occurrences)
+                                               + ", but measuring failed: " + str(exc)) from exc
+                    outcome = {"ok": True, "occurrences": occurrences, "measured": measured}
+            note = _import_note(name, outcome)
+        except web.HTTPRequestEntityTooLarge:
+            return web.json_response({"ok": False, "occurrences": [], "error": "CAD files must be at most 200 MB."}, status=413)
+        except Exception as exc:                           # noqa: BLE001
+            outcome = {"ok": False, "occurrences": occurrences, "error": str(exc) or "The import failed."}
+            note = _import_note(name, outcome)
+            status = 502
+        session.import_notes.append(note)
+        await session.emit(dict(outcome, type="import", file=name))
+        return web.json_response(outcome, status=status)
+
+
 async def handle_fusion_save(request: web.Request) -> web.Response:
     """The Save button: the whole design as one .f3d, overwritten each time.
 
@@ -2320,10 +2480,26 @@ async def pin_host(request: web.Request, handler):
     The Fusion listener and the Rhino broker have pinned Host since they were
     written; this service is the one that did not, and it is the one that can
     drive Fusion without a token.
+
+    Host alone stops rebinding, not a page that simply POSTs to
+    http://127.0.0.1:7655: that request carries our own Host. Its Origin is
+    what gives it away, and a browser sends one on every cross-site POST, so
+    a foreign or "null" Origin is refused too (found adding the CAD drop,
+    which would have let any open page import a file). A request with no
+    Origin is not a browser's, so it is not a page that could have been
+    tricked into sending it.
     """
     if request.headers.get("Host", "") not in request.app["allowed_hosts"]:
         return web.json_response(
             {"ok": False, "error": "invalid Host header"}, status=403)
+    origin = request.headers.get("Origin")
+    if origin is not None and origin not in {
+            "http://" + host for host in request.app["allowed_hosts"]}:
+        # Logged with the value: if the panel's own webview ever sent an
+        # unexpected Origin, this line is how that would be found.
+        log.warning("refused %s %s from Origin %r", request.method, request.path, origin[:80])
+        return web.json_response(
+            {"ok": False, "error": "requests from other sites are refused"}, status=403)
     return await handler(request)
 
 
@@ -2342,6 +2518,7 @@ def build_app(port: int = BIND_PORT) -> web.Application:
     app.router.add_post("/interrupt", handle_interrupt)
     app.router.add_post("/settings", handle_settings)
     app.router.add_post("/cancel-other", handle_cancel_other)
+    app.router.add_post("/fusion/import", handle_fusion_import)
     app.router.add_post("/fusion/save", handle_fusion_save)
     app.router.add_post("/fusion/download", handle_fusion_download)
     app.router.add_get("/fusion/config", handle_fusion_config)

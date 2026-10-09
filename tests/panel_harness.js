@@ -106,8 +106,17 @@ function makeHarness(ids, hiddenIds) {
     clearTimeout() {},
     requestAnimationFrame: (fn) => { fn(); return 0; },
     console,
-    FileReader: function () {},
-    Image: function () {},
+    URL: { createObjectURL: () => 'blob:test', revokeObjectURL() {} },
+    FileReader: function () {
+      this.readAsDataURL = () => {
+        this.result = 'data:image/png;base64,aGVsbG8=';
+        this.onload();
+      };
+    },
+    Image: function () {
+      this.width = this.height = 10;
+      Object.defineProperty(this, 'src', { set: () => this.onload() });
+    },
   };
   sandbox.globalThis = sandbox;
   return {

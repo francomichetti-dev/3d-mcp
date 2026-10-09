@@ -330,13 +330,13 @@
   <footer>
     <div id="tray"></div>
     <div id="row">
-      <button id="attach" title="Attach images — or drag them in, or paste">＋</button>
+      <button id="attach" title="Attach images or import CAD files — drag them in, or paste">＋</button>
       <select id="model" title="Which model answers in this chat"></select>
       <select id="effort" title="How hard it thinks before answering"></select>
       <textarea id="input" rows="1" placeholder="Describe what to model, or how to change it…"></textarea>
       <button id="send">Send</button>
     </div>
-    <input id="file" type="file" accept="image/*" multiple hidden>
+    <input id="file" type="file" accept="image/*,.f3d,.f3z,.step,.stp,.iges,.igs,.sat,.smt,.stl,.obj,.3mf" multiple hidden>
   </footer>
 
 <script>
@@ -614,6 +614,14 @@ function render(ev, live) {
     // looked.
   } else if (ev.type === 'plan') {
     renderPlan(ev.steps);
+  } else if (ev.type === 'import') {
+    current = null;
+    const upload = live && importUploads.find((u) => u.key === (ev.doc || docKey) && u.name === ev.file);
+    if (upload) {
+      upload.eventSeen = true;
+      upload.line.textContent = importLine(ev);
+      importUploads.splice(importUploads.indexOf(upload), 1);
+    } else status(importLine(ev), 'notice');
   } else if (ev.type === 'notice') {
     status(ev.text, 'notice');
   } else if (ev.type === 'error') {
@@ -641,6 +649,7 @@ function applyDocument(d) {
   label.classList.toggle('none', !d.design);
 
   log.innerHTML = ''; current = null;
+  importUploads = importUploads.filter((u) => u.key === docKey);
   if (!d.design) {
     status('Open a design in Fusion to start a chat.');
   } else {
@@ -718,6 +727,8 @@ es.onmessage = (e) => {
 // open a native file picker: the ＋ button, drag-and-drop anywhere on the
 // panel, and paste. Whichever works on a given build, the others are there.
 
+const CAD_EXTENSIONS = ['.f3d', '.f3z', '.step', '.stp', '.iges', '.igs',
+                        '.sat', '.smt', '.stl', '.obj', '.3mf'];
 const MAX_IMAGES = 8;
 const MAX_EDGE = 1568;          // Anthropic's efficient maximum; bigger costs
 const MAX_BYTES = 5 * 1024 * 1024;
@@ -781,18 +792,70 @@ function drawTray() {
   });
 }
 
-async function addFiles(files) {
-  const images = Array.from(files).filter((f) => f.type.startsWith('image/'));
-  if (!images.length) return;
-  for (const file of images) {
-    if (pending.length >= MAX_IMAGES) { status('At most ' + MAX_IMAGES + ' images per message.', 'err'); break; }
+function importLine(ev) {
+  if (!ev.ok) return 'Could not import ' + ev.file + ': ' + ev.error;
+  const parts = (ev.occurrences || []).map((name) => {
+    const measure = (ev.measured || {})[name];
+    return name + (measure && measure.size_mm
+      ? ' — ' + measure.size_mm.join(' × ') + ' mm' : '');
+  });
+  return 'Imported ' + ev.file + (parts.length ? ' as ' + parts.join(', ') : '');
+}
+
+// Drops, pastes and picker changes can arrive while another upload is waiting
+// on Fusion. Share the queue so those paths never launch concurrent imports.
+let imports = Promise.resolve();
+let importUploads = [];
+function uploadCAD(file) {
+  const key = docKey;
+  imports = imports.then(async () => {
+    if (key !== docKey) return;
+    if (busy) {
+      status('Wait for the current reply to finish, then drop ' + file.name + ' again.', 'notice');
+      return;
+    }
+    const line = status('Importing ' + file.name + '…', 'notice');
+    const upload = { key, name: file.name, line, eventSeen: false };
+    importUploads.push(upload);
     try {
-      pending.push(await shrink(file));
+      const reply = await fetch('/fusion/import?name=' + encodeURIComponent(file.name), {
+        method: 'POST', headers: { 'Content-Type': 'application/octet-stream' }, body: file,
+      });
+      const result = await reply.json();
+      // The HTTP reply and the stream can arrive in either order. Both fill
+      // this line, so an import appears once even if the stream is delayed.
+      if (key === docKey && !upload.eventSeen) line.textContent = importLine({ ...result, file: file.name });
+      if (!reply.ok && [400, 409, 413].includes(reply.status)) {
+        importUploads = importUploads.filter((u) => u !== upload);
+      }
     } catch (err) {
-      status('Could not read ' + (file.name || 'that file') + '.', 'err');
+      if (key === docKey && !upload.eventSeen) line.textContent = 'Could not import ' + file.name + ': ' + err.message;
+    }
+  });
+  return imports;
+}
+
+async function addFiles(files) {
+  const wasBusy = busy;
+  for (const file of Array.from(files)) {
+    if ((file.type || '').startsWith('image/')) {
+      if (pending.length >= MAX_IMAGES) {
+        status('At most ' + MAX_IMAGES + ' images per message.', 'err');
+        continue;
+      }
+      try {
+        pending.push(await shrink(file));
+        drawTray();
+      } catch (err) {
+        status('Could not read ' + (file.name || 'that file') + '.', 'err');
+      }
+    } else if (CAD_EXTENSIONS.some((ext) => file.name.toLowerCase().endsWith(ext))) {
+      if (wasBusy || busy) status('Wait for the current reply to finish, then drop ' + file.name + ' again.', 'notice');
+      else await uploadCAD(file);
+    } else {
+      status(file.name + ' is not an image or a CAD file Fusion can import.', 'err');
     }
   }
-  drawTray();
 }
 
 attachBtn.onclick = () => filePicker.click();

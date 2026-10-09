@@ -643,6 +643,19 @@ truthy("and the panel asks the service for them",
        "formats" in read("agent/static/index.html"))
 
 
+# A format the service accepts must also reach it from the panel: an omitted
+# extension used to make a dropped STEP disappear without a message.
+print("The panel's CAD formats")
+import ast  # noqa: E402
+common_tree = ast.parse(read(FUSION_COMMON))
+import_formats = next(ast.literal_eval(node.value) for node in common_tree.body
+                      if isinstance(node, ast.Assign)
+                      and any(isinstance(t, ast.Name) and t.id == "IMPORT_FORMATS" for t in node.targets))
+block = re.search(r"const CAD_EXTENSIONS = \[(.*?)\];", read("agent/static/index.html"), re.S)
+panel_extensions = set(re.findall(r"['\"](\.[a-z0-9]+)['\"]", block.group(1))) if block else set()
+check("the panel accepts exactly the shared import extensions", panel_extensions, set(import_formats))
+
+
 # ---------------------------------------------------- the vendored orb engine --
 # The banner's orb animation is somebody else's code, vendored as a file rather
 # than depended on: the panel has no build step and the service makes no

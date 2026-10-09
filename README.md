@@ -147,6 +147,14 @@ Three ways to attach a reference photo or a sketch, because a webview inside Fus
 allowed to open a native file picker: the **＋** button, **drag and drop** anywhere on the panel, or
 **paste** from the clipboard.
 
+The same three ways import a CAD file. Drop a STEP, f3d, IGES, SAT, STL, OBJ or 3MF file (up to
+200 MB) on the panel and it is imported into the open design at once, as its own component. The
+chat says what arrived and its size, and the model is told on your next message, so "put it on
+the base plate" needs no explanation. The file is copied into `~/.arges/imports/` under a hash of
+its contents, so dropping the same file twice is caught by the duplicate guard instead of
+stacking a second copy. A drop waits until the current reply has finished, so the design cannot
+change under the model mid-step.
+
 ### One chat per design
 
 Each design gets its own conversation, keyed to the document — not one chat that forgets which part
@@ -414,7 +422,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1827 assertions across eighteen suites**, none of which need Fusion, Rhino, or an internet
+**1932 assertions across eighteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
