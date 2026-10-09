@@ -49,7 +49,8 @@ is **100% local** — no network calls. Specifically, it
 - symlinks the add-in into Fusion's AddIns folder, so your edits are live,
 - links the knowledge skill into `~/.claude/skills/`,
 - builds the server and agent virtualenvs with `uv sync`,
-- registers the MCP server with Claude Code at user scope, and writes the `/fusion-chat` command.
+- registers the MCP server with Claude Code at user scope, and writes the `/fusion-chat` and
+  `/fusion-improve` commands.
 
 Everything is registered with **absolute paths**, so it works from any directory and any project.
 Re-running is safe and preserves your token; `--rotate-token` replaces it. It refuses to run
@@ -235,6 +236,15 @@ sessions kept rewriting. When Claude writes a helper that works and will be need
 it with `fusion_command_save`, and the next session calls it by name. When the log shows a helper
 written for the fourth time, under any name, the call that wrote it carries a one-time hint to save it.
 
+To see what has accumulated, run `arges experience` (from this checkout:
+`uv run --directory server arges experience`). It reports each tool's calls, failures and timings,
+the errors that recur and whether a lesson covers them, which lessons and recipes were used, helpers
+that keep being retyped, and the slow paths, then up to five things to do next. `--json` prints all
+of it and `--since 2026-10-01` limits the history. It holds no code and no arguments. In Claude
+Code, `/fusion-improve` reads that report and proposes changes to this repository: a recurring fix
+into the skill's gotchas, a much-used learned command into the built-ins, a slow path to measure.
+It changes nothing until you pick, which is how one person's use improves the tool for everyone.
+
 ---
 
 ## Rhino 8
@@ -339,7 +349,7 @@ The two halves are independent — install whichever CAD you use, or both.
 
 **Fusion** (macOS): Fusion installed and launched once; [`uv`](https://docs.astral.sh/uv/) and
 `python3` on `PATH`; any MCP client (the `claude` CLI is optional — it only automates registration
-and the `/fusion-chat` command). The chat panel additionally needs Claude Agent SDK credentials: a
+and the slash commands). The chat panel additionally needs Claude Agent SDK credentials: a
 signed-in `claude` CLI or an `ANTHROPIC_API_KEY`.
 
 **Rhino 8** (Windows or macOS): Rhino 8 opened once with the `ScriptEditor` command run — that is
@@ -392,7 +402,7 @@ Fusion-on-Windows needs that path adding and a look at the launcher.
 
 ```sh
 scripts/uninstall.sh            # add-in symlink, skill link, MCP registration,
-                                # /fusion-chat command, and the agent service
+                                # slash commands, and the agent service
 scripts/uninstall.sh --purge    # also deletes ~/.arges (token, logs, chats)
 ```
 
@@ -404,7 +414,7 @@ Exports in `~/Documents/arges-exports/` are never touched.
 tests/run.sh     # offline: no CAD, no network, no API key
 ```
 
-**1646 assertions across seventeen suites**, none of which need Fusion, Rhino, or an internet
+**1766 assertions across eighteen suites**, none of which need Fusion, Rhino, or an internet
 connection. That is a macOS run; on Linux the count is lower because the installer is macOS-only and
 `test_install.py` skips those assertions rather than pretending to check them:
 
@@ -422,7 +432,8 @@ connection. That is a macOS run; on Linux the count is lower because the install
 | `test_consistency.py` | constants and code duplicated across the two halves, where a mismatch would fail silently |
 | `test_docs.py` | that the docs' checkable claims are true: links resolve, counts match, no personal data |
 | `test_experience.py` | the experience log: errors recognised across runs, helpers recognised across renames, and a log that can never fail a call |
-| `test_lessons.py` | lessons: recalled for their own error and no other, correctable, shared safely between processes, and never in the way of a failure |
+| `test_lessons.py` | lessons and recipes: recalled for their own error or request and no other, correctable, shared safely between processes, and never in the way of a failure |
+| `test_report.py` | `arges experience`: every section of the report, malformed history, no code or arguments in it, and no server dependencies needed to run it |
 | `test_fastcommands.py` | fast commands: refused when they would fail later, arguments carried as data and never as code, and the built-ins checked against stand-ins |
 | `test_import.py` | importing: files found by name in the usual folders, every format routed to its importer, and what arrived reported |
 | `test_e2e_chain.py` | the whole Rhino chain as three real processes: MCP server, broker and a stand-in poller |

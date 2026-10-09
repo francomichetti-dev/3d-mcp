@@ -558,6 +558,42 @@ for path in sorted(REPO.glob("docs/*.md")):
         orphans.append(str(path.relative_to(REPO)))
 check("every doc under docs/ is linked from somewhere", orphans, [])
 
+
+# --------------------------------------------------------- slash commands --
+# install.sh writes every file in commands/ into ~/.claude/commands with this
+# checkout's path baked in, and uninstall.sh removes them again. A command the
+# installer does not know about would ship in the repo and never reach anyone;
+# one with a hardcoded path would work only on the machine that wrote it.
+print("Slash commands")
+COMMANDS = sorted((REPO / "commands").glob("*.md"))
+truthy("there are slash commands", len(COMMANDS) >= 2)
+install = (REPO / "scripts/install.sh").read_text(encoding="utf-8")
+uninstall = (REPO / "scripts/uninstall.sh").read_text(encoding="utf-8")
+truthy("install.sh installs every file in commands/, not a named list",
+       re.search(r'for \w+ in "\$\{REPO_DIR\}"/commands/\*\.md', install))
+truthy("uninstall.sh removes every file in commands/ the same way",
+       re.search(r'for \w+ in "\$\{REPO_DIR\}"/commands/\*\.md', uninstall))
+for path in COMMANDS:
+    text = path.read_text(encoding="utf-8")
+    front = re.match(r"---\n(.*?)\n---\n", text, re.S)
+    truthy(f"{path.name} has front matter", front)
+    truthy(f"{path.name} says what it does",
+           front and re.search(r"^description: \S", front.group(1), re.M))
+    truthy(f"{path.name} reaches the checkout through __REPO__, never a fixed path",
+           "__REPO__" in text and "/Users/" not in text and "/home/" not in text)
+
+# /fusion-improve reads the experience report. The subcommand it runs has to
+# exist, or the command fails on its first line.
+improve = (REPO / "commands/fusion-improve.md")
+improve_text = improve.read_text(encoding="utf-8") if improve.exists() else ""
+truthy("/fusion-improve exists", improve_text)
+truthy("/fusion-improve runs the report as JSON",
+       "arges experience --json" in improve_text)
+cli = (REPO / "server/src/arges_mcp/cli.py").read_text(encoding="utf-8")
+truthy("and the CLI has that subcommand", '"experience"' in cli)
+truthy("/fusion-improve changes nothing before the person picks",
+       re.search(r"change nothing", improve_text, re.I))
+
 print()
 print(f"{PASS} passed, {FAIL} failed")
 sys.exit(1 if FAIL else 0)

@@ -40,6 +40,13 @@ Check it:
 uvx arges status
 ```
 
+Later, to see what the tool has learned from use (recurring errors, lessons, fast commands, slow
+paths), with no code or arguments in it:
+
+```sh
+uvx arges experience            # or --json, --since 2026-10-01
+```
+
 ## Point your MCP client at it
 
 ```json

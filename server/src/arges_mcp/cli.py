@@ -41,7 +41,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
 
     sub.add_parser("status", help="report whether the add-in and bridge are up")
+    experience = sub.add_parser("experience", help="report what the tool has learned from use")
+    experience.add_argument("--json", action="store_true", help="print the complete summary as JSON")
+    experience.add_argument("--since", type=_date, metavar="YYYY-MM-DD",
+                            help="include calls on or after this date")
     return parser
+
+
+def _date(value):
+    from datetime import datetime
+
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%d")
+        if parsed.strftime("%Y-%m-%d") != value:
+            raise ValueError
+    except ValueError:
+        raise argparse.ArgumentTypeError("use a valid date in YYYY-MM-DD form") from None
+    return value
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -54,6 +70,27 @@ def main(argv: list[str] | None = None) -> int:
         from .server import main as serve
 
         serve()
+        return 0
+
+    if args.command == "experience":
+        # Reporting needs neither a live bridge nor the server's dependencies.
+        # Keeping this before bootstrap also avoids importing installer state.
+        import json
+        from . import experience, fastcommands, lessons, report
+
+        log = experience.default_log()
+        summary = report.summarize(log.read(), lessons.default_store().all(),
+                                   fastcommands.default_library().all(), since=args.since)
+        if args.json:
+            print(json.dumps(summary, indent=2))
+        else:
+            rendered = report.render(summary)
+            if not summary["span"]["records"]:
+                print(f"No experience recorded yet. Looking in {log.path}")
+                if rendered != "No experience recorded yet.":
+                    print(rendered)
+            else:
+                print(rendered)
         return 0
 
     from . import bootstrap

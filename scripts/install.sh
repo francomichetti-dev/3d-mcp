@@ -246,11 +246,12 @@ else
     info "linked ${SKILL_LINK} -> ${SKILL_SOURCE}"
 fi
 
-# --- /fusion-chat slash command ----------------------------------------------
+# --- slash commands ----------------------------------------------------------
 
-# Generated rather than symlinked: the command needs this checkout's absolute
-# path baked in so `/fusion-chat` works from any directory.
-step "Installing the /fusion-chat slash command"
+# Generated rather than symlinked: each command needs this checkout's absolute
+# path baked in so it works from any directory. Every file in commands/ is
+# installed, so a new command cannot ship in the repo and never reach anyone.
+step "Installing the slash commands (/fusion-chat, /fusion-improve)"
 
 COMMANDS_DIR="${HOME}/.claude/commands"
 if [ -L "${COMMANDS_DIR}" ]; then
@@ -264,13 +265,16 @@ if [ "${HAVE_CLAUDE}" -eq 0 ]; then
     # panel, or run scripts/fusion-chat.sh.
     info "skipped: no claude CLI — slash commands are a Claude Code feature"
     info "the chat panel still works: use the Fusion Chat button inside Fusion"
-elif [ -f "${REPO_DIR}/commands/fusion-chat.md" ]; then
-    sed "s#__REPO__#${REPO_DIR}#g" "${REPO_DIR}/commands/fusion-chat.md" \
-        > "${COMMANDS_DIR}/fusion-chat.md"
-    info "installed ${COMMANDS_DIR}/fusion-chat.md"
-    info "type /fusion-chat in any Claude Code session to open the panel"
 else
-    info "commands/fusion-chat.md not found — skipping"
+    for command_source in "${REPO_DIR}"/commands/*.md; do
+        [ -f "${command_source}" ] || continue
+        command_name="$(basename "${command_source}")"
+        sed "s#__REPO__#${REPO_DIR}#g" "${command_source}" \
+            > "${COMMANDS_DIR}/${command_name}"
+        info "installed ${COMMANDS_DIR}/${command_name}"
+    done
+    info "type /fusion-chat in any Claude Code session to open the panel,"
+    info "and /fusion-improve to turn what the tool learned into changes here"
 fi
 
 # --- exports dir -------------------------------------------------------------

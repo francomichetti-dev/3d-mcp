@@ -96,13 +96,24 @@ green. Stop and ask at every gate.
 - [x] **4. Repetition hints** (Codex lane `codex/hints`, reviewed and merged): a successful call whose helper function has
       been defined three or more times before gets a one-time hint to save it
       as a fast command. **Gate.**
-- [ ] **5. Panel parity**: new tools allowed, the destructive gate reads a
+- [x] **5. Panel parity**: new tools allowed, the destructive gate reads a
       fast command's *source* (not just its name), and `SYSTEM_APPEND` teaches
       the combined execute+screenshot, lessons and fast commands. **Gate.**
-- [ ] **6. The improvement loop**: `arges experience [--json]` report, plus a
+      Done along the way in steps 2 to 4b, and checked on 2026-10-09: the
+      allowed tools are pinned to the server's by `test_consistency.py`, the
+      gate resolves `fusion_run` to its source and stamps its hash
+      (`gated=yes` live), and `SYSTEM_APPEND` covers screenshots, lessons,
+      recipes, fast commands and `fusion_import`.
+- [x] **6. The improvement loop**: `arges experience [--json]` report, plus a
       `/fusion-improve` command that reads it and proposes promotions (lessons
       into `references/gotchas.md`, learned commands into built-ins, slow paths
       in the server), changing nothing without asking. **Gate.**
+      (2026-10-09) The report is a Codex lane (`report.py`, pure, no code or
+      arguments in it; lesson text is, so it can be promoted). The installer
+      now writes every file in `commands/`, so `/fusion-improve` ships the way
+      `/fusion-chat` does. First real run: 105 calls over 14 sessions, one
+      recurring error already covered by a lesson, and the delete-selection
+      recipe proposed for the skill.
 - [ ] **7. Later**: the same for the Rhino half (dependency-free, so it needs
       its own copy, pinned by `tests/test_consistency.py`); skip the autosave
       when the design did not change, decided by measured cost from the log.
