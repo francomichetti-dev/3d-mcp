@@ -59,7 +59,7 @@ def raises(label, fn, kind=Exception, says=""):
 
 from arges_mcp import common  # noqa: E402
 
-SANDBOX = Path(tempfile.mkdtemp(prefix="arges-import-test-"))
+SANDBOX = Path(tempfile.mkdtemp(prefix="arges-import-test-")).resolve()
 common.state_dir = lambda: SANDBOX / "state"
 os.environ["ARGES_SAVE_DIR"] = str(SANDBOX / "saves")
 
@@ -225,6 +225,11 @@ class Root:
         self.occurrences = Collection([occurrence("chassis:1")])
         self.occurrences.addNewComponent = new_component_factory(self, occ_name)
         self.bRepBodies = Collection()
+        self.nested = Collection()
+
+    @property
+    def allOccurrences(self):
+        return Collection([*self.occurrences, *self.nested])
 
 
 class ImportManager:
@@ -258,7 +263,7 @@ class ImportManager:
 
 
 def fusion(root, im=None, parametric=True, documents=(), from_file=None):
-    design = NS(rootComponent=root, designType=1 if parametric else 0)
+    design = NS(rootComponent=root, designType=1 if parametric else 0, attributes=Attributes())
     active = NS(name="Untitled", products=NS(itemByProductType=lambda t: design), dataFile=None)
 
     def create_from_file(path):
@@ -419,6 +424,59 @@ params = common.import_params(motor, "f3d", "Motor again", "mm", allow_duplicate
 run(common.IMPORT_BODY, params, ns)
 check("unless a second copy is asked for", len(root.occurrences), 3)
 
+# Moving the motor out of the root used to hide its stamp from the guard.
+root = Root()
+ns = fusion(root)
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor"), ns)
+imported = root.occurrences.pop()
+root.nested.append(imported)
+raises("a nested import still counts under another name",
+       lambda: run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Another motor"), ns),
+       RuntimeError, "motor:1 is already")
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Another motor", allow_duplicate=True), ns)
+check("a deliberate second copy of a nested import is allowed", len(root.allOccurrences), 3)
+
+class CountingAttributes(Attributes):
+    def itemByName(self, group, name):
+        reads.append((group, name))
+        return super().itemByName(group, name)
+
+
+root = Root()
+reads = []
+root.occurrences[0].component.attributes = CountingAttributes()
+instance = occurrence("chassis:2")
+instance.component = root.occurrences[0].component
+root.nested.append(instance)
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor"), fusion(root))
+check("repeated instances read their component's stamps once",
+      reads, [("Arges", "source"), ("Arges", "sources")])
+
+alias = downloads / "motor-alias.f3d"
+alias.symlink_to(motor)
+check("a symlink resolves to the original file", common.resolve_import(str(alias), roots), motor)
+check("so does a symlink found by name", common.resolve_import(alias.name, roots), motor)
+check("even parameters built directly use the real path",
+      common.import_params(alias, "f3d")["path"], str(motor))
+root = Root()
+ns = fusion(root)
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor"), ns)
+raises("a file alias cannot hide a second import under another name",
+       lambda: run(common.IMPORT_BODY, common.import_params(alias, "f3d", "Alias"), ns),
+       RuntimeError, "allow_duplicate=true")
+run(common.IMPORT_BODY, common.import_params(alias, "f3d", "Alias", allow_duplicate=True), ns)
+check("a deliberate import through an alias is allowed", len(root.occurrences), 3)
+alias.unlink()
+
+root = Root()
+root.occurrences[0].component.attributes.add("Arges", "source", "file:" + str(motor))
+ns = fusion(root)
+raises("an old single-value stamp still counts",
+       lambda: run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor"), ns),
+       RuntimeError, "chassis:1 is already")
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor", allow_duplicate=True), ns)
+check("an old stamp also permits a deliberate second copy", len(root.occurrences), 2)
+
 root = Root(occ_name="chassis:2")
 raises("a component of the same name already there counts too, sources recorded or not",
        lambda: run_import({"path": str(bracket), "format": "step", "name": "chassis", "units": "mm"},
@@ -442,7 +500,7 @@ def document(name, bodies=1, saved=False, body_names=None):
     src_root = NS(bRepBodies=Collection([NS(name=n, boundingBox=box((0, 0, 0), (3.6, 3.6, 8.05)))
                                          for n in names]),
                   allOccurrences=Collection())
-    des = NS(rootComponent=src_root)
+    des = NS(rootComponent=src_root, attributes=Attributes())
     return NS(name=name, products=NS(itemByProductType=lambda t: des),
               dataFile=NS(id="x") if saved else None)
 
@@ -495,6 +553,95 @@ raises("so is copying the design into itself",
 raises("and a tab that is not open",
        lambda: run(common.COPY_BODY, {"document": "gearbox", "name": ""}, ns),
        RuntimeError, "tank-wheels")
+
+# A tab reference can change without the design changing, or be reused by a
+# different design. It cannot be the identity recorded on a copied component.
+earlier = document("Untitled", bodies=0)
+source_tab = document("Untitled")
+root = Root(occ_name="first:1")
+ns = fusion(root, documents=[earlier, source_tab])
+run(common.COPY_BODY, {"document": "Untitled #3", "name": "First"}, ns)
+stamp = source_tab.products.itemByProductType("d").attributes.itemByName(
+    common.DOC_ATTR_GROUP, common.DOC_ATTR_NAME)
+truthy("an unsaved source receives a stable chat identity", stamp and stamp.value.startswith("doc:"))
+check("the copied source uses that identity",
+      root.occurrences[-1].component.attributes.itemByName("Arges", "source").value,
+      "document:" + stamp.value if stamp else "missing identity")
+ns["app"].documents.remove(earlier)
+raises("renumbering an unsaved source cannot permit a second copy",
+       lambda: run(common.COPY_BODY, {"document": "Untitled #2", "name": "Renumbered"}, ns),
+       RuntimeError, "first:1 is already")
+run(common.COPY_BODY, {"document": "Untitled #2", "name": "Renumbered", "allow_duplicate": True}, ns)
+check("a renumbered source still permits a deliberate second copy", len(root.occurrences), 3)
+replacement = document("Untitled")
+ns["app"].documents.append(replacement)
+try:
+    run(common.COPY_BODY, {"document": "Untitled #3", "name": "Different"}, ns)
+    message = ""
+except RuntimeError as exc:
+    message = str(exc)
+check("a reused reference is not falsely refused", message, "")
+check("a different tab reusing the old reference is allowed", len(root.occurrences), 4)
+replacement_stamp = replacement.products.itemByProductType("d").attributes.itemByName(
+    common.DOC_ATTR_GROUP, common.DOC_ATTR_NAME)
+truthy("different unsaved tabs receive different identities",
+       stamp and replacement_stamp and stamp.value != replacement_stamp.value)
+
+saved = document("Saved motor", saved=True)
+root = Root()
+ns = fusion(root, documents=[saved])
+run(common.COPY_BODY, {"document": "Saved motor", "name": "Saved"}, ns)
+check("a saved source keeps its dataFile identity",
+      root.occurrences[-1].component.attributes.itemByName("Arges", "source").value,
+      "document:file:x")
+check("a saved source needs no new chat stamp", saved.products.itemByProductType("d").attributes, {})
+
+stamped = document("Stamped motor")
+stamped.products.itemByProductType("d").attributes.add(
+    common.DOC_ATTR_GROUP, common.DOC_ATTR_NAME, "doc:existing")
+root = Root()
+ns = fusion(root, documents=[stamped])
+run(common.COPY_BODY, {"document": "Stamped motor", "name": "Stamped"}, ns)
+check("a source with a chat stamp keeps it",
+      root.occurrences[-1].component.attributes.itemByName("Arges", "source").value,
+      "document:doc:existing")
+
+# A -> B -> C used to forget A, allowing A to be added to C a second time.
+source_a = document("A")
+root_b = Root(occ_name="copied-a:1")
+root_b.occurrences.clear()
+ns_b = fusion(root_b, documents=[source_a])
+ns_b["app"].activeDocument.name = "B"
+run(common.COPY_BODY, {"document": "A", "name": "A in B"}, ns_b)
+copied_a = root_b.occurrences.pop()
+copied_a.bRepBodies = copied_a.component.bRepBodies
+root_b.nested.append(copied_a)
+root_c = Root(occ_name="copied-b:1")
+ns_c = fusion(root_c, documents=[ns_b["app"].activeDocument, source_a])
+run(common.COPY_BODY, {"document": "B", "name": "B in C"}, ns_c)
+raises("a copy of a nested copy retains the original tab's provenance",
+       lambda: run(common.COPY_BODY, {"document": "A", "name": "A again"}, ns_c),
+       RuntimeError, "copied-b:1 is already")
+raises("a source assembly containing the same geometry is refused too",
+       lambda: run(common.COPY_BODY, {"document": "B", "name": "B again"}, ns_c),
+       RuntimeError, "allow_duplicate=true")
+run(common.COPY_BODY, {"document": "A", "name": "A again", "allow_duplicate": True}, ns_c)
+check("the original tab can still be copied deliberately", len(root_c.occurrences), 3)
+
+# File provenance must travel too, including old stamps on nested components.
+source_b = document("File assembly", bodies=0)
+file_occ = occurrence("old-motor:1")
+file_occ.bRepBodies[0].name = "Motor"
+file_occ.component.attributes.add("Arges", "source", "file:" + str(motor))
+source_b.products.itemByProductType("d").rootComponent.allOccurrences.append(file_occ)
+root = Root(occ_name="assembly:1")
+ns = fusion(root, documents=[source_b])
+run(common.COPY_BODY, {"document": "File assembly", "name": "Assembly"}, ns)
+raises("an imported file's old stamp survives copying the assembly",
+       lambda: run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor again"), ns),
+       RuntimeError, "allow_duplicate=true")
+run(common.IMPORT_BODY, common.import_params(motor, "f3d", "Motor again", allow_duplicate=True), ns)
+check("the inherited file can still be imported deliberately", len(root.occurrences), 3)
 
 measured = run(common.MEASURE_BODY, {"occurrences": ["chassis:1"]},
                fusion(Root()))

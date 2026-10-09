@@ -285,7 +285,9 @@ def resolve_import(spec, roots, home=None):
     if path is not None:
         # Absolute before anything else: a relative path means one thing here
         # and another in Fusion, whose working directory is its own.
-        path = Path(os.path.abspath(path))
+        # Symlinks must not give one file two import identities. Hard links
+        # remain out of scope: a path identity does not track inodes.
+        path = Path(os.path.realpath(path))
         if path.is_dir():
             raise ValueError(f"{path} is a folder, not a file")
         if not path.is_file():
@@ -299,7 +301,7 @@ def resolve_import(spec, roots, home=None):
     for entry in candidates:
         name = entry["name"].lower()
         if name == wanted or Path(name).stem == wanted:
-            return Path(entry["path"])
+            return Path(os.path.realpath(entry["path"]))
     recent = ", ".join(e["name"] for e in candidates[:8]) or "none"
     raise ValueError(f"no importable file named {raw!r} in "
                      + ", ".join(str(r) for r in roots) + f". Most recent there: {recent}")
@@ -566,7 +568,7 @@ IMPORT_REFUSED = (
 
 def import_params(path, fmt, name="", units="mm", allow_duplicate=False):
     """What IMPORT_BODY is given: the file, how to read it, and what to say if refused."""
-    return {"path": str(path), "format": fmt, "name": name, "units": units,
+    return {"path": os.path.realpath(path), "format": fmt, "name": name, "units": units,
             "refused": IMPORT_REFUSED, "allow_duplicate": bool(allow_duplicate)}
 
 
@@ -578,15 +580,40 @@ def import_params(path, fmt, name="", units="mm", allow_duplicate=False):
 # made before sources were recorded. The refusal's last line names nothing, so
 # its error signature, and any lesson about it, is the same every time.
 _DUPLICATES = '''
-def _fx_existing(root, source, name):
-    for o in root.occurrences:
+def _fx_components(root):
+    seen = []
+    # Moving an occurrence beneath another component must not hide its stamp.
+    # Repeated instances share a component, so its attributes need one read.
+    for o in root.allOccurrences:
         comp = o.component
-        try:
-            mark = comp.attributes.itemByName("Arges", "source")
-            if mark is not None and mark.value == source:
-                return o.name
-        except Exception:
-            pass
+        if comp not in seen:
+            seen.append(comp)
+            yield o, comp
+
+
+def _fx_sources(comp):
+    sources = set()
+    try:
+        mark = comp.attributes.itemByName("Arges", "source")
+        if mark is not None and mark.value:
+            sources.add(mark.value)
+    except Exception:
+        pass
+    try:
+        mark = comp.attributes.itemByName("Arges", "sources")
+        values = _fx_json.loads(mark.value) if mark is not None else []
+        if isinstance(values, list):
+            sources.update(s for s in values if isinstance(s, str) and s)
+    except Exception:
+        pass
+    return sources
+
+
+def _fx_existing(root, source, name):
+    sources = {source} if isinstance(source, str) else set(source)
+    for o, comp in _fx_components(root):
+        if sources.intersection(_fx_sources(comp)):
+            return o.name
         if name and comp.name == name:
             return o.name
     return None
@@ -599,10 +626,14 @@ def _fx_refuse_duplicate(existing):
                        "allow_duplicate=true if a second copy is really wanted.")
 
 
-def _fx_mark_source(occurrences, source):
+def _fx_mark_source(occurrences, source, inherited=()):
     for o in occurrences:
         try:
+            # Keep the old stamp readable; the extra values keep copies of
+            # copies from forgetting geometry that is already in the design.
             o.component.attributes.add("Arges", "source", source)
+            o.component.attributes.add("Arges", "sources",
+                                       _fx_json.dumps(sorted({source, *inherited})))
         except Exception:
             pass
 '''
@@ -793,11 +824,11 @@ def _fx_copy(_p):
         raise RuntimeError(repr(ref) + " is the design being imported into; it cannot be copied into itself")
     sdes = adsk.fusion.Design.cast(source.products.itemByProductType("DesignProductType"))
     sroot = sdes.rootComponent
-    # The source tab's own identity where it has one, so a copy is recognised
-    # again even after the tabs are renumbered.
+    # References renumber when another tab closes, and can later name a
+    # different design. Only the source's stable identity can be recorded.
     origin = None
     try:
-        mark = sdes.attributes.itemByName("FusionChat", "chatKey")
+        mark = sdes.attributes.itemByName(__DOC_ATTR_GROUP__, __DOC_ATTR_NAME__)
         origin = mark.value if mark is not None and mark.value else None
     except Exception:
         origin = None
@@ -806,9 +837,16 @@ def _fx_copy(_p):
             origin = "file:" + source.dataFile.id if source.dataFile is not None else None
         except Exception:
             origin = None
-    origin = "document:" + (origin or ref)
+    if origin is None:
+        import uuid
+        origin = "doc:" + uuid.uuid4().hex
+        sdes.attributes.add(__DOC_ATTR_GROUP__, __DOC_ATTR_NAME__, origin)
+    origin = "document:" + origin
+    inherited = set()
+    for _, comp in _fx_components(sroot):
+        inherited.update(_fx_sources(comp))
     if not _p.get("allow_duplicate"):
-        existing = _fx_existing(des.rootComponent, origin, name)
+        existing = _fx_existing(des.rootComponent, {origin, *inherited}, name)
         if existing:
             _fx_refuse_duplicate(existing)
     bodies = list(sroot.bRepBodies) + [b for o in sroot.allOccurrences for b in o.bRepBodies]
@@ -824,7 +862,7 @@ def _fx_copy(_p):
             else:
                 comp.bRepBodies.add(body)
     occ = _fx_new_component(des, name, add_copies)
-    _fx_mark_source([occ], origin)
+    _fx_mark_source([occ], origin, inherited)
     # A copy arrives as Body1, Body2..., and the names are what the organising
     # that usually follows an import works from. They are set only now: a
     # name set inside the base feature's edit does not survive finishEdit
@@ -840,7 +878,8 @@ def _fx_copy(_p):
 
 
 result = _fx_copy(_fx_params)
-'''
+'''.replace(
+    "__DOC_ATTR_GROUP__", repr(DOC_ATTR_GROUP)).replace("__DOC_ATTR_NAME__", repr(DOC_ATTR_NAME))
 
 # Run in a call of its own after an import, when the new geometry reads true.
 MEASURE_BODY = '''
