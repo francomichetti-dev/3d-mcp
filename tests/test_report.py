@@ -85,16 +85,7 @@ check("span", summary["span"], {"records": 9, "sessions": 2,
       "first": records[0]["ts"], "last": records[-1]["ts"]})
 check("execute totals", summary["tools"]["fusion_execute"],
       {"calls": 5, "ok": 3, "failed": 2, "median_ms": 4000, "p90_ms": 8000})
-check("autosave", summary["autosave"], {"count": 2, "median_ms": 200, "total_ms": 400,
-                                        "skipped": 0})
-# A call that changed nothing is not saved at all (step 7). Counting those is
-# how the report shows what skipping the save has saved.
-skipping = report.summarize([record(1, autosave_ms=200),
-                             record(2, autosave="skipped: unchanged"),
-                             record(3, autosave="skipped: unchanged")])
-check("saves skipped because nothing changed are counted",
-      skipping["autosave"], {"count": 1, "median_ms": 200, "total_ms": 200, "skipped": 2})
-truthy("and shown", "2 skipped (nothing changed)" in report.render(skipping))
+check("autosave", summary["autosave"], {"count": 2, "median_ms": 200, "total_ms": 400})
 check("errors sorted by frequency then signature", [e["sig"] for e in summary["errors"]],
       ["Bridge unavailable", "ValueError: profile"])
 check("bridge failure tools", summary["errors"][0]["tools"], ["fusion_import", "fusion_run"])

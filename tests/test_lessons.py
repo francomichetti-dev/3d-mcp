@@ -416,12 +416,7 @@ try:
     srv._bridge_request = bridge_answering({"ok": True, "result": {}, "stdout": ""})
     out = srv.fusion_run(command="bbox")
     check("a read-only command between failures claims nothing", "learn" in out, False)
-    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": "",
-                                            "changed": False})
-    out = srv.fusion_execute(code="print(len(design.rootComponent.bRepBodies))")
-    check("nor does code that changed nothing", "learn" in out, False)
-    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": "",
-                                            "changed": True})
+    srv._bridge_request = bridge_answering({"ok": True, "result": 1, "stdout": ""})
     out = srv.fusion_execute(code="extrude()")
     truthy("the change that finally worked still gets the nudge",
            "2 failed attempts" in out.get("learn", ""))

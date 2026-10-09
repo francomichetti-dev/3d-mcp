@@ -87,7 +87,6 @@ def summarize(records, lessons=(), commands=(), since=None):
                      "ok": record.get("ok") if type(record.get("ok")) is bool else None,
                      "sig": _name(record.get("sig")), "ms": _number(record.get("ms")),
                      "autosave_ms": _number(record.get("autosave_ms")),
-                     "autosave_skipped": record.get("autosave") == "skipped: unchanged",
                      "command": _name(record.get("command")),
                      "lessons": {_name(item) for item in shown if _name(item)}
                                 if isinstance(shown, list) else set(),
@@ -125,7 +124,6 @@ def summarize(records, lessons=(), commands=(), since=None):
 
     tools, tool_times, failures, command_rows, command_times, sessions = {}, {}, {}, {}, {}, {}
     autosaves = []
-    skipped = 0
     for row in rows:
         tool = row["tool"]
         stats = tools.setdefault(tool, {"calls": 0, "ok": 0, "failed": 0})
@@ -136,7 +134,6 @@ def summarize(records, lessons=(), commands=(), since=None):
             tool_times.setdefault(tool, []).append(row["ms"])
         if row["autosave_ms"] is not None:
             autosaves.append(row["autosave_ms"])
-        skipped += row["autosave_skipped"]
         if row["session"]:
             sessions.setdefault(row["session"], []).append(row)
         if row["ok"] is False and row["sig"]:
@@ -225,7 +222,7 @@ def summarize(records, lessons=(), commands=(), since=None):
             "tools": dict(sorted(tools.items())),
             "autosave": {"count": len(autosaves),
                          "median_ms": median(autosaves) if autosaves else None,
-                         "total_ms": sum(autosaves), "skipped": skipped},
+                         "total_ms": sum(autosaves)},
             "errors": errors,
             "unlearned": [e["sig"] for e in errors if e["count"] >= 2 and e["lesson"] is None],
             "lessons": fixes, "recipes": recipes,
@@ -268,10 +265,9 @@ def render(summary):
                       f"median {ms(s['median_ms'])}, p90 {ms(s['p90_ms'])}"
                       for name, s in summary["tools"].items()])
     autosave = summary["autosave"]
-    if autosave["count"] or autosave.get("skipped"):
+    if autosave["count"]:
         section("Autosave", [f"{autosave['count']} saves; median {ms(autosave['median_ms'])}, "
-                             f"total {ms(autosave['total_ms'])}; "
-                             f"{autosave.get('skipped', 0)} skipped (nothing changed)"])
+                             f"total {ms(autosave['total_ms'])}"])
     section("Errors", [f"{e['sig']}: {e['count']}x, {e['sessions']} sessions; "
                        f"lesson {e['lesson'] or 'none'}" for e in summary["errors"]])
     section("Lessons", [f"{s['id']}: confirmed {s['confirmed']}, shown {s['shown']}, "

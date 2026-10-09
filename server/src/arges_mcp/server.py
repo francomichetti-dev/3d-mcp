@@ -923,9 +923,9 @@ def _run_and_report(tool: str, code: str, *, record_code: str,
         extra.update(_recall(result))
     if tool == "fusion_execute" and result.get("ok"):
         _repetition_hint(record_code, result)
-    # A read-only fast command runs without the autosave; code that changed
-    # nothing says so in the envelope, when the add-in can tell.
-    _streak_after(result, reads_only=not autosave or result.get("changed") is False)
+    # A read-only fast command is the one call known to change nothing: it is
+    # the one that runs without the autosave.
+    _streak_after(result, reads_only=not autosave)
     _remember(tool, record_code, result, seconds, **extra)
     return _with_screenshot(result, screenshot)
 

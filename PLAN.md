@@ -117,3 +117,7 @@ green. Stop and ask at every gate.
 - [ ] **7. Later**: the same for the Rhino half (dependency-free, so it needs
       its own copy, pinned by `tests/test_consistency.py`); skip the autosave
       when the design did not change, decided by measured cost from the log.
+      (2026-10-09) The autosave skip was decided by measurement, and the answer
+      is no. On the real design a fingerprint costs about as much as the save,
+      and it cannot see a moved sketch point. See FOLLOWUP.md. Rhino parity is
+      still open.

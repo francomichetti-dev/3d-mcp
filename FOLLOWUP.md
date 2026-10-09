@@ -68,6 +68,24 @@ extra round trip. Not built: `isModified` would be the obvious signal and it
 cannot be trusted here (see above), and guessing from the source is exactly
 what this project argues against elsewhere.
 
+**Measured on 2026-10-09, and still not built.** The experience log now has the
+numbers: 71 autosaves over 105 calls, median 226 ms, p90 about 1.1 s, 35.6 s in
+all. About half followed a call that only read the design, so skipping those
+would have saved roughly 19 s. A Codex lane built the fingerprint described
+above, and it was probed live in a throwaway document. Every change was detected
+(a new body, a parameter, a rename, hiding, a new or moved component), and reads
+came back unchanged. Two handles to the same document compare equal with `==`,
+though not with `is`. On the person's real design (69 bodies, 323 parameters,
+249 timeline steps, 60 sketches, 28 occurrences), though, one fingerprint took
+226 ms warm and 829 ms cold. That is as much as the save it was meant to avoid,
+and it needs two per call. Bounding boxes were 110 ms of it; without them it is
+still about 70 ms on every call. It also has a blind spot: moving a sketch point,
+say a hole inside a plate, changes nothing it reads. So it would cost every call
+time and could leave a real change unsaved, all to save about 100 ms per call on
+average. If the save ever needs to get cheaper, the better direction is to batch
+it: one save per panel turn, or a short debounce flushed on exit. Then nothing
+has to guess whether the design changed.
+
 ## Live numbers for the combined execute+screenshot
 
 `fusion_execute(screenshot=...)` and `rhino_execute(screenshot=...)` fold the
