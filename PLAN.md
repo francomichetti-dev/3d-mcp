@@ -90,9 +90,25 @@ green. Stop and ask at every gate.
       returned by `fusion_state(query=...)`; a nudge on a success after two or
       more failures; built-ins `selection` and `remove` (Codex lane), verified
       live. The first real recipe: "delete the one I selected".
-- [ ] **3c. Import from the panel**: drop a CAD file on the panel and it is
+- [x] **3c. Import from the panel**: drop a CAD file on the panel and it is
       imported at once, with a line in the chat saying what arrived, and the
       model told on its next turn. **Gate.**
+      (2026-10-09) Codex lane, reviewed and live-tested through the deployed
+      service in a throwaway document: an STL dropped was in the design in
+      0.75 s, measured 36 x 36 x 80.5 mm; dropping it again was refused by the
+      duplicate guard with a readable message. Reviewing it found an older
+      hole: any open web page could POST to the service with the right Host.
+      Foreign origins are now refused (403 live).
+- [x] **Second Codex review** (2026-10-09): ten findings on the six commits
+      after the first review, all confirmed. Recipes matched unrelated
+      requests and negations; recalled notes arrived unmarked inside the
+      person's message; `remove` could take every instance of a shared body or
+      the wrong one of two same-named occurrences; the duplicate guard missed
+      nested imports, renumbered tabs, copies of copies and symlinks; reads
+      reset the failure streak. Fixed here and in two Codex lanes, each
+      verified live where Fusion was involved. The live probes also found that
+      a nested removal's timeline item points at the parent occurrence, so
+      `remove` gained `undo` (gotcha 13).
 - [x] **4. Repetition hints** (Codex lane `codex/hints`, reviewed and merged): a successful call whose helper function has
       been defined three or more times before gets a one-time hint to save it
       as a fast command. **Gate.**
